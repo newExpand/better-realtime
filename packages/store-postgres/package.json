@@ -1,0 +1,8 @@
+{
+  "name": "@realtime/store-postgres",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@realtime/diagnostics": "workspace:*", "@realtime/protocol": "workspace:*", "pg": "8.22.0" },
+  "devDependencies": { "@types/pg": "8.20.0" }
+}

@@ -1,0 +1,14 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+
+allowBuilds:
+  esbuild: true
+
+onlyBuiltDependencies:
+  - esbuild
+
+confirmModulesPurge: false
+
+overrides:
+  obug: 2.1.3

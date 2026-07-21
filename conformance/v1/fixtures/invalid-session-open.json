@@ -1,0 +1,12 @@
+{
+  "protocol": "1.0",
+  "kind": "session.open",
+  "messageId": "msg-invalid",
+  "sentAt": "2026-07-17T12:00:00.000Z",
+  "connectionAttemptId": "conn-02",
+  "contract": {
+    "contractId": "chat.example",
+    "manifestVersion": "not-semver",
+    "manifestDigest": "not-a-digest"
+  }
+}

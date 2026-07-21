@@ -1,0 +1,566 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://better-realtime.dev/spec/protocol/v1/wire.schema.json",
+  "title": "Realtime Runtime Wire Protocol 1.0",
+  "description": "Executable envelope schema for the initial JSON wire protocol. Unknown optional fields remain allowed for forward-compatible minor evolution.",
+  "oneOf": [
+    { "$ref": "#/$defs/sessionOpen" },
+    { "$ref": "#/$defs/sessionReady" },
+    { "$ref": "#/$defs/sessionRejected" },
+    { "$ref": "#/$defs/authChallenge" },
+    { "$ref": "#/$defs/authUpdate" },
+    { "$ref": "#/$defs/authUpdated" },
+    { "$ref": "#/$defs/heartbeatPing" },
+    { "$ref": "#/$defs/heartbeatPong" },
+    { "$ref": "#/$defs/streamSubscribe" },
+    { "$ref": "#/$defs/streamSubscribed" },
+    { "$ref": "#/$defs/replayBegin" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/replayComplete" },
+    { "$ref": "#/$defs/resyncRequired" },
+    { "$ref": "#/$defs/snapshot" },
+    { "$ref": "#/$defs/streamUnsubscribe" },
+    { "$ref": "#/$defs/streamUnsubscribed" },
+    { "$ref": "#/$defs/command" },
+    { "$ref": "#/$defs/commandReceipt" },
+    { "$ref": "#/$defs/commandCompleted" },
+    { "$ref": "#/$defs/commandStatusRequest" },
+    { "$ref": "#/$defs/commandStatus" },
+    { "$ref": "#/$defs/errorMessage" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "causalEventPosition": {
+      "type": "object",
+      "required": ["eventId", "stream", "sequence"],
+      "properties": {
+        "eventId": { "$ref": "#/$defs/identifier" },
+        "stream": { "$ref": "#/$defs/identifier" },
+        "sequence": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "jsonObject": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "messageBase": {
+      "type": "object",
+      "required": ["protocol", "kind", "messageId", "sentAt"],
+      "properties": {
+        "protocol": { "const": "1.0" },
+        "kind": { "type": "string", "minLength": 1 },
+        "messageId": { "$ref": "#/$defs/identifier" },
+        "traceId": { "$ref": "#/$defs/identifier" },
+        "causationId": { "$ref": "#/$defs/identifier" },
+        "sentAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "contractIdentity": {
+      "type": "object",
+      "required": ["contractId", "manifestVersion", "manifestDigest"],
+      "properties": {
+        "contractId": { "$ref": "#/$defs/identifier" },
+        "manifestVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+        "manifestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "resumeRequest": {
+      "type": "object",
+      "required": ["sessionId", "resumeToken"],
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/identifier" },
+        "resumeToken": { "type": "string", "minLength": 16, "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "heartbeatPolicy": {
+      "type": "object",
+      "required": ["mode", "intervalMs", "timeoutMs"],
+      "properties": {
+        "mode": { "const": "application" },
+        "intervalMs": { "type": "integer", "minimum": 1000, "maximum": 300000, "default": 25000 },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000, "default": 20000 }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "schemaValidation",
+        "eventIdentity",
+        "ordering",
+        "gapDetection",
+        "durableReplay",
+        "snapshotResync",
+        "idempotentCommands",
+        "commandReceipts",
+        "maxMessageBytes"
+      ],
+      "properties": {
+        "schemaValidation": { "type": "boolean" },
+        "eventIdentity": { "type": "boolean" },
+        "ordering": { "enum": ["none", "per_stream"] },
+        "gapDetection": { "type": "boolean" },
+        "durableReplay": { "type": "boolean" },
+        "snapshotResync": { "enum": ["none", "fenced"] },
+        "idempotentCommands": { "type": "boolean" },
+        "commandReceipts": { "type": "boolean" },
+        "clientApplyAck": { "type": "boolean", "default": false },
+        "eventDedupeWindowMs": { "$ref": "#/$defs/nonNegativeInteger" },
+        "replayRetentionMs": { "$ref": "#/$defs/nonNegativeInteger" },
+        "idempotencyRetentionMs": { "$ref": "#/$defs/nonNegativeInteger" },
+        "commandResultRetentionMs": { "$ref": "#/$defs/nonNegativeInteger" },
+        "maxMessageBytes": { "$ref": "#/$defs/positiveInteger" },
+        "maxRecoveryBufferRecords": { "$ref": "#/$defs/positiveInteger" },
+        "maxRecoveryBufferBytes": { "$ref": "#/$defs/positiveInteger" }
+      },
+      "additionalProperties": false
+    },
+    "errorInfo": {
+      "type": "object",
+      "required": ["code", "scope", "disposition", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^RT_[A-Z0-9_]+$" },
+        "scope": { "enum": ["connection", "session", "stream", "command", "message", "runtime"] },
+        "disposition": { "enum": ["retry", "refresh_auth", "replay", "resync", "fail_operation", "fail_session", "none"] },
+        "retryable": { "type": "boolean" },
+        "retryAfterMs": { "$ref": "#/$defs/nonNegativeInteger" },
+        "stream": { "$ref": "#/$defs/identifier" },
+        "subscriptionId": { "$ref": "#/$defs/identifier" },
+        "commandId": { "$ref": "#/$defs/identifier" },
+        "details": { "$ref": "#/$defs/jsonObject" }
+      },
+      "additionalProperties": false
+    },
+    "sessionOpen": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "connectionAttemptId", "contract", "auth"],
+          "properties": {
+            "kind": { "const": "session.open" },
+            "connectionAttemptId": { "$ref": "#/$defs/identifier" },
+            "contract": { "$ref": "#/$defs/contractIdentity" },
+            "auth": { "$ref": "#/$defs/jsonObject" },
+            "resume": { "$ref": "#/$defs/resumeRequest" }
+          }
+        }
+      ]
+    },
+    "sessionReady": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "sessionId", "sessionGeneration", "authGeneration", "resumeStatus", "capabilities", "heartbeat"],
+          "properties": {
+            "kind": { "const": "session.ready" },
+            "sessionId": { "$ref": "#/$defs/identifier" },
+            "sessionGeneration": { "$ref": "#/$defs/positiveInteger" },
+            "authGeneration": { "$ref": "#/$defs/positiveInteger" },
+            "resumeStatus": { "enum": ["fresh", "resumed", "unavailable"] },
+            "resumeUnavailableReason": { "enum": ["expired", "invalid", "not_found", "capability_changed", "principal_changed"] },
+            "resumeToken": { "type": "string", "minLength": 16, "maxLength": 4096 },
+            "resumeExpiresAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "capabilities": { "$ref": "#/$defs/capabilities" },
+            "heartbeat": { "$ref": "#/$defs/heartbeatPolicy" }
+          },
+          "if": {
+            "properties": { "resumeStatus": { "const": "unavailable" } },
+            "required": ["resumeStatus"]
+          },
+          "then": {
+            "required": ["resumeUnavailableReason"],
+            "properties": { "resumeUnavailableReason": {} }
+          }
+        }
+      ]
+    },
+    "sessionRejected": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "error"],
+          "properties": {
+            "kind": { "const": "session.rejected" },
+            "error": { "$ref": "#/$defs/errorInfo" }
+          }
+        }
+      ]
+    },
+    "authChallenge": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "challengeId", "reason", "deadlineAt"],
+          "properties": {
+            "kind": { "const": "session.auth.challenge" },
+            "challengeId": { "$ref": "#/$defs/identifier" },
+            "reason": { "enum": ["expiring", "expired", "revoked", "policy_changed"] },
+            "deadlineAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      ]
+    },
+    "authUpdate": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "challengeId", "auth"],
+          "properties": {
+            "kind": { "const": "session.auth.update" },
+            "challengeId": { "$ref": "#/$defs/identifier" },
+            "auth": { "$ref": "#/$defs/jsonObject" }
+          }
+        }
+      ]
+    },
+    "authUpdated": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "challengeId", "authGeneration"],
+          "properties": {
+            "kind": { "const": "session.auth.updated" },
+            "challengeId": { "$ref": "#/$defs/identifier" },
+            "authGeneration": { "$ref": "#/$defs/positiveInteger" }
+          }
+        }
+      ]
+    },
+    "heartbeatPing": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "pingId"],
+          "properties": {
+            "kind": { "const": "heartbeat.ping" },
+            "pingId": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "heartbeatPong": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "pingId"],
+          "properties": {
+            "kind": { "const": "heartbeat.pong" },
+            "pingId": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "streamSubscribe": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "stream", "input"],
+          "properties": {
+            "kind": { "const": "stream.subscribe" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "input": { "$ref": "#/$defs/jsonValue" },
+            "after": { "type": ["string", "null"], "maxLength": 4096 }
+          }
+        }
+      ]
+    },
+    "streamSubscribed": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "subscriptionId", "stream", "mode", "head"],
+          "properties": {
+            "kind": { "const": "stream.subscribed" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "mode": { "enum": ["live", "replay", "snapshot"] },
+            "baseline": { "type": ["string", "null"], "maxLength": 4096 },
+            "head": { "type": ["string", "null"], "maxLength": 4096 }
+          }
+        }
+      ]
+    },
+    "replayBegin": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "subscriptionId", "replayId", "stream", "requestedAfter", "head"],
+          "properties": {
+            "kind": { "const": "stream.replay.begin" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" },
+            "replayId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "requestedAfter": { "type": ["string", "null"], "maxLength": 4096 },
+            "head": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        }
+      ]
+    },
+    "event": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "deliveryId", "sessionGeneration", "deliveryMode", "eventId", "stream", "sequence", "cursor", "type", "schema", "data"],
+          "properties": {
+            "kind": { "const": "event" },
+            "deliveryId": { "$ref": "#/$defs/identifier" },
+            "sessionGeneration": { "$ref": "#/$defs/positiveInteger" },
+            "deliveryMode": { "enum": ["live", "replay", "snapshot_catchup"] },
+            "replayId": { "$ref": "#/$defs/identifier" },
+            "eventId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "sequence": { "$ref": "#/$defs/nonNegativeInteger" },
+            "cursor": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "type": { "$ref": "#/$defs/identifier" },
+            "schema": { "$ref": "#/$defs/identifier" },
+            "commandId": { "$ref": "#/$defs/identifier" },
+            "occurredAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "data": { "$ref": "#/$defs/jsonValue" }
+          }
+        }
+      ]
+    },
+    "replayComplete": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "subscriptionId", "replayId", "stream", "through"],
+          "properties": {
+            "kind": { "const": "stream.replay.complete" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" },
+            "replayId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "through": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        }
+      ]
+    },
+    "resyncRequired": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "subscriptionId", "resyncId", "stream", "reason"],
+          "properties": {
+            "kind": { "const": "stream.resync.required" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" },
+            "resyncId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "reason": { "enum": ["cursor_expired", "gap_unrecoverable", "recovery_overflow", "capability_changed", "client_requested"] }
+          }
+        }
+      ]
+    },
+    "snapshot": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "subscriptionId", "resyncId", "snapshotId", "stream", "cursor", "head", "schema", "state"],
+          "properties": {
+            "kind": { "const": "stream.snapshot" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" },
+            "resyncId": { "$ref": "#/$defs/identifier" },
+            "snapshotId": { "$ref": "#/$defs/identifier" },
+            "stream": { "$ref": "#/$defs/identifier" },
+            "cursor": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "head": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "schema": { "$ref": "#/$defs/identifier" },
+            "stateHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "state": { "$ref": "#/$defs/jsonValue" }
+          }
+        }
+      ]
+    },
+    "streamUnsubscribe": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "subscriptionId"],
+          "properties": {
+            "kind": { "const": "stream.unsubscribe" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "streamUnsubscribed": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "subscriptionId"],
+          "properties": {
+            "kind": { "const": "stream.unsubscribed" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "subscriptionId": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "command": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "commandAttemptId", "sessionGeneration", "commandId", "type", "schema", "input", "createdAt"],
+          "properties": {
+            "kind": { "const": "command" },
+            "commandAttemptId": { "$ref": "#/$defs/identifier" },
+            "sessionGeneration": { "$ref": "#/$defs/positiveInteger" },
+            "commandId": { "$ref": "#/$defs/identifier" },
+            "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "type": { "$ref": "#/$defs/identifier" },
+            "schema": { "$ref": "#/$defs/identifier" },
+            "input": { "$ref": "#/$defs/jsonValue" },
+            "createdAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      ]
+    },
+    "commandReceipt": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "commandId", "state"],
+          "properties": {
+            "kind": { "const": "command.receipt" },
+            "commandId": { "$ref": "#/$defs/identifier" },
+            "state": { "enum": ["accepted", "rejected", "expired", "unknown"] },
+            "error": { "$ref": "#/$defs/errorInfo" }
+          }
+        }
+      ]
+    },
+    "commandCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "commandId", "schema", "result"],
+          "properties": {
+            "kind": { "const": "command.completed" },
+            "commandId": { "$ref": "#/$defs/identifier" },
+            "schema": { "$ref": "#/$defs/identifier" },
+            "result": { "$ref": "#/$defs/jsonValue" },
+            "causalEventIds": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/identifier" },
+              "maxItems": 100,
+              "uniqueItems": true
+            },
+            "causalEvents": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/causalEventPosition" },
+              "maxItems": 100
+            }
+          }
+        }
+      ]
+    },
+    "commandStatusRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "commandId"],
+          "properties": {
+            "kind": { "const": "command.status.request" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "commandId": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "commandStatus": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "requestId", "commandId", "state"],
+          "properties": {
+            "kind": { "const": "command.status" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "commandId": { "$ref": "#/$defs/identifier" },
+            "state": { "enum": ["accepted", "completed", "rejected", "expired", "unknown"] },
+            "schema": { "$ref": "#/$defs/identifier" },
+            "result": { "$ref": "#/$defs/jsonValue" },
+            "causalEventIds": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/identifier" },
+              "maxItems": 100,
+              "uniqueItems": true
+            },
+            "causalEvents": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/causalEventPosition" },
+              "maxItems": 100
+            },
+            "error": { "$ref": "#/$defs/errorInfo" }
+          }
+        }
+      ]
+    },
+    "errorMessage": {
+      "allOf": [
+        { "$ref": "#/$defs/messageBase" },
+        {
+          "type": "object",
+          "required": ["kind", "error"],
+          "properties": {
+            "kind": { "const": "error" },
+            "error": { "$ref": "#/$defs/errorInfo" }
+          }
+        }
+      ]
+    }
+  }
+}

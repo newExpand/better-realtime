@@ -1,0 +1,15 @@
+{
+  "name": "@realtime/server-node",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "dev": "zsh ../../scripts/run-two-gateway-dev.sh", "dev:memory": "tsx watch src/dev.ts", "benchmark:multi-gateway": "tsx src/multi-gateway-load.ts" },
+  "dependencies": {
+    "@realtime/diagnostics": "workspace:*",
+    "@realtime/protocol": "workspace:*",
+    "@realtime/store-postgres": "workspace:*",
+    "pg": "8.22.0",
+    "ws": "8.21.1"
+  },
+  "devDependencies": { "@types/pg": "8.20.0", "tsx": "4.23.1" }
+}

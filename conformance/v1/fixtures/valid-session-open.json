@@ -1,0 +1,16 @@
+{
+  "protocol": "1.0",
+  "kind": "session.open",
+  "messageId": "msg-01",
+  "sentAt": "2026-07-17T12:00:00.000Z",
+  "connectionAttemptId": "conn-01",
+  "contract": {
+    "contractId": "chat.example",
+    "manifestVersion": "1.0.0",
+    "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "auth": {
+    "type": "bearer",
+    "token": "redacted-example-token"
+  }
+}

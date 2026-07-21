@@ -1,0 +1,8 @@
+{
+  "name": "@realtime/react",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "peerDependencies": { "react": "^19.0.0" },
+  "dependencies": { "@realtime/core": "workspace:*", "@realtime/protocol": "workspace:*" }
+}

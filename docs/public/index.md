@@ -1,0 +1,17 @@
+# Better Realtime alpha documentation
+
+- [Quickstart](quickstart.md)
+- [Typed contracts](typed-contracts.md)
+- [React client](react.md)
+- [Node server](server.md)
+- [Recovery model](recovery.md)
+- [Support matrix](support-matrix.md)
+- [Production deployment](production-deployment.md)
+- [PostgreSQL profile](postgres.md)
+- [Diagnostics and local MCP](diagnostics.md)
+- [Contracts and coordinated upgrades](contracts-and-upgrades.md)
+- [Alpha stability](stability.md)
+- [Troubleshooting](troubleshooting.md)
+- [Release runbook](release.md)
+
+The machine-readable source of support truth is [`support/alpha-0.1.json`](../../support/alpha-0.1.json). A protocol definition is not an implementation or verification claim.

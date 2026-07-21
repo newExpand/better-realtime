@@ -1,0 +1,1850 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "product",
+    "productVersion",
+    "component",
+    "queryVersion",
+    "schemaVersion",
+    "tenantId",
+    "kind",
+    "completeness",
+    "provenance"
+  ],
+  "properties": {
+    "product": { "const": "Better Realtime" },
+    "productVersion": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" },
+    "component": { "const": "better-realtime" },
+    "queryVersion": {
+      "const": "1.0"
+    },
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "tenantId": {
+      "type": "string",
+      "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+    },
+    "kind": {
+      "enum": [
+        "doctor",
+        "trace_command",
+        "inspect_stream",
+        "leaks",
+        "raw_evidence",
+        "evidence_closure"
+      ]
+    },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "droppedRecords",
+        "evictedRecords",
+        "expectedProducerInstances",
+        "observedProducerInstances",
+        "missingProducerInstances",
+        "sourceCoveredRanges"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "droppedRecords": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evictedRecords": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedProducerInstances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producerInstance"
+          }
+        },
+        "observedProducerInstances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producerInstance"
+          }
+        },
+        "missingProducerInstances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producerInstance"
+          }
+        },
+        "sourceCoveredRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producerRange"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "payloadPolicy",
+        "redactedFields"
+      ],
+      "properties": {
+        "source": {
+          "const": "local_evidence_bundle"
+        },
+        "payloadPolicy": {
+          "const": "redacted"
+        },
+        "redactedFields": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "report": {
+      "$ref": "#/$defs/doctorReport"
+    },
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "recordCount"
+      ],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "pattern": "^dqc1\\.sha256:[a-f0-9]{64}$"
+        },
+        "recordCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidenceRecord"
+      }
+    },
+    "coveredRanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/producerRange"
+      }
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "omittedCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nextCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "commandId": {
+      "type": "string",
+      "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+    },
+    "stream": {
+      "type": "string",
+      "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "proven",
+        "disproven",
+        "indeterminate"
+      ]
+    },
+    "resourceCapture": {
+      "enum": [
+        "complete",
+        "unavailable"
+      ]
+    },
+    "captureProof": {
+      "enum": [
+        "proven",
+        "missing"
+      ]
+    },
+    "capture": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/resourceCaptureProof"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "active": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "activeCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failedCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "doctor"
+        }
+      },
+      "required": [
+        "report",
+        "evidenceReference"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "records"
+            ]
+          },
+          {
+            "required": [
+              "verdict"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "raw_evidence"
+        }
+      },
+      "required": [
+        "records",
+        "coveredRanges",
+        "hasMore",
+        "omittedCount"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "report"
+            ]
+          },
+          {
+            "required": [
+              "verdict"
+            ]
+          },
+          {
+            "required": [
+              "commandId"
+            ]
+          },
+          {
+            "required": [
+              "stream"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "trace_command"
+        }
+      },
+      "required": [
+        "records",
+        "coveredRanges",
+        "hasMore",
+        "omittedCount",
+        "commandId"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "report"
+            ]
+          },
+          {
+            "required": [
+              "verdict"
+            ]
+          },
+          {
+            "required": [
+              "stream"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "inspect_stream"
+        }
+      },
+      "required": [
+        "records",
+        "coveredRanges",
+        "hasMore",
+        "omittedCount",
+        "stream"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "report"
+            ]
+          },
+          {
+            "required": [
+              "verdict"
+            ]
+          },
+          {
+            "required": [
+              "commandId"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "evidence_closure"
+        }
+      },
+      "required": [
+        "records",
+        "coveredRanges",
+        "hasMore",
+        "omittedCount",
+        "evidenceReference"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "report"
+            ]
+          },
+          {
+            "required": [
+              "verdict"
+            ]
+          },
+          {
+            "required": [
+              "commandId"
+            ]
+          },
+          {
+            "required": [
+              "stream"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "leaks"
+        }
+      },
+      "required": [
+        "verdict",
+        "resourceCapture",
+        "captureProof",
+        "capture",
+        "active",
+        "failed",
+        "activeCount",
+        "failedCount",
+        "hasMore",
+        "omittedCount"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "report"
+            ]
+          },
+          {
+            "required": [
+              "records"
+            ]
+          },
+          {
+            "required": [
+              "commandId"
+            ]
+          },
+          {
+            "required": [
+              "stream"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "producerRole": {
+      "enum": [
+        "client",
+        "server",
+        "database",
+        "tool",
+        "unknown"
+      ]
+    },
+    "producerInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producerRole",
+        "runtimeId",
+        "runtimeBootId"
+      ],
+      "properties": {
+        "producerRole": {
+          "$ref": "#/$defs/producerRole"
+        },
+        "runtimeId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "runtimeBootId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "producerRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producerRole",
+        "runtimeId",
+        "runtimeBootId",
+        "first",
+        "last",
+        "count"
+      ],
+      "properties": {
+        "producerRole": {
+          "$ref": "#/$defs/producerRole"
+        },
+        "runtimeId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "runtimeBootId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "first": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "boundaryFinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "value",
+            "evidence"
+          ],
+          "properties": {
+            "status": {
+              "const": "known"
+            },
+            "value": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "evidenceMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose",
+        "recordId",
+        "recordSequence",
+        "producerRole",
+        "runtimeId",
+        "runtimeBootId",
+        "boundary",
+        "component",
+        "componentVersion",
+        "outcome"
+      ],
+      "properties": {
+        "purpose": {
+          "enum": [
+            "matched_boundary",
+            "divergent_boundary",
+            "transaction_indeterminate",
+            "reconciliation_proof"
+          ]
+        },
+        "recordId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "recordSequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producerRole": {
+          "$ref": "#/$defs/producerRole"
+        },
+        "runtimeId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "runtimeBootId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1
+        },
+        "componentVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "invariant_violation",
+            "unknown"
+          ]
+        },
+        "reasonCode": {
+          "type": "string",
+          "pattern": "^RT_[A-Z0-9_]{1,96}$"
+        },
+        "transactionId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "transactionOperation": {
+          "enum": [
+            "schema_migration",
+            "principal_namespace",
+            "command",
+            "append_event",
+            "snapshot_read",
+            "outbox_publish",
+            "command_retention_cleanup",
+            "outbox_retention_cleanup",
+            "stream_retention"
+          ]
+        },
+        "operationCorrelationId": {
+          "type": "string",
+          "pattern": "^opcorr:sha256:[a-f0-9]{64}$"
+        },
+        "commandAttemptId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "eventId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "causalHandoffId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "causalParentRecordId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "proofSource": {
+          "enum": [
+            "postgres_error_response",
+            "commit_ack_unavailable",
+            "commit_acknowledgement",
+            "durable_transaction_attempt_marker",
+            "repeatable_read_read_only_discard_and_retry",
+            "commit_not_invoked",
+            "same_connection_rollback"
+          ]
+        },
+        "resolution": {
+          "enum": [
+            "committed",
+            "rolled_back",
+            "no_durable_effect"
+          ]
+        }
+      }
+    },
+    "safeDetailValue": {
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^opcorr:sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^RT_[A-Z0-9_]{1,96}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9A-Z]{5}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+            },
+            {
+              "type": "string",
+              "pattern": "^capture[-_:][A-Za-z0-9_-]{1,96}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,79}@[1-9][0-9]*$"
+            },
+            {
+              "enum": [
+                "schema_migration",
+                "principal_namespace",
+                "command",
+                "append_event",
+                "snapshot_read",
+                "outbox_publish",
+                "command_retention_cleanup",
+                "outbox_retention_cleanup",
+                "stream_retention",
+                "postgres_error_response",
+                "commit_ack_unavailable",
+                "commit_acknowledgement",
+                "durable_transaction_attempt_marker",
+                "repeatable_read_read_only_discard_and_retry",
+                "commit_not_invoked",
+                "same_connection_rollback",
+                "committed",
+                "rolled_back",
+                "no_durable_effect",
+                "fresh_repeatable_read_read_only_attempt",
+                "outbox_row_lock",
+                "pg_advisory_xact_lock",
+                "command_advisory_lock",
+                "absent",
+                "accepted",
+                "active",
+                "backing_off",
+                "cancelled",
+                "closed",
+                "commit_in_flight",
+                "committed",
+                "completed",
+                "connecting",
+                "created",
+                "disposed",
+                "disposing",
+                "expired",
+                "failed",
+                "idle",
+                "indeterminate",
+                "live",
+                "observed",
+                "open",
+                "opening",
+                "pre_commit",
+                "queued",
+                "ready",
+                "reauthenticating",
+                "reconciled",
+                "reconciling",
+                "rejected",
+                "replaying",
+                "resyncing",
+                "rolled_back",
+                "sent",
+                "subscribing",
+                "suspended",
+                "unknown",
+                "command_status",
+                "gateway_health_or_durable_operation",
+                "harness_pool_idle_connection",
+                "authoritative_abort",
+                "application",
+                "database",
+                "gateway_observer",
+                "rollback",
+                "replay",
+                "fenced_snapshot",
+                "destroy_connection",
+                "snapshot_catchup"
+              ]
+            }
+          ]
+        },
+        {
+          "type": "number",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/safeDetailValue"
+          }
+        },
+        {
+          "$ref": "#/$defs/safeDetailObject"
+        }
+      ]
+    },
+    "safeDetailObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 64,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "rollback",
+                "replay",
+                "fenced_snapshot",
+                "destroy_connection"
+              ]
+            }
+          ]
+        },
+        "actual": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "after": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "appendId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "attempt": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "bufferedAmount": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "bytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "capability": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "catchup": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "causalEventIds": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "causalEventPositions": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "captureId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "claimed": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "code": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "commandId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "connectionId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "consumers": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "count": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "crashPoint": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "cursor": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "cursorSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "delay": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "delivered": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "deliveryId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "deliveryMode": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "live",
+                "replay",
+                "snapshot_catchup"
+              ]
+            }
+          ]
+        },
+        "duplicate": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "durableSuccessClaimed": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "effectSchema": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "event": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "eventId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "eventSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "existenceExposed": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "expected": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "expectedDirection": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "expectedSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "failureProvenance": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "first": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "from": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "handoffReason": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "head": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "headSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "idempotencyRetentionMs": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "index": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "intentHash": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "intentHashVersion": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "inventoryCount": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "inventoryDigest": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "isolation": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "kind": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "last": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "listenerDeliveryClaimed": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxBufferedBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxMessageBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxOutboundBufferedBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxRecords": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "mode": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "nextBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "nextMessageBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "nextRecords": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "observer": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "schema_migration",
+                "principal_namespace",
+                "command",
+                "append_event",
+                "snapshot_read",
+                "outbox_publish",
+                "command_retention_cleanup",
+                "outbox_retention_cleanup",
+                "stream_retention",
+                "command_status",
+                "gateway_health_or_durable_operation",
+                "harness_pool_idle_connection"
+              ]
+            }
+          ]
+        },
+        "outboxId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "outboxIds": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "outcome": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "outcomeProof": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "ownerId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "pages": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "pingId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "principalNamespaceId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "producerClaimed": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "projectedSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "proof": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "proofSource": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "postgres_error_response",
+                "commit_ack_unavailable",
+                "commit_acknowledgement",
+                "durable_transaction_attempt_marker",
+                "repeatable_read_read_only_discard_and_retry",
+                "commit_not_invoked",
+                "same_connection_rollback"
+              ]
+            }
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "rawIdentityCaptured": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "rawIssuerCaptured": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "rawSubjectCaptured": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "reason": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "received": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "receivedSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "recordSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "requestId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "requestedAfter": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "committed",
+                "rolled_back",
+                "no_durable_effect"
+              ]
+            }
+          ]
+        },
+        "resourceId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "resourceType": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "response": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "resumeStatus": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "retryable": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "runtimeBootId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "runtimeId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "schema": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "sequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "serialization": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "fresh_repeatable_read_read_only_attempt",
+                "outbox_row_lock",
+                "pg_advisory_xact_lock",
+                "command_advisory_lock"
+              ]
+            }
+          ]
+        },
+        "sessionGeneration": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "snapshotBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "snapshotRequested": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "snapshotSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "socketWritableBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "sqlstate": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "absent",
+                "accepted",
+                "active",
+                "backing_off",
+                "cancelled",
+                "closed",
+                "commit_in_flight",
+                "committed",
+                "completed",
+                "connecting",
+                "created",
+                "disposed",
+                "disposing",
+                "expired",
+                "failed",
+                "idle",
+                "indeterminate",
+                "live",
+                "observed",
+                "open",
+                "opening",
+                "pre_commit",
+                "queued",
+                "ready",
+                "reauthenticating",
+                "reconciled",
+                "reconciling",
+                "rejected",
+                "replaying",
+                "resyncing",
+                "rolled_back",
+                "sent",
+                "subscribing",
+                "suspended",
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "absent",
+                "accepted",
+                "active",
+                "backing_off",
+                "cancelled",
+                "closed",
+                "commit_in_flight",
+                "committed",
+                "completed",
+                "connecting",
+                "created",
+                "disposed",
+                "disposing",
+                "expired",
+                "failed",
+                "idle",
+                "indeterminate",
+                "live",
+                "observed",
+                "open",
+                "opening",
+                "pre_commit",
+                "queued",
+                "ready",
+                "reauthenticating",
+                "reconciled",
+                "reconciling",
+                "rejected",
+                "replaying",
+                "resyncing",
+                "rolled_back",
+                "sent",
+                "subscribing",
+                "suspended",
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "stream": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "tenantId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "through": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "throughSequence": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "to": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "traceId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "transactionId": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "type": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "wireState": {
+          "anyOf": [
+            {
+              "const": "[REDACTED]"
+            },
+            {
+              "enum": [
+                "absent",
+                "accepted",
+                "active",
+                "backing_off",
+                "cancelled",
+                "closed",
+                "commit_in_flight",
+                "committed",
+                "completed",
+                "connecting",
+                "created",
+                "disposed",
+                "disposing",
+                "expired",
+                "failed",
+                "idle",
+                "indeterminate",
+                "live",
+                "observed",
+                "open",
+                "opening",
+                "pre_commit",
+                "queued",
+                "ready",
+                "reauthenticating",
+                "reconciled",
+                "reconciling",
+                "rejected",
+                "replaying",
+                "resyncing",
+                "rolled_back",
+                "sent",
+                "subscribing",
+                "suspended",
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "durableReplay": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "idempotentCommands": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "commandReceipts": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "fencedSnapshots": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "commandResultRetentionMs": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "replayRetentionMs": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxRecoveryBufferBytes": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "maxRecoveryBufferRecords": {
+          "$ref": "#/$defs/safeDetailValue"
+        },
+        "observerPrincipalNamespaceId": {
+          "$ref": "#/$defs/safeDetailValue"
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceId",
+        "resourceType",
+        "ownerId",
+        "acquiredAt",
+        "state",
+        "bytes"
+      ],
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "resourceType": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "ownerId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "acquiredAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "state": {
+          "enum": [
+            "active",
+            "releasing",
+            "released",
+            "failed"
+          ]
+        },
+        "bytes": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "resourceCaptureProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "captureId",
+        "capturedAt",
+        "inventoryCount",
+        "inventoryDigest"
+      ],
+      "properties": {
+        "captureId": {
+          "type": "string",
+          "pattern": "^capture[-_:][A-Za-z0-9_-]{1,96}$"
+        },
+        "capturedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "inventoryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inventoryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordId",
+        "recordSequence",
+        "kind",
+        "timestamp",
+        "monotonicNs",
+        "producerRole",
+        "runtimeId",
+        "runtimeBootId",
+        "component",
+        "componentVersion",
+        "outcome"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1.0"
+        },
+        "recordId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "recordSequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,127}$"
+        },
+        "timestamp": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+        },
+        "monotonicNs": {
+          "type": "string",
+          "pattern": "^[0-9]{1,32}$"
+        },
+        "producerRole": {
+          "enum": [
+            "client",
+            "server",
+            "database",
+            "tool",
+            "unknown"
+          ]
+        },
+        "runtimeId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "runtimeBootId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,127}$"
+        },
+        "componentVersion": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"
+        },
+        "boundary": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,127}$"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "invariant_violation",
+            "unknown"
+          ]
+        },
+        "reasonCode": {
+          "type": "string",
+          "pattern": "^RT_[A-Z0-9_]{1,96}$"
+        },
+        "connectionId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "sessionId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "transactionId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "transactionOperation": {
+          "enum": [
+            "schema_migration",
+            "principal_namespace",
+            "command",
+            "append_event",
+            "snapshot_read",
+            "outbox_publish",
+            "command_retention_cleanup",
+            "outbox_retention_cleanup",
+            "stream_retention"
+          ]
+        },
+        "operationCorrelationId": {
+          "type": "string",
+          "pattern": "^opcorr:sha256:[a-f0-9]{64}$"
+        },
+        "principalNamespaceId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "commandId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "commandAttemptId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "eventId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "traceId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "causalHandoffId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "causalParentRecordId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "resourceId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "ownerId": {
+          "type": "string",
+          "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+        },
+        "details": {
+          "$ref": "#/$defs/safeDetailObject"
+        }
+      }
+    },
+    "doctorReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "verdict",
+        "expectedOutcome",
+        "actualOutcome",
+        "evidenceClosure",
+        "lastSuccessfulBoundary",
+        "firstDivergentBoundary",
+        "issues",
+        "completeness",
+        "scope",
+        "producerRanges"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1.0"
+        },
+        "verdict": {
+          "enum": [
+            "proven",
+            "disproven",
+            "indeterminate"
+          ]
+        },
+        "expectedOutcome": {
+          "type": "string"
+        },
+        "actualOutcome": {
+          "type": "string"
+        },
+        "evidenceClosure": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/evidenceMatch"
+          }
+        },
+        "lastSuccessfulBoundary": {
+          "$ref": "#/$defs/boundaryFinding"
+        },
+        "firstDivergentBoundary": {
+          "$ref": "#/$defs/boundaryFinding"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "severity",
+              "summary",
+              "lastSuccessfulBoundary",
+              "firstDivergentBoundary",
+              "component",
+              "componentVersion"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "info",
+                  "warning",
+                  "error"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              },
+              "lastSuccessfulBoundary": {
+                "$ref": "#/$defs/boundaryFinding"
+              },
+              "firstDivergentBoundary": {
+                "$ref": "#/$defs/boundaryFinding"
+              },
+              "component": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "componentVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "completeness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "droppedRecords",
+            "evictedRecords",
+            "expectedProducers",
+            "observedProducers",
+            "missingProducers",
+            "expectedProducerInstances",
+            "observedProducerInstances",
+            "missingProducerInstances"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "complete",
+                "partial"
+              ]
+            },
+            "droppedRecords": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "evictedRecords": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "expectedProducers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerRole"
+              }
+            },
+            "observedProducers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerRole"
+              }
+            },
+            "missingProducers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerRole"
+              }
+            },
+            "expectedProducerInstances": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerInstance"
+              }
+            },
+            "observedProducerInstances": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerInstance"
+              }
+            },
+            "missingProducerInstances": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/producerInstance"
+              }
+            }
+          }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "traceId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "sessionId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "stream": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "transactionId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "operationCorrelationId": {
+              "type": "string",
+              "pattern": "^opcorr:sha256:[a-f0-9]{64}$"
+            },
+            "principalNamespaceId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "commandId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "commandAttemptId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "eventId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            },
+            "causalHandoffId": {
+              "type": "string",
+              "pattern": "^pseudonym:sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "producerRanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producerRange"
+          }
+        }
+      }
+    }
+  }
+}

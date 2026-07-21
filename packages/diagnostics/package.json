@@ -1,0 +1,7 @@
+{
+  "name": "@realtime/diagnostics",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@realtime/protocol": "workspace:*", "ajv": "8.20.0" }
+}

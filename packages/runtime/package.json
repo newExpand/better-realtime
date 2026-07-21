@@ -1,0 +1,57 @@
+{
+  "name": "better-realtime",
+  "version": "0.1.0-alpha.1",
+  "description": "Contract-first realtime for React and Node with recovery backed by deterministic evidence",
+  "license": "MIT",
+  "author": "ByteLoft",
+  "keywords": ["realtime", "websocket", "react", "postgresql", "recovery", "diagnostics", "mcp"],
+  "repository": { "type": "git", "url": "git+https://github.com/newExpand/better-realtime.git" },
+  "homepage": "https://github.com/newExpand/better-realtime#readme",
+  "bugs": { "url": "https://github.com/newExpand/better-realtime/issues" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": ["./dist/node-only.js", "./dist/cli-bin.js", "./dist/mcp-stdio.js"],
+  "files": ["dist"],
+  "engines": { "node": ">=22.0.0" },
+  "bin": {
+    "better-realtime": "./dist/cli-bin.js",
+    "better-realtime-mcp": "./dist/mcp-stdio.js"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./react": { "types": "./dist/react.d.ts", "import": "./dist/react.js" },
+    "./server": { "types": "./dist/server.d.ts", "browser": "./dist/node-only.js", "node": "./dist/server.js", "default": "./dist/node-only.js" },
+    "./diagnostics": { "types": "./dist/diagnostic-io.d.ts", "browser": "./dist/node-only.js", "node": "./dist/diagnostic-io.js", "default": "./dist/node-only.js" },
+    "./mcp": { "types": "./dist/mcp.d.ts", "browser": "./dist/node-only.js", "node": "./dist/mcp.js", "default": "./dist/node-only.js" },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.json && chmod +x dist/cli-bin.js dist/mcp-stdio.js",
+    "test": "vitest run test/contract.test.ts test/diagnostic-tools.test.ts test/react-lifecycle.test.tsx test/evidence-scope.test.ts test/server-surface.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@realtime/core": "workspace:*",
+    "@realtime/diagnostics": "workspace:*",
+    "@realtime/server-node": "workspace:*",
+    "@realtime/store-postgres": "workspace:*",
+    "@realtime/transport-reference": "workspace:*",
+    "@types/pg": "8.20.0",
+    "ajv": "8.20.0"
+  },
+  "peerDependencies": {
+    "pg": ">=8.22.0 <9",
+    "react": ">=18.2.0 <20",
+    "ws": ">=8.21.1 <9"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  },
+  "publishConfig": { "access": "public", "tag": "alpha", "provenance": true }
+}

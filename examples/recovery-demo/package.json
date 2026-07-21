@@ -1,0 +1,16 @@
+{
+  "name": "@realtime/recovery-demo",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "vite", "build": "vite build" },
+  "dependencies": {
+    "@realtime/core": "workspace:*",
+    "@realtime/diagnostics": "workspace:*",
+    "@realtime/protocol": "workspace:*",
+    "@realtime/react": "workspace:*",
+    "@realtime/transport-reference": "workspace:*",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": { "@vitejs/plugin-react": "6.0.3", "vite": "8.1.5" }
+}

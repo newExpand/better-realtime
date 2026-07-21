@@ -1,0 +1,35 @@
+{
+  "protocol": "1.0",
+  "kind": "session.ready",
+  "messageId": "msg-02",
+  "sentAt": "2026-07-17T12:00:00.010Z",
+  "sessionId": "session-01",
+  "sessionGeneration": 1,
+  "authGeneration": 1,
+  "resumeStatus": "fresh",
+  "resumeToken": "opaque-resume-token-value",
+  "resumeExpiresAt": "2026-07-17T12:02:00.010Z",
+  "capabilities": {
+    "schemaValidation": true,
+    "eventIdentity": true,
+    "ordering": "per_stream",
+    "gapDetection": true,
+    "durableReplay": true,
+    "snapshotResync": "fenced",
+    "idempotentCommands": true,
+    "commandReceipts": true,
+    "clientApplyAck": false,
+    "eventDedupeWindowMs": 120000,
+    "replayRetentionMs": 86400000,
+    "idempotencyRetentionMs": 86400000,
+    "commandResultRetentionMs": 86400000,
+    "maxMessageBytes": 1048576,
+    "maxRecoveryBufferRecords": 10000,
+    "maxRecoveryBufferBytes": 16777216
+  },
+  "heartbeat": {
+    "mode": "application",
+    "intervalMs": 25000,
+    "timeoutMs": 20000
+  }
+}
