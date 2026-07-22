@@ -23,6 +23,7 @@ jobs:
         if: github.repository == 'newExpand/better-realtime'
         run: pnpm release:verify-public-tree
       - run: pnpm check
+      - run: pnpm compatibility:check
       - run: pnpm package:clean-room
       - run: pnpm package:export-public
       - run: pnpm audit --audit-level=high
@@ -38,3 +39,4 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:postgres:docker
+      - run: pnpm compatibility:matrix

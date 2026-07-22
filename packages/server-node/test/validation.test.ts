@@ -26,6 +26,14 @@ const sessionOpen = { protocol: "1.0", kind: "session.open", messageId: "msg_ope
 const contract = sessionOpen.contract;
 
 describe("reference server protocol boundaries", () => {
+  it("rejects a v2 client at the explicit WebSocket subprotocol boundary", async () => {
+    const server = new ReferenceServer({ port: 0, contract }); servers.push(server); await server.start();
+    const socket = new WebSocket(server.webSocketUrl, "better-realtime.v2");
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })));
+    await new Promise<void>((resolve, reject) => { socket.once("open", () => resolve()); socket.once("error", reject); });
+    await expect(closed).resolves.toEqual({ code: 1002, reason: "subprotocol required" });
+  });
+
   it.each([
     { intervalMs: Number.NaN, timeoutMs: 1_000 },
     { intervalMs: Number.POSITIVE_INFINITY, timeoutMs: 1_000 },

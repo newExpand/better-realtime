@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useCommand, useRuntime, useStream } from "./client.js";
+import { recordBrowserCommandObserved, useCommand, useRuntime, useStream } from "./client.js";
 import "./styles.css";
 
 export function App() {
@@ -13,7 +13,7 @@ export function App() {
     <header><span className="eyebrow">External consumer</span><h1>Recovery room</h1><p>A small contract-first React + PostgreSQL journey.</p></header>
     <section className="status"><p data-testid="connection"><span>Connection</span>{runtime.connectionState}/{runtime.sessionState}</p><p data-testid="stream"><span>Stream</span>{room.status} at {room.sequence}</p><p data-testid="command"><span>Command</span>{lastCommandState} / pending {send.totalPendingCount}</p></section>
     <ul aria-label="Messages">{room.data.messages.map((message) => <li key={message.id}><strong>{message.author}</strong><span>{message.text}</span></li>)}</ul>
-    <div className="composer"><input aria-label="Message" value={text} onChange={(event) => setText(event.target.value)} /><button disabled={!text || send.totalPendingCount > 0} onClick={() => { setCommandError(null); const attempt = send.execute({ roomId: "42", text, sentAt: new Date().toISOString() }); setLastCommandState(attempt.state); void attempt.observed.then(() => setLastCommandState(attempt.state), (error: unknown) => { setLastCommandState(attempt.state); setCommandError(error instanceof Error ? error.message : String(error)); }); }}>Send</button></div>
+    <div className="composer"><input aria-label="Message" value={text} onChange={(event) => setText(event.target.value)} /><button disabled={!text || send.totalPendingCount > 0} onClick={() => { setCommandError(null); const attempt = send.execute({ roomId: "42", text, sentAt: new Date().toISOString() }); setLastCommandState(attempt.state); void (async () => { try { const result = await attempt.completed; await attempt.observed; recordBrowserCommandObserved(attempt.commandId, result.messageId); setLastCommandState(attempt.state); } catch (error) { setLastCommandState(attempt.state); setCommandError(error instanceof Error ? error.message : String(error)); } })(); }}>Send</button></div>
     {commandError ? <p role="alert">{commandError}</p> : null}
   </main>;
 }

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "tenantId": "tenant-compat",
+  "payloadPolicy": "redacted",
+  "pseudonymizationKey": "compatibility-diagnostic-key-32-bytes-long",
+  "records": [{
+    "tenantId": "tenant-compat",
+    "record": {
+      "schemaVersion": "1.0", "recordId": "record-indeterminate", "recordSequence": 1,
+      "kind": "database.transaction_outcome_indeterminate", "timestamp": "2026-07-21T00:00:00.000Z", "monotonicNs": "1",
+      "producerRole": "database", "runtimeId": "database-compat", "runtimeBootId": "database-boot-compat",
+      "component": "store-postgres", "componentVersion": "0.1.0-alpha.1", "boundary": "database.transaction_outcome_indeterminate",
+      "outcome": "unknown", "reasonCode": "RT_TRANSACTION_OUTCOME_INDETERMINATE", "transactionId": "tx-indeterminate",
+      "transactionOperation": "command", "operationCorrelationId": "opcorr:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "commandId": "command-indeterminate", "eventId": "event-indeterminate", "causalHandoffId": "event:event-indeterminate",
+      "principalNamespaceId": "principal-compat", "details": { "tenantId": "tenant-compat", "principalNamespaceId": "principal-compat", "proofSource": "commit_ack_unavailable" }
+    }
+  }],
+  "resourceCapture": "unavailable",
+  "loss": { "droppedRecords": 0, "evictedRecords": 0 },
+  "expectedProducerInstances": [{ "producerRole": "database", "runtimeId": "database-compat", "runtimeBootId": "database-boot-compat" }],
+  "defaultDoctorQuery": {
+    "expectedBoundaries": [{ "producerRole": "database", "runtimeId": "database-compat", "runtimeBootId": "database-boot-compat", "boundary": "db.committed" }],
+    "expectedProducers": ["database"], "expectedOutcome": "transaction committed", "scope": { "commandId": "command-indeterminate", "eventId": "event-indeterminate" }
+  }
+}

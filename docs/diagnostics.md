@@ -352,6 +352,8 @@ Incident bundles include:
 
 An AI must not analyze evidence against an unspecified source revision.
 
+Package version and diagnostic schema version are independent. The alpha.1 evidence/query contract is a permanent compatibility fixture: later analyzers must preserve the meaning of `proven`, `partial`, and `indeterminate`, the completeness manifest, producer identity, and proof-source boundaries or select a new diagnostic schema version. A compatibility adapter may translate a fully understood older record at the diagnostic ingestion boundary, but it must preserve loss and unknown fields as explicit incompleteness. It must never upgrade partial evidence to proven or reinterpret an indeterminate transaction as committed or rolled back.
+
 ## Access surfaces
 
 ### CLI and JSON

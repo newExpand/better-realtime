@@ -7,9 +7,30 @@ import { WebSocket, WebSocketServer } from "ws";
 export interface ConsumerTestProxy {
   readonly baseUrl: string;
   readonly webSocketUrl: string;
-  readonly state: { selectedGateways: string[]; selectedGatewayTotal: number; downstreamOverflows: number; lastCommandId?: string; droppedCommandId?: string };
+  readonly state: { selectedGateways: string[]; selectedGatewayTotal: number; downstreamOverflows: number; transcript: WireTranscriptEntry[]; lastCommandId?: string; droppedCommandId?: string };
   dropNextCommandCompletion(): void;
   close(): Promise<void>;
+}
+
+export interface WireTranscriptEntry {
+  direction: "client_to_server" | "server_to_client";
+  connection: number;
+  kind: string;
+  messageId?: string;
+  commandId?: string;
+  commandAttemptId?: string;
+  requestId?: string;
+  eventId?: string;
+  deliveryId?: string;
+  sessionGeneration?: number;
+  sequence?: number;
+  cursor?: string;
+  after?: string | null;
+  state?: string;
+  resumeStatus?: string;
+  capabilities?: Record<string, unknown>;
+  contract?: Record<string, unknown>;
+  causalEventIds?: string[];
 }
 
 export async function startConsumerTestProxy(options: { staticRoot: string; gateways: string[]; host?: string; port?: number; maxDownstreamQueueMessages?: number; maxDownstreamQueueBytes?: number }): Promise<ConsumerTestProxy> {
@@ -20,7 +41,7 @@ export async function startConsumerTestProxy(options: { staticRoot: string; gate
   const maxDownstreamQueueBytes = positiveBound(options.maxDownstreamQueueBytes ?? 1_048_576, "RT_TEST_PROXY_DOWNSTREAM_BYTES_INVALID");
   const upstreamOpenTimeoutMs = 2_000;
   const host = options.host ?? "127.0.0.1";
-  const state: ConsumerTestProxy["state"] = { selectedGateways: [], selectedGatewayTotal: 0, downstreamOverflows: 0 };
+  const state: ConsumerTestProxy["state"] = { selectedGateways: [], selectedGatewayTotal: 0, downstreamOverflows: 0, transcript: [] };
   const maxGatewayHistory = 128;
   let dropNextCompletion = false;
   let gatewayOffset = 0;
@@ -43,6 +64,7 @@ export async function startConsumerTestProxy(options: { staticRoot: string; gate
     if (healthy.length === 0) { socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); socket.destroy(); return; }
     const selected = healthy[gatewayOffset++ % healthy.length]!;
     state.selectedGatewayTotal += 1;
+    const connection = state.selectedGatewayTotal;
     state.selectedGateways.push(selected);
     if (state.selectedGateways.length > maxGatewayHistory) state.selectedGateways.splice(0, state.selectedGateways.length - maxGatewayHistory);
     frontendServer.handleUpgrade(request, socket, head, (frontend) => {
@@ -58,7 +80,11 @@ export async function startConsumerTestProxy(options: { staticRoot: string; gate
       }, upstreamOpenTimeoutMs);
       frontend.on("error", () => { clearTimeout(upstreamOpenTimer); pending.length = 0; pendingBytes = 0; upstream.terminate(); });
       frontend.on("message", (data, binary) => {
-        try { const message = JSON.parse(data.toString()) as { kind?: string; commandId?: string }; if (message.kind === "command" && message.commandId) state.lastCommandId = message.commandId; } catch { /* wire validator owns malformed input */ }
+        try {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>;
+          recordWire(state.transcript, "client_to_server", connection, message);
+          if (message.kind === "command" && typeof message.commandId === "string") state.lastCommandId = message.commandId;
+        } catch { /* wire validator owns malformed input */ }
         if (upstream.readyState === WebSocket.OPEN) { upstream.send(data, { binary }); return; }
         const bytes = rawDataBytes(data);
         if (pending.length + 1 > maxPendingMessages || pendingBytes + bytes > maxPendingBytes) {
@@ -72,6 +98,7 @@ export async function startConsumerTestProxy(options: { staticRoot: string; gate
       });
       upstream.once("open", () => { clearTimeout(upstreamOpenTimer); for (const message of pending.splice(0)) upstream.send(message.data, { binary: message.binary }); pendingBytes = 0; });
       upstream.on("message", (data, binary) => {
+        try { recordWire(state.transcript, "server_to_client", connection, JSON.parse(data.toString()) as Record<string, unknown>); } catch { /* wire validator owns malformed input */ }
         if (dropNextCompletion) {
           try {
             const message = JSON.parse(data.toString()) as { kind?: string; commandId?: string };
@@ -127,6 +154,19 @@ export async function startConsumerTestProxy(options: { staticRoot: string; gate
     dropNextCommandCompletion: () => { dropNextCompletion = true; },
     close: async () => { for (const client of frontendServer.clients) client.terminate(); await new Promise<void>((resolve) => frontendServer.close(() => resolve())); http.closeAllConnections(); await closeServer(http); }
   };
+}
+
+function recordWire(transcript: WireTranscriptEntry[], direction: WireTranscriptEntry["direction"], connection: number, message: Record<string, unknown>): void {
+  if (typeof message.kind !== "string") return;
+  const entry: WireTranscriptEntry = { direction, connection, kind: message.kind };
+  for (const field of ["messageId", "commandId", "commandAttemptId", "requestId", "eventId", "deliveryId", "cursor", "state", "resumeStatus"] as const) if (typeof message[field] === "string") entry[field] = message[field] as never;
+  for (const field of ["sessionGeneration", "sequence"] as const) if (typeof message[field] === "number") entry[field] = message[field];
+  if (message.after === null || typeof message.after === "string") entry.after = message.after;
+  if (message.capabilities && typeof message.capabilities === "object" && !Array.isArray(message.capabilities)) entry.capabilities = structuredClone(message.capabilities as Record<string, unknown>);
+  if (message.contract && typeof message.contract === "object" && !Array.isArray(message.contract)) entry.contract = structuredClone(message.contract as Record<string, unknown>);
+  if (Array.isArray(message.causalEventIds) && message.causalEventIds.every((value) => typeof value === "string")) entry.causalEventIds = [...message.causalEventIds];
+  transcript.push(entry);
+  if (transcript.length > 512) transcript.splice(0, transcript.length - 512);
 }
 
 function rawDataBytes(data: WebSocket.RawData): number {

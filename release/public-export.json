@@ -23,6 +23,7 @@
   ],
   "directoryTrees": [
     ".github",
+    "compatibility",
     "conformance",
     "docs/public",
     "examples",

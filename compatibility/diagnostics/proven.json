@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1.0",
+  "tenantId": "tenant-compat",
+  "payloadPolicy": "redacted",
+  "pseudonymizationKey": "compatibility-diagnostic-key-32-bytes-long",
+  "records": [
+    {
+      "tenantId": "tenant-compat",
+      "record": {
+        "schemaVersion": "1.0",
+        "recordId": "record-1",
+        "recordSequence": 1,
+        "kind": "command.received",
+        "timestamp": "2026-07-21T00:00:00.000Z",
+        "monotonicNs": "1",
+        "producerRole": "server",
+        "runtimeId": "gateway-compat",
+        "runtimeBootId": "boot-compat",
+        "component": "compatibility-server",
+        "componentVersion": "0.1.0-alpha.1",
+        "boundary": "command.received",
+        "outcome": "success",
+        "commandId": "command-compat",
+        "stream": "room:compat",
+        "principalNamespaceId": "principal-compat",
+        "details": { "tenantId": "tenant-compat", "principalNamespaceId": "principal-compat" }
+      }
+    },
+    {
+      "tenantId": "tenant-compat",
+      "record": {
+        "schemaVersion": "1.0",
+        "recordId": "record-2",
+        "recordSequence": 2,
+        "kind": "command.completed",
+        "timestamp": "2026-07-21T00:00:01.000Z",
+        "monotonicNs": "2",
+        "producerRole": "server",
+        "runtimeId": "gateway-compat",
+        "runtimeBootId": "boot-compat",
+        "component": "compatibility-server",
+        "componentVersion": "0.1.0-alpha.1",
+        "boundary": "command.completed",
+        "outcome": "success",
+        "commandId": "command-compat",
+        "stream": "room:compat",
+        "principalNamespaceId": "principal-compat",
+        "details": { "tenantId": "tenant-compat", "principalNamespaceId": "principal-compat" }
+      }
+    }
+  ],
+  "resourceCapture": "unavailable",
+  "loss": { "droppedRecords": 0, "evictedRecords": 0 },
+  "expectedProducerInstances": [
+    { "producerRole": "server", "runtimeId": "gateway-compat", "runtimeBootId": "boot-compat" }
+  ],
+  "defaultDoctorQuery": {
+    "expectedBoundaries": [
+      { "producerRole": "server", "runtimeId": "gateway-compat", "runtimeBootId": "boot-compat", "boundary": "command.received" },
+      { "producerRole": "server", "runtimeId": "gateway-compat", "runtimeBootId": "boot-compat", "boundary": "command.completed" }
+    ],
+    "expectedProducers": ["server"],
+    "expectedOutcome": "command completed",
+    "scope": { "commandId": "command-compat" }
+  }
+}

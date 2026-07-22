@@ -1,20 +1,37 @@
-name: Release verified npm artifact
+name: Publish verified npm artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact unpublished package version
+        required: true
+        type: string
+      source_sha:
+        description: Exact reviewed public commit SHA
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+  id-token: none
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment: npm-alpha
+    permissions:
+      contents: read
+      id-token: none
+    outputs:
+      artifact: ${{ steps.artifact.outputs.artifact }}
+      artifact_name: ${{ steps.identity.outputs.artifact_name }}
+      tag: ${{ steps.identity.outputs.tag }}
+      sha256: ${{ steps.artifact.outputs.sha256 }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: v0.1.0-alpha.1
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -23,49 +40,213 @@ jobs:
           package-manager-cache: false
       - run: corepack enable
       - run: npm install --global npm@11.18.0
+      - name: Resolve and validate immutable identity
+        id: identity
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          source_sha="$INPUT_SOURCE_SHA"
+          tag="v$version"
+          [[ "$version" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$source_sha"
+          test "$(node -p "require('./packages/runtime/package.json').version")" = "$version"
+          echo "artifact_name=release-candidate-$source_sha-$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Fail closed when any immutable target already exists
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          tag="v$version"
+          npm_error="$(mktemp)"
+          if npm view "better-realtime@$version" version >/dev/null 2>"$npm_error"; then
+            echo "npm version already exists: better-realtime@$version" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'E404|404 Not Found' "$npm_error"; then
+            echo "Could not prove npm version absence" >&2
+            sed -n '1,20p' "$npm_error" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Git tag already exists: $tag" >&2
+            exit 1
+          elif [[ $? -ne 2 ]]; then
+            echo "Could not prove Git tag absence: $tag" >&2
+            exit 1
+          fi
+          release_error="$(mktemp)"
+          if gh release view "$tag" >/dev/null 2>"$release_error"; then
+            echo "GitHub Release already exists: $tag" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'HTTP 404|release not found' "$release_error"; then
+            echo "Could not prove GitHub Release absence: $tag" >&2
+            sed -n '1,20p' "$release_error" >&2
+            exit 1
+          fi
+          api_error="$(mktemp)"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" >/dev/null 2>"$api_error"; then
+            echo "GitHub Release assets already exist: $tag" >&2
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$api_error"; then
+            echo "Could not prove GitHub Release asset absence: $tag" >&2
+            sed -n '1,20p' "$api_error" >&2
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high
       - run: pnpm check
+      - run: pnpm compatibility:check
       - run: pnpm test:postgres:docker
       - run: pnpm package:export-public
         env:
           BETTER_REALTIME_RELEASE_EXPORT: "1"
       - name: Build the release artifact once
+        id: artifact
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          artifact="better-realtime-$version.tgz"
           mkdir -p output
           pnpm --silent package:pack > output/package-report.json
-          node -e "const fs=require('fs');const report=JSON.parse(fs.readFileSync('output/package-report.json','utf8'));fs.copyFileSync(report.tarball,'better-realtime-0.1.0-alpha.1.tgz')"
-          sha256sum better-realtime-0.1.0-alpha.1.tgz > better-realtime-0.1.0-alpha.1.tgz.sha256
+          node -e "const fs=require('fs');const report=JSON.parse(fs.readFileSync('output/package-report.json','utf8'));if(report.version!==process.argv[1])throw new Error('RT_RELEASE_VERSION_MISMATCH');fs.copyFileSync(report.tarball,process.argv[2])" "$version" "$artifact"
+          sha256sum "$artifact" > "$artifact.sha256"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$artifact" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Verify the exact release artifact in a clean room
+        env:
+          BETTER_REALTIME_TARBALL: ${{ github.workspace }}/${{ steps.artifact.outputs.artifact }}
         run: pnpm package:clean-room
-        env:
-          BETTER_REALTIME_TARBALL: ${{ github.workspace }}/better-realtime-0.1.0-alpha.1.tgz
-      - name: Create the draft prerelease with verified immutable assets
-        run: gh release create v0.1.0-alpha.1 better-realtime-0.1.0-alpha.1.tgz better-realtime-0.1.0-alpha.1.tgz.sha256 --verify-tag --draft --prerelease --title "Better Realtime 0.1.0-alpha.1" --notes-file CHANGELOG.md
+      - name: Upload the reviewed release candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            ${{ steps.artifact.outputs.artifact }}
+            ${{ steps.artifact.outputs.artifact }}.sha256
+            CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          include-hidden-files: false
+
+  stage-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: none
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+      - name: Create exact annotated tag and asset-complete draft prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          tag_object="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" -f tag="$TAG" -f message="Better Realtime ${TAG#v}" -f object="$INPUT_SOURCE_SHA" -f type=commit --jq .sha)"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag_object" >/dev/null
+          gh release create "$TAG" "$ARTIFACT" "$ARTIFACT.sha256" --verify-tag --draft --prerelease --title "Better Realtime ${TAG#v}" --notes-file CHANGELOG.md
+
+  finalize-release:
+    needs: [build, stage-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: none
+    steps:
       - name: Publish the asset-complete prerelease
-        run: gh release edit v0.1.0-alpha.1 --draft=false --prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Bootstrap-publish without moving alpha
-        run: npm publish better-realtime-0.1.0-alpha.1.tgz --tag alpha-candidate --access public --provenance
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --prerelease
+
+  assert-immutable-release:
+    needs: [build, finalize-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Require the published GitHub release to be immutable before npm publication
         env:
-          # Bootstrap GAT authority: packages-all read-write, organizations no-access, bypass-2FA enabled; not package- or version-scoped.
-          # The npm-alpha Environment requires manual approval. Revoke this shortest-expiry credential immediately after publish and dist-tag completion.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ALPHA1_BOOTSTRAP_GAT }}
-      - name: Verify registry bytes, install, and provenance signatures
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
-          mkdir -p registry-verification/signatures
-          npm pack better-realtime@0.1.0-alpha.1 --pack-destination registry-verification
-          cmp better-realtime-0.1.0-alpha.1.tgz registry-verification/better-realtime-0.1.0-alpha.1.tgz
-          BETTER_REALTIME_TARBALL="${{ github.workspace }}/registry-verification/better-realtime-0.1.0-alpha.1.tgz" pnpm package:clean-room
-          cd registry-verification/signatures
-          npm init --yes
-          npm install --ignore-scripts better-realtime@0.1.0-alpha.1
-          npm audit signatures
-      - name: Promote the verified version to alpha
-        run: |
-          npm dist-tag add better-realtime@0.1.0-alpha.1 alpha
-          npm dist-tag rm better-realtime alpha-candidate
+          set -euo pipefail
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+          test "$(jq -r .tag_name <<<"$release_json")" = "$TAG"
+          test "$(jq -r .draft <<<"$release_json")" = false
+          test "$(jq -r .prerelease <<<"$release_json")" = true
+          test "$(jq -r .immutable <<<"$release_json")" = true
+          asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
+          expected_names="$(printf '%s\n%s\n' "$ARTIFACT" "$ARTIFACT.sha256" | sort)"
+          test "$asset_names" = "$expected_names"
+          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq .object.sha)"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha" --jq .object.sha)" = "$INPUT_SOURCE_SHA"
+          mkdir immutable-release-assets
+          gh release download "$TAG" --pattern "$ARTIFACT" --pattern "$ARTIFACT.sha256" --dir immutable-release-assets
+          test "$(find immutable-release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          test "$(sha256sum "immutable-release-assets/$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(cut -d' ' -f1 "immutable-release-assets/$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+
+  publish:
+    needs: [build, assert-immutable-release]
+    runs-on: ubuntu-latest
+    environment: npm-alpha
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.18.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+      - name: Publish the exact artifact through npm Trusted Publishing
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ALPHA1_BOOTSTRAP_GAT }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          npm publish "$ARTIFACT" --tag alpha --access public --provenance
+
+  verify:
+    needs: [build, publish]
+    permissions:
+      contents: read
+      id-token: none
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      version: ${{ inputs.version }}
+      tag: ${{ needs.build.outputs.tag }}
+      expected_sha256: ${{ needs.build.outputs.sha256 }}
+      source_sha: ${{ inputs.source_sha }}
+      publish_run_id: ${{ github.run_id }}
+      publish_run_attempt: ${{ github.run_attempt }}

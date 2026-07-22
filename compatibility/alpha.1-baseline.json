@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "1.0",
+  "package": "better-realtime@0.1.0-alpha.1",
+  "webSocketSubprotocol": "better-realtime.v1",
+  "protocolVersion": "1.0",
+  "diagnosticSchemaVersion": "1.0",
+  "postgresStorageVersion": 1,
+  "postgresMigrations": [
+    {
+      "version": 1,
+      "sourcePath": "packages/store-postgres/src/migrations.ts",
+      "sourceSha256": "b9e17bec0d752b96efa7715b3fc52ab5b2ad9ee8585513ee5d5e327e6604dc96"
+    }
+  ],
+  "postgresFixtures": [
+    {
+      "storageVersion": 1,
+      "packagePath": "compatibility/fixtures/better-realtime-0.1.0-alpha.1.tgz",
+      "packageSha256": "037aeab6cb79d891135026489f6e42595e231bf623b0032b4110472adf444d33",
+      "modulePath": "compatibility/postgres/v1-fixture.ts",
+      "moduleSha256": "1196674daa39cf5fe58411aec65693a60fbe5090e3ea733c4f4f6282b29ad176"
+    }
+  ],
+  "sourceFingerprints": {
+    "wireSchema": "447c97a5abbfd98ea0ad89a2d0abbfbf795aeed47311cd15833efd5eec0d9943",
+    "stateMachines": "9bc6f04016146eff50e643f99cb2d52a6ca55e5e539c0defbb542670f4bc50c4",
+    "conformanceScenarios": "6103175ae9e0c774fea9e184d73e15ff1c1d03cdbf26d1ca0d482711c2556729",
+    "diagnosticResultSchema": "95645b6221bd021f115575c6b5048153aa7c5d389ccc38755e291bb49a1dbcf2",
+    "diagnosticTypes": "77547cac522019d0f0c75ac2b57bdb756c4e43c5a61e1ce762a3350219729f76",
+    "cli": "d0619d26c716f56a58da6bac231a42b629fefa93d575c1eeff4f44c86c14c043",
+    "mcp": "552d198d9094647e9d5199046a9db75c0019f2cc764307f00b58f812b10f3d16",
+    "runtimeClient": "d846362c875b74223b1b16d4ff4e49905774b7752d61262fba6a8f2239653e5c",
+    "runtimeReact": "824e7d8064d036d18f9334a289da27af186c71c978e3cd4851f30ec154628516",
+    "runtimeServer": "393c16b92b7ed9a3c86bc1d7f5f6edaf30e467f7b6272b924b7a46ddcfdbd028",
+    "coreClient": "6dc51c47788a25428a2eb0694752f23ba5d23ebb9585cc68d9dfd814d826dba9",
+    "protocolRuntime": "54a4e42d72b214ba8ce6bfe2f76c88d996a832bf6a622fbdda34c9893944f6d4",
+    "protocolTypes": "371706d01db504fbcf62c592964b8a3fa4e9cf1a4a5961dd643b681cf5ac7047",
+    "protocolConstants": "341a765a194abf7fd9842e403d6283034fa073d654e8dd60eed01194299e67c0",
+    "protocolValidator": "becdda838fcd4f26cb963dd93770c420f7525e4c12b82db34cfa91dc85dcd582",
+    "protocolManifest": "f21ae934321f2935c29bc6589e06adae27bc15fcee475959b7c5cf7922667fb1",
+    "protocolStateMachineRuntime": "658a725c6b19acd8209a0c4fe233641a09ff8e92d75dab0d51ccfab4af8249b2",
+    "referenceServer": "99b5c65413568c4751ff04890157ba06d1ca6a5d73f02a634fa8fbc53d748509",
+    "postgresGateway": "59bb13800fb6fdaf8e3b18845b8a717b6bb6414bfd67d977b74ad188435be87c",
+    "postgresMigration": "b9e17bec0d752b96efa7715b3fc52ab5b2ad9ee8585513ee5d5e327e6604dc96",
+    "postgresMigrationExecutor": "934158abbf706fa5eb82e99227a19a953d797f8cfafdb9b3012f40c2ed8c0ef2",
+    "diagnosticQueryRuntime": "b9334abb457a99d949a8b0ddca6e277d2286671a1de8816ee4063be422dbbdac"
+  },
+  "cliCommands": [
+    "doctor",
+    "trace command",
+    "inspect stream",
+    "leaks"
+  ],
+  "mcpTools": [
+    "realtime_doctor",
+    "realtime_trace_command",
+    "realtime_inspect_stream",
+    "realtime_leaks",
+    "realtime_query_evidence",
+    "realtime_query_evidence_closure"
+  ],
+  "doctorVerdicts": [
+    "proven",
+    "disproven",
+    "indeterminate"
+  ],
+  "completenessStatuses": [
+    "complete",
+    "partial"
+  ]
+}

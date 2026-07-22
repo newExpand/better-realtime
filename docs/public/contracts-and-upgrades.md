@@ -1,7 +1,13 @@
-# Contracts and coordinated upgrades
+# Contracts and upgrades
 
-Protocol version, npm package SemVer, contract manifest version/digest, and each payload JSON Schema identity are independent. Alpha accepts exact contract identity only: contract ID, manifest version, and digest must all match. Mixed-manifest rolling deployment and compatibility negotiation are not supported. Use a coordinated client/gateway deployment or a versioned hostname/path so old and new manifests do not share an endpoint.
+Protocol version, npm package SemVer, contract manifest identity, payload schema, PostgreSQL storage version, and diagnostic schema evolve independently.
 
-The language-neutral boundary is Draft 2020-12 JSON Schema and the canonical manifest digest. Portable contracts should use the documented JSON value/object/array/scalar, required properties, enum/const, bounds, and closed-object subset exercised by conformance fixtures. TypeScript builders may infer more precise application types, but TypeScript inference is a convenience layer and cannot create a wire guarantee absent from the portable schema.
+Within `better-realtime.v1`, alpha.1 and a later client/server may interoperate only when their exact contract identity and deployment capability profile agree. The compatibility matrix exercises alpha.1 client to candidate server, candidate client to alpha.1 server, and candidate to candidate. A contract digest mismatch returns `RT_CONTRACT_INCOMPATIBLE`, an unsupported WebSocket protocol is rejected at the subprotocol boundary, and an internally contradictory capability set returns `RT_CAPABILITY_VIOLATED`.
 
-One `createRealtimeClient` instance owns one physical connection/session; React components do not. Do not create the client during SSR/RSC render, and alpha does not provide cross-tab connection sharing. Calling `execute()` twice creates two command IDs, so duplicate clicks are not automatically coalesced. Reuse an explicit command attempt for retry/status reconciliation. `totalPendingCount` is runtime-global. Optimistic UI belongs to the application or a cache such as TanStack Query.
+Protocol v1 advertises server capabilities but does not let a client declare a required capability set in `session.open`. A valid weaker profile is therefore not a generic handshake mismatch. Deployments must route clients to an appropriate profile, clients must not infer unadvertised guarantees, and unsupported operations fail explicitly. Adding client-declared capability requirements would be a versioned protocol change rather than a silent v1 behavior change.
+
+Additive optional frame fields may remain v1-compatible when old peers can safely ignore them and the new peer does not infer an undeclared guarantee. A required field, changed ACK/completion meaning, weakened identity/cursor/recovery rule, or incompatible capability interpretation requires `better-realtime.v2`.
+
+Contract manifest mismatch still requires a coordinated deployment or versioned endpoint. A package-level compatibility result does not authorize mixed application contracts.
+
+PostgreSQL installations are upgraded only by deployment-time, versioned migrations that prove data preservation. Runtime processes validate the installed binding read-only and refuse an unknown storage version.

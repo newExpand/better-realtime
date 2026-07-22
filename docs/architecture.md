@@ -70,6 +70,10 @@ The TypeScript builder produces a language-neutral `ContractManifest` containing
 
 Protocol, payload schema, diagnostic schema, and package versions are independent compatibility boundaries.
 
+The published npm artifact is also a conformance input. Each candidate is checked against the exact alpha.1 registry tarball across install metadata, every shipped JavaScript/declaration file, React/client/server entry points, CLI/MCP, wire/capabilities, diagnostics, and storage. Classification records separate package, wire, PostgreSQL, and diagnostics axes, so an implementation-file change is not itself evidence of a wire-major change. Version-specific behavior is confined to an explicit protocol translator or compatibility adapter at an ingress/egress boundary. Core state machines, stores, and React ownership do not branch on package versions. When a translator would obscure stable identity, recovery, transaction, evidence, or security semantics, the system selects a new public or wire version instead.
+
+PostgreSQL migrations are deployment-owned version transitions. Runtime startup performs only binding/version validation. A storage change adds a new migration step and data-preservation test from every supported predecessor; it never edits the alpha.1 installation in place through runtime DDL.
+
 ### Client runtime
 
 Responsibilities:

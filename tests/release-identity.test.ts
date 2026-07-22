@@ -1,6 +1,7 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { assertPackageFileManifest } from "../scripts/pack-runtime.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -9,7 +10,7 @@ describe("Better Realtime public release identity", () => {
     const manifest = JSON.parse(await readFile(resolve(root, "packages/runtime/package.json"), "utf8")) as Record<string, unknown>;
     expect(manifest).toMatchObject({
       name: "better-realtime",
-      version: "0.1.0-alpha.1",
+      version: "0.1.0-alpha.2",
       license: "MIT",
       bin: {
         "better-realtime": "./dist/cli-bin.js",
@@ -38,6 +39,13 @@ describe("Better Realtime public release identity", () => {
     });
     expect(manifest.peerDependenciesMeta).not.toHaveProperty("pg");
     expect(manifest.peerDependenciesMeta).not.toHaveProperty("ws");
+  });
+
+  it("fails closed on missing or unexpected package files", async () => {
+    const manifest = JSON.parse(await readFile(resolve(root, "release/package-files.json"), "utf8")) as { schemaVersion: "1.0"; package: string; files: string[] };
+    expect(() => assertPackageFileManifest(manifest, manifest.files, "better-realtime")).not.toThrow();
+    expect(() => assertPackageFileManifest(manifest, manifest.files.slice(1), "better-realtime")).toThrow("RT_PACKAGE_FILE_MANIFEST_DRIFT:missing=");
+    expect(() => assertPackageFileManifest(manifest, [...manifest.files, "dist/unreviewed.js"], "better-realtime")).toThrow("unexpected=dist/unreviewed.js");
   });
 
   it("contains the approved MIT holder and public subprotocol", async () => {
@@ -75,6 +83,7 @@ describe("Better Realtime public release identity", () => {
     for (const document of [template, readme, quickstart]) {
       expect(document).toContain("npm install better-realtime@alpha react pg ws");
       expect(document).not.toContain("npm install better-realtime react pg ws");
+      expect(document).toContain("`0.1.0-alpha.2`");
     }
     expect(template).toContain("this is stream recovery, not resume-token session restoration");
     expect(template).toContain("pnpm e2e:consumer");
@@ -108,37 +117,63 @@ describe("Better Realtime public release identity", () => {
     for (const invalid of ["1.0.0-.", "1.0.0-01", "01.0.0", "1.0"]) expect(invalid).not.toMatch(versionPattern);
   });
 
-  it("pins release actions and promotes alpha only after exact registry verification", async () => {
+  it("uses OIDC-only publishing with resumable bounded post-publish verification", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
+    const verifyWorkflow = await readFile(resolve(root, ".github/workflows/release-verify.yml"), "utf8");
     const publicRunbook = await readFile(resolve(root, "docs/public/release.md"), "utf8");
-    expect(workflow).not.toMatch(/uses:\s+actions\/(?:checkout|setup-node)@v/u);
-    expect(workflow).not.toContain("npm@latest");
-    expect(workflow).not.toContain("--clobber");
-    expect(workflow).toContain("workflow_dispatch:");
-    expect(workflow).toContain("persist-credentials: false");
-    expect(workflow).not.toContain("types: [published]");
-    expect(workflow).toContain("BETTER_REALTIME_RELEASE_EXPORT: \"1\"");
-    expect(workflow.indexOf("gh release create v0.1.0-alpha.1")).toBeLessThan(workflow.indexOf("gh release edit v0.1.0-alpha.1 --draft=false"));
-    expect(workflow.indexOf("gh release edit v0.1.0-alpha.1 --draft=false")).toBeLessThan(workflow.indexOf("--tag alpha-candidate"));
-    expect(workflow).toContain("npm@11.18.0");
-    expect(workflow.indexOf("mkdir -p output")).toBeLessThan(workflow.indexOf("> output/package-report.json"));
-    expect(workflow.indexOf("--tag alpha-candidate")).toBeLessThan(workflow.indexOf("cmp better-realtime-0.1.0-alpha.1.tgz"));
-    expect(workflow.indexOf("cmp better-realtime-0.1.0-alpha.1.tgz")).toBeLessThan(workflow.indexOf("npm dist-tag add better-realtime@0.1.0-alpha.1 alpha"));
-    expect(workflow).toContain("NPM_ALPHA1_BOOTSTRAP_GAT");
-    expect(workflow).not.toContain("NPM_BOOTSTRAP_TOKEN");
-    const authority = "Bootstrap GAT authority: packages-all read-write, organizations no-access, bypass-2FA enabled; not package- or version-scoped.";
-    for (const document of [workflow, publicRunbook]) expect(document).toContain(authority);
-    for (const document of [workflow, publicRunbook]) {
-      expect(document).not.toContain("minimal-scope granular access token");
-      expect(document).not.toContain("limited to the first publish");
-      expect(document).not.toContain("Exact-alpha.1, short-lived");
+    for (const document of [workflow, verifyWorkflow]) {
+      expect(document).not.toMatch(/uses:\s+actions\/(?:checkout|setup-node)@v/u);
+      expect(document).not.toContain("npm@latest");
+      expect(document).not.toContain("--clobber");
+      expect(document).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN|NPM_ALPHA1_BOOTSTRAP_GAT/u);
+      expect(document).toContain("persist-credentials: false");
     }
-    expect(publicRunbook).toContain("shortest available expiration");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(verifyWorkflow).toContain("workflow_dispatch:");
+    expect(verifyWorkflow).toContain("workflow_call:");
+    expect(workflow).toContain("id-token: write");
+    expect(verifyWorkflow).toContain("id-token: none");
+    expect(workflow).toContain("BETTER_REALTIME_RELEASE_EXPORT: \"1\"");
+    expect(workflow).toContain("npm@11.18.0");
+    expect(workflow).toContain("npm view \"better-realtime@$version\"");
+    expect(workflow).toContain("git ls-remote --exit-code --tags origin \"refs/tags/$tag\"");
+    expect(workflow).toContain("gh release view \"$tag\"");
+    expect(workflow).toContain("gh api \"repos/${GITHUB_REPOSITORY}/releases/tags/$tag\"");
+    expect(workflow).toContain("npm publish \"$ARTIFACT\" --tag alpha --access public --provenance");
+    expect(workflow).toContain("test \"$(jq -r .immutable <<<\"$release_json\")\" = true");
+    expect(workflow).toContain("test \"$asset_names\" = \"$expected_names\"");
+    expect(workflow).toContain("immutable-release-assets/$ARTIFACT");
+    expect(workflow).toContain("uses: ./.github/workflows/release-verify.yml");
+    expect(verifyWorkflow).toContain("for attempt in $(seq 1 20)");
+    expect(verifyWorkflow).toContain("sleep 15");
+    expect(verifyWorkflow).toContain("cmp \"$asset\" \"$registry_artifact\"");
+    expect(verifyWorkflow).toContain("pnpm package:clean-room");
+    expect(verifyWorkflow).toContain("npm audit signatures --json --include-attestations");
+    expect(verifyWorkflow).toContain("scripts/verify-npm-provenance.ts");
+    for (const input of ["source_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
+    const changelog = await readFile(resolve(root, "CHANGELOG.md"), "utf8");
+    expect(changelog.indexOf("## 0.1.0-alpha.2")).toBeLessThan(changelog.indexOf("## 0.1.0-alpha.1"));
+    expect(changelog).toContain("`fast-uri 3.1.4`");
+    expect(changelog).toContain("No public API, `better-realtime.v1`, diagnostics, or PostgreSQL storage v1 contract is deprecated or intentionally broken");
+    expect(publicRunbook).toContain("OIDC Trusted Publishing only");
     expect(publicRunbook).toContain("required manual reviewers");
     expect(publicRunbook).toContain("disallow token-based publishing");
+    expect(publicRunbook).toContain("verification-only workflow");
     expect(publicRunbook).toContain('BETTER_REALTIME_RELEASE_EXPORT=1 pnpm package:export-public');
     expect(publicRunbook).toContain('sourceMode: "clean_git_index"');
-    expect(publicRunbook.indexOf("public CI `verify` and `postgres` to succeed")).toBeLessThan(publicRunbook.indexOf("Push public tag `v0.1.0-alpha.1`"));
+  });
+
+  it("runs the high-severity dependency audit before creating or uploading a release artifact", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
+    const buildStart = workflow.indexOf("\n  build:\n");
+    const stageStart = workflow.indexOf("\n  stage-release:\n");
+    const buildJob = workflow.slice(buildStart, stageStart);
+    const audit = buildJob.indexOf("pnpm audit --audit-level=high");
+    const pack = buildJob.indexOf("pnpm --silent package:pack");
+    const upload = buildJob.indexOf("actions/upload-artifact@");
+    expect(audit).toBeGreaterThan(-1);
+    expect(audit).toBeLessThan(pack);
+    expect(audit).toBeLessThan(upload);
   });
 
   it("boots public CI without requiring pnpm before corepack", async () => {
@@ -161,5 +196,16 @@ describe("Better Realtime public release identity", () => {
     expect(source).toContain("function withProductIdentity(");
     expect(source).not.toContain("export function withProductIdentity(");
     expect(source).toMatch(/return \{ \.\.\.result, product: BETTER_REALTIME_PRODUCT, productVersion: BETTER_REALTIME_VERSION, component: BETTER_REALTIME_COMPONENT_ID \}/u);
+  });
+
+  it("keeps the shipped MCP adapter on stdio and outside the vulnerable Hono static path", async () => {
+    const source = await readFile(resolve(root, "packages/runtime/src/mcp.ts"), "utf8");
+    const runtimeSourceRoot = resolve(root, "packages/runtime/src");
+    const shippedSources = (await readdir(runtimeSourceRoot, { recursive: true }))
+      .filter((path) => path.endsWith(".ts"))
+      .map((path) => readFile(resolve(runtimeSourceRoot, path), "utf8"));
+    expect(source).toContain('from "@modelcontextprotocol/sdk/server/index.js"');
+    expect(source).toContain('from "@modelcontextprotocol/sdk/server/stdio.js"');
+    expect((await Promise.all(shippedSources)).join("\n")).not.toMatch(/@hono\/node-server|streamableHttp|serveStatic|serve-static/u);
   });
 });

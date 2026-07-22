@@ -1,0 +1,155 @@
+name: Verify published npm artifact
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      expected_sha256:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      publish_run_id:
+        required: true
+        type: string
+      publish_run_attempt:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact already-published package version
+        required: true
+        type: string
+      tag:
+        description: Exact immutable public Git tag
+        required: true
+        type: string
+      expected_sha256:
+        description: Expected lowercase SHA-256 from the reviewed artifact
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character public source commit published by the original release run
+        required: true
+        type: string
+      publish_run_id:
+        description: Original release workflow run ID that performed package publication
+        required: true
+        type: string
+      publish_run_attempt:
+        description: Original release workflow run attempt that performed package publication
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: none
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: corepack enable
+      - run: npm install --global npm@11.18.0
+      - run: pnpm install --frozen-lockfile
+      - name: Validate verification-only identity and immutable assets
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          tag="$INPUT_TAG"
+          expected_sha256="$EXPECTED_SHA256"
+          source_sha="$INPUT_SOURCE_SHA"
+          [[ "$version" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          test "$tag" = "v$version"
+          [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          test "$(node -p "require('./packages/runtime/package.json').version")" = "$version"
+          test "$(git rev-parse HEAD)" = "$source_sha"
+          test "$(git rev-list -n 1 "$tag")" = "$source_sha"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag")"
+          test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
+          test "$(jq -r .draft <<<"$release_json")" = false
+          test "$(jq -r .prerelease <<<"$release_json")" = true
+          test "$(jq -r .immutable <<<"$release_json")" = true
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag")"
+          test "$(jq -r .object.type <<<"$tag_ref")" = tag
+          tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha" --jq .object.sha)" = "$(git rev-parse HEAD)"
+          asset="better-realtime-$version.tgz"
+          mkdir -p post-publish/release post-publish/registry post-publish/signatures
+          asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
+          expected_names="$(printf '%s\n%s\n' "$asset" "$asset.sha256" | sort)"
+          test "$asset_names" = "$expected_names"
+          gh release download "$tag" --pattern "$asset" --pattern "$asset.sha256" --dir post-publish/release
+          test "$(find post-publish/release -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          test "$(sha256sum "post-publish/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(cut -d' ' -f1 "post-publish/release/$asset.sha256")" = "$expected_sha256"
+      - name: Wait for bounded npm registry convergence
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          registry_artifact="post-publish/registry/better-realtime-$version.tgz"
+          for attempt in $(seq 1 20); do
+            if npm pack "better-realtime@$version" --pack-destination post-publish/registry >/dev/null 2>&1; then
+              test -f "$registry_artifact"
+              exit 0
+            fi
+            if [[ "$attempt" -eq 20 ]]; then
+              echo "npm registry did not converge within 300 seconds" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+      - name: Compare registry bytes and run clean-room verification
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          asset="post-publish/release/better-realtime-$version.tgz"
+          registry_artifact="post-publish/registry/better-realtime-$version.tgz"
+          cmp "$asset" "$registry_artifact"
+          BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room
+      - name: Verify registry signatures, provenance, and dist-tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id }}
+          PUBLISH_RUN_ATTEMPT: ${{ inputs.publish_run_attempt }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          audit_output="post-publish/signatures/audit-signatures.json"
+          (cd post-publish/signatures && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$version" && npm audit signatures --json --include-attestations > "$GITHUB_WORKSPACE/$audit_output")
+          pnpm tsx scripts/verify-npm-provenance.ts \
+            --audit-signatures "$audit_output" \
+            --tarball "post-publish/registry/better-realtime-$version.tgz" \
+            --version "$version" \
+            --source-sha "$INPUT_SOURCE_SHA" \
+            --publish-run-id "$PUBLISH_RUN_ID" \
+            --publish-run-attempt "$PUBLISH_RUN_ATTEMPT"
+          test "$(npm view better-realtime dist-tags.alpha)" = "$version"

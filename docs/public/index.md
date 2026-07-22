@@ -11,6 +11,7 @@
 - [Diagnostics and local MCP](diagnostics.md)
 - [Contracts and coordinated upgrades](contracts-and-upgrades.md)
 - [Alpha stability](stability.md)
+- [Dogfooding and mixed-version matrix](dogfooding.md)
 - [Troubleshooting](troubleshooting.md)
 - [Release runbook](release.md)
 

@@ -37,6 +37,7 @@ for attempt in {1..30}; do
   if docker exec "$container_name" pg_isready -U "$database_user" -d "$database_name" >/dev/null 2>&1; then
     postgres_scheme='postgresql://'
     POSTGRES_URL="${postgres_scheme}${database_user}:${database_password}@127.0.0.1:${mapped_port}/${database_name}" corepack pnpm test:postgres
+    POSTGRES_URL="${postgres_scheme}${database_user}:${database_password}@127.0.0.1:${mapped_port}/${database_name}" corepack pnpm compatibility:postgres
     exit 0
   fi
   sleep 1

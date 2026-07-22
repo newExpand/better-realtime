@@ -21,6 +21,22 @@ export interface PackedRuntimeArtifact {
   files: number;
 }
 
+interface PackageFileManifest {
+  schemaVersion: "1.0";
+  package: string;
+  files: string[];
+}
+
+export function assertPackageFileManifest(expected: PackageFileManifest, actualPaths: string[], packageName: string): void {
+  if (expected.schemaVersion !== "1.0" || expected.package !== packageName || expected.files.length === 0) throw new Error("RT_PACKAGE_FILE_MANIFEST_INVALID");
+  if (new Set(expected.files).size !== expected.files.length || expected.files.some((path) => path.startsWith("/") || path.includes("..") || path.includes("\\"))) throw new Error("RT_PACKAGE_FILE_MANIFEST_INVALID");
+  const expectedPaths = [...expected.files].sort();
+  const actual = [...actualPaths].sort();
+  const missing = expectedPaths.filter((path) => !actual.includes(path));
+  const unexpected = actual.filter((path) => !expectedPaths.includes(path));
+  if (missing.length || unexpected.length) throw new Error(`RT_PACKAGE_FILE_MANIFEST_DRIFT:missing=${missing.join(",")}:unexpected=${unexpected.join(",")}`);
+}
+
 export async function packRuntime(outputDirectory: string): Promise<PackedRuntimeArtifact> {
   const staging = await mkdtemp(join(tmpdir(), "better-realtime-pack-"));
   await mkdir(outputDirectory, { recursive: true });
@@ -52,6 +68,8 @@ export async function packRuntime(outputDirectory: string): Promise<PackedRuntim
     const artifact = result[0];
     if (!artifact) throw new Error("RT_PACKAGE_PACK_FAILED");
     if (artifact.filename !== expectedTarball) throw new Error(`RT_PACKAGE_ARTIFACT_IDENTITY_MISMATCH:${artifact.filename}:${expectedTarball}`);
+    const fileManifest = JSON.parse(await readFile(join(root, "release/package-files.json"), "utf8")) as PackageFileManifest;
+    assertPackageFileManifest(fileManifest, artifact.files.map(({ path }) => path), String(manifest.name));
     const forbidden = artifact.files.filter(({ path }) => path.includes("src/") || path.includes("docs/internal") || path.endsWith(".map") || path.includes("AGENTS.md"));
     if (forbidden.length) throw new Error(`RT_PACKAGE_PRIVATE_CONTENT:${forbidden.map(({ path }) => path).join(",")}`);
     return { schemaVersion: "1.0", package: String(manifest.name), version: String(manifest.version), tarball: join(outputDirectory, basename(artifact.filename)), size: artifact.size, unpackedSize: artifact.unpackedSize, files: artifact.files.length };

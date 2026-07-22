@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "storage": "better-realtime-postgres",
+  "fixtures": [
+    {
+      "storageVersion": 1,
+      "packagePath": "compatibility/fixtures/better-realtime-0.1.0-alpha.1.tgz",
+      "packageSha256": "037aeab6cb79d891135026489f6e42595e231bf623b0032b4110472adf444d33",
+      "modulePath": "compatibility/postgres/v1-fixture.ts",
+      "moduleSha256": "1196674daa39cf5fe58411aec65693a60fbe5090e3ea733c4f4f6282b29ad176"
+    }
+  ],
+  "migrations": [
+    {
+      "version": 1,
+      "name": "initial-alpha1-storage",
+      "fromVersions": [],
+      "publishedBaseline": "better-realtime@0.1.0-alpha.1",
+      "deploymentTimeOnly": true,
+      "runtimeDdl": false,
+      "destructiveInPlace": false,
+      "sourcePath": "packages/store-postgres/src/migrations.ts",
+      "sourceSha256": "b9e17bec0d752b96efa7715b3fc52ab5b2ad9ee8585513ee5d5e327e6604dc96"
+    }
+  ]
+}

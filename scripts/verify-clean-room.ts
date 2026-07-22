@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -15,6 +16,7 @@ const packedArtifact = suppliedTarball
   ? await inspectPackedRuntime(resolve(suppliedTarball), artifactDirectory)
   : await packRuntime(artifactDirectory);
 const tarball = packedArtifact.tarball;
+const expectedManifest = { name: packedArtifact.package, version: packedArtifact.version };
 const fixture = join(root, "fixtures/external-consumer");
 const directory = await mkdtemp(join(tmpdir(), "realtime-clean-room-"));
 const minimalDirectory = await mkdtemp(join(tmpdir(), "realtime-root-only-"));
@@ -52,16 +54,16 @@ try {
   const installedReadmeTargets = [...installedReadme.matchAll(/\]\(([^)]+)\)/gu)].map((match) => match[1]!);
   const nonPublicReadmeTargets = installedReadmeTargets.filter((target) => !/^(?:https:\/\/|#|mailto:)/u.test(target));
   if (nonPublicReadmeTargets.length) throw new Error(`RT_CLEAN_ROOM_PACKAGE_README_LINK:${nonPublicReadmeTargets.join(",")}`);
-  const immutableTag = `v${sourceManifest.version}`;
+  const pinnedTag = `v${expectedManifest.version}`;
   for (const target of [
-    `https://github.com/newExpand/better-realtime/blob/${immutableTag}/docs/public/quickstart.md`,
-    `https://github.com/newExpand/better-realtime/tree/${immutableTag}/fixtures/external-consumer`,
-    `https://raw.githubusercontent.com/newExpand/better-realtime/${immutableTag}/docs/public/assets/recovery-demo.gif`
+    `https://github.com/newExpand/better-realtime/blob/${pinnedTag}/docs/public/quickstart.md`,
+    `https://github.com/newExpand/better-realtime/tree/${pinnedTag}/fixtures/external-consumer`,
+    `https://raw.githubusercontent.com/newExpand/better-realtime/${pinnedTag}/docs/public/assets/recovery-demo.gif`
   ]) {
-    if (!installedReadmeTargets.includes(target)) throw new Error(`RT_CLEAN_ROOM_PACKAGE_README_IMMUTABLE_LINK_MISSING:${target}`);
+    if (!installedReadmeTargets.includes(target)) throw new Error(`RT_CLEAN_ROOM_PACKAGE_README_PINNED_LINK_MISSING:${target}`);
   }
   const installedManifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8")) as { name: string; version: string; private?: boolean; dependencies?: Record<string, string> };
-  if (installedManifest.name !== sourceManifest.name || installedManifest.version !== sourceManifest.version) throw new Error(`RT_CLEAN_ROOM_PACKAGE_IDENTITY:${installedManifest.name}@${installedManifest.version}`);
+  if (installedManifest.name !== expectedManifest.name || installedManifest.version !== expectedManifest.version) throw new Error(`RT_CLEAN_ROOM_PACKAGE_IDENTITY:${installedManifest.name}@${installedManifest.version}`);
   if (installedManifest.private === true) throw new Error("RT_CLEAN_ROOM_PACKAGE_NOT_PUBLISHABLE");
   if (Object.keys(installedManifest.dependencies ?? {}).some((name) => name.startsWith("@realtime/"))) throw new Error("RT_CLEAN_ROOM_WORKSPACE_DEPENDENCY");
   const sourceFiles = (await walk(join(directory, "src"))).filter((path) => /\.[cm]?[jt]sx?$/u.test(path));
@@ -89,7 +91,7 @@ try {
   try { await exec("npm", ["exec", "--", "better-realtime"], { cwd: directory, env: { ...process.env, REALTIME_EVIDENCE_FILE: "", REALTIME_TENANT_ID: "" } }); }
   catch (error) { const failure = error as { code?: number; stdout?: string; stderr?: string }; cliGuard = failure.code === 1 && failure.stdout === "" && Boolean(failure.stderr && JSON.parse(failure.stderr).code === "RT_DIAGNOSTIC_SOURCE_REQUIRED"); }
   if (!cliGuard) throw new Error("RT_CLEAN_ROOM_CLI_BIN_INACTIVE");
-  process.stdout.write(`${JSON.stringify({ schemaVersion: "1.0", cleanRoom: directory, packageIdentity: `${installedManifest.name}@${installedManifest.version}`, install: "tarball", tarball: { bytes: packedArtifact.size, unpackedBytes: packedArtifact.unpackedSize, files: packedArtifact.files }, typecheck: "passed", build: "passed", rootImportWithoutExplicitPeerArguments: "passed", minimalMcpBin: "passed", serverTypesWithRuntimePeers: "passed", cliBin: "passed", documentedBinInvocation: "npm_exec", publishable: true, packageReadmeLinks: "immutable_public_tag", browserRootNodeDependencyScan: "passed", browserNodeOnlyBoundaries: ["server", "diagnostics", "mcp"], runtime: JSON.parse(run.stdout), installedFiles: files.length, sourceFiles: sourceFiles.length, sourceLines: lines, absolutePathPolicy: "passed", knownSecretPatternPolicy: "passed" })}\n`);
+  process.stdout.write(`${JSON.stringify({ schemaVersion: "1.0", cleanRoom: directory, packageIdentity: `${installedManifest.name}@${installedManifest.version}`, install: "tarball", tarball: { bytes: packedArtifact.size, unpackedBytes: packedArtifact.unpackedSize, files: packedArtifact.files }, typecheck: "passed", build: "passed", rootImportWithoutExplicitPeerArguments: "passed", minimalMcpBin: "passed", serverTypesWithRuntimePeers: "passed", cliBin: "passed", documentedBinInvocation: "npm_exec", publishable: true, packageReadmeLinks: "checksum_pinned_public_tag", browserRootNodeDependencyScan: "passed", browserNodeOnlyBoundaries: ["server", "diagnostics", "mcp"], runtime: JSON.parse(run.stdout), installedFiles: files.length, sourceFiles: sourceFiles.length, sourceLines: lines, absolutePathPolicy: "passed", knownSecretPatternPolicy: "passed" })}\n`);
 } finally {
   await rm(directory, { recursive: true, force: true });
   await rm(minimalDirectory, { recursive: true, force: true });
@@ -110,18 +112,25 @@ async function walk(directory: string): Promise<string[]> {
 async function inspectPackedRuntime(tarball: string, inspectionDirectory: string): Promise<Awaited<ReturnType<typeof packRuntime>>> {
   const archive = await stat(tarball).catch(() => undefined);
   if (!archive?.isFile()) throw new Error(`RT_CLEAN_ROOM_TARBALL_MISSING:${tarball}`);
-  const expectedName = `${sourceManifest.name}-${sourceManifest.version}.tgz`;
-  if (basename(tarball) !== expectedName) throw new Error(`RT_CLEAN_ROOM_TARBALL_IDENTITY:${basename(tarball)}:${expectedName}`);
   const unpacked = join(inspectionDirectory, "unpacked");
   await mkdir(unpacked, { recursive: true });
   await exec("tar", ["-xzf", tarball, "-C", unpacked]);
   const packageDirectory = join(unpacked, "package");
+  const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (manifest.name !== "better-realtime" || typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(manifest.version)) throw new Error("RT_CLEAN_ROOM_TARBALL_MANIFEST_INVALID");
+  if (manifest.version !== sourceManifest.version) {
+    const exactFixture = join(root, "compatibility/fixtures/better-realtime-0.1.0-alpha.1.tgz");
+    const bytes = await readFile(tarball);
+    if (resolve(tarball) !== exactFixture || bytes.length !== 127_197 || createHash("sha256").update(bytes).digest("hex") !== "037aeab6cb79d891135026489f6e42595e231bf623b0032b4110472adf444d33") throw new Error(`RT_CLEAN_ROOM_TARBALL_SOURCE_IDENTITY:${manifest.version}:${sourceManifest.version}`);
+  }
+  const expectedName = `${manifest.name}-${manifest.version}.tgz`;
+  if (basename(tarball) !== expectedName) throw new Error(`RT_CLEAN_ROOM_TARBALL_IDENTITY:${basename(tarball)}:${expectedName}`);
   const files = await walk(packageDirectory);
   const unpackedSize = (await Promise.all(files.map((path) => stat(path)))).reduce((total, item) => total + item.size, 0);
   return {
     schemaVersion: "1.0",
-    package: sourceManifest.name,
-    version: sourceManifest.version,
+    package: manifest.name,
+    version: manifest.version,
     tarball,
     size: archive.size,
     unpackedSize,

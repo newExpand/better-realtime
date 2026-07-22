@@ -32,7 +32,12 @@
     "package:pack": "tsx scripts/pack-runtime.ts",
     "package:clean-room": "tsx scripts/verify-clean-room.ts",
     "package:export-public": "tsx scripts/export-public.ts",
-    "e2e:consumer": "tsx scripts/verify-consumer-journey.ts"
+    "e2e:consumer": "tsx scripts/verify-consumer-journey.ts",
+    "compatibility:acquire": "tsx scripts/acquire-compatibility-fixture.ts",
+    "compatibility:check": "tsx scripts/check-compatibility.ts",
+    "compatibility:matrix": "tsx scripts/verify-mixed-version.ts",
+    "compatibility:postgres": "tsx scripts/verify-postgres-compatibility.ts",
+    "dogfood:browser": "tsx scripts/verify-consumer-journey.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

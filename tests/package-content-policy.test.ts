@@ -23,7 +23,7 @@ it("accepts ordinary package code and catches every Node builtin spelling", () =
   ]);
 });
 
-it("rewrites repository-relative package README links to the immutable public tag", () => {
+it("rewrites repository-relative package README links to the checksum-pinned public tag", () => {
   const transformed = packageReadme([
     "[Quickstart](docs/public/quickstart.md)",
     "![Recovery](docs/public/assets/recovery-demo.gif)",
