@@ -47,8 +47,10 @@ export async function checkReleaseSecurity(
   const publishJob = workflowJob(publish, "publish");
   if (!buildJob.includes("id-token: none") || buildJob.includes("environment: npm-alpha")) throw new Error(`RT_RELEASE_BUILD_OIDC_EXPOSED:${relative(root, publishPath)}`);
   assertReleaseBuildAuditOrder(publish);
+  assertReleaseArtifactApproval(publish);
   if (!publishJob.includes("id-token: write") || !publishJob.includes("environment: npm-alpha") || publishJob.includes("actions/checkout@") || publishJob.includes("pnpm ") || publishJob.includes("corepack")) throw new Error(`RT_RELEASE_PUBLISH_BOUNDARY_DRIFT:${relative(root, publishPath)}`);
-  for (const requiredText of ["id-token: none", "workflow_call:", "workflow_dispatch:", "for attempt in $(seq 1 20)", "sleep 15", "cmp \"$asset\" \"$registry_artifact\"", "npm audit signatures", "jq -r .immutable", "git/ref/tags/$tag", "git/tags/$tag_object_sha"]) if (!verify.includes(requiredText)) throw new Error(`RT_RELEASE_VERIFICATION_CONTRACT_DRIFT:${relative(root, verifyPath)}`);
+  for (const requiredText of ["id-token: none", "workflow_call:", "workflow_dispatch:", "expected_size:", "EXPECTED_SIZE: ${{ inputs.expected_size }}", "for attempt in $(seq 1 20)", "sleep 15", "cmp \"$asset\" \"$registry_artifact\"", "npm audit signatures", "jq -r .immutable", "git/ref/tags/$tag", "git/tags/$tag_object_sha", "wc -c < \"$registry_artifact\""]) if (!verify.includes(requiredText)) throw new Error(`RT_RELEASE_VERIFICATION_CONTRACT_DRIFT:${relative(root, verifyPath)}`);
+  assertReleaseVerificationArtifactApproval(verify);
   assertReleaseProvenanceVerification(verify);
   if (/\bnpm publish\b/u.test(verify)) throw new Error(`RT_RELEASE_VERIFICATION_CAN_PUBLISH:${relative(root, verifyPath)}`);
   for (const requiredText of ["OIDC Trusted Publishing only", "verification-only workflow", "required manual reviewers", "disallow tokens", "remains `immutable:false`", "was `enabled:false`", "is now `enabled:true`", "only to future releases"]) if (!runbook.includes(requiredText)) throw new Error(`RT_RELEASE_RUNBOOK_CONTRACT_DRIFT:${relative(root, runbookPath)}`);
@@ -100,14 +102,137 @@ export function assertReleaseBuildAuditOrder(workflow: string): void {
   if (auditSteps.length !== 1 || auditStepTail.trim() || buildJob.includes("continue-on-error:") || installIndex < 0 || auditIndex < installIndex || artifactIndexes.some((index) => index < 0) || artifactIndexes.some((index) => auditIndex > index)) throw new Error("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
 }
 
+export function assertReleaseArtifactApproval(workflow: string): void {
+  const buildJob = workflowJob(workflow, "build");
+  const dispatchStart = workflow.indexOf("  workflow_dispatch:");
+  const dispatchEnd = workflow.indexOf("\npermissions:", dispatchStart);
+  const dispatch = dispatchStart < 0 || dispatchEnd < 0 ? "" : workflow.slice(dispatchStart, dispatchEnd);
+  const packIndex = buildJob.indexOf("name: Build the release artifact once");
+  const approvalIndex = buildJob.indexOf("name: Verify the approved release artifact identity");
+  const cleanRoomIndex = buildJob.indexOf("name: Verify the exact release artifact in a clean room");
+  const uploadIndex = buildJob.indexOf("name: Upload the reviewed release candidate");
+  const approvalEnd = approvalIndex < 0 ? -1 : buildJob.indexOf("\n      - ", approvalIndex);
+  const approvalStep = approvalIndex < 0 ? "" : buildJob.slice(approvalIndex, approvalEnd < 0 ? buildJob.length : approvalEnd);
+  const requiredApprovalMarkers = [
+    "id: approved",
+    "set -euo pipefail",
+    "INPUT_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}",
+    "INPUT_EXPECTED_SIZE: ${{ inputs.expected_size }}",
+    '[[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]',
+    '[[ "$expected_size" =~ ^[1-9][0-9]*$ ]]',
+    'test "$(sha256sum "$artifact" | cut -d\' \' -f1)" = "$expected_sha256"',
+    'test "$(wc -c < "$artifact" | tr -d \' \')" = "$expected_size"',
+    'test "$(cut -d\' \' -f1 "$artifact.sha256")" = "$expected_sha256"',
+    "report.size!==Number(process.argv[1])",
+    "report.files!==manifest.files.length",
+    'echo "sha256=$expected_sha256" >> "$GITHUB_OUTPUT"',
+    'echo "size=$expected_size" >> "$GITHUB_OUTPUT"',
+  ];
+  const stageStep = workflowStep(workflow, "Create exact annotated tag and asset-complete draft prerelease");
+  const immutableStep = workflowStep(workflow, "Require the published GitHub release to be immutable before npm publication");
+  const publishStep = workflowStep(workflow, "Publish the exact artifact through npm Trusted Publishing");
+  const downstreamJobs = [
+    [stageStep, 'test "$(sha256sum "$ARTIFACT" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', 'test "$(wc -c < "$ARTIFACT" | tr -d \' \')" = "$EXPECTED_SIZE"', 'test "$(cut -d\' \' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"'],
+    [immutableStep, 'test "$(sha256sum "immutable-release-assets/$ARTIFACT" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', 'test "$(wc -c < "immutable-release-assets/$ARTIFACT" | tr -d \' \')" = "$EXPECTED_SIZE"', 'test "$(cut -d\' \' -f1 "immutable-release-assets/$ARTIFACT.sha256")" = "$EXPECTED_SHA256"'],
+    [publishStep, 'test "$(sha256sum "$ARTIFACT" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', 'test "$(wc -c < "$ARTIFACT" | tr -d \' \')" = "$EXPECTED_SIZE"', 'test "$(cut -d\' \' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"'],
+  ] as const;
+  const stageSideEffectIndex = stageStep.indexOf('gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags"');
+  const stageCheckIndexes = downstreamJobs[0].slice(1).map((marker) => stageStep.indexOf(marker));
+  const publishSideEffectIndex = publishStep.indexOf('npm publish "$ARTIFACT"');
+  const publishCheckIndexes = downstreamJobs[2].slice(1).map((marker) => publishStep.indexOf(marker));
+  const downstreamBypass = downstreamJobs.some(([step]) => !step.includes("set -euo pipefail") || /set\s+\+e|(?:\|\||&&)\s*true|continue-on-error:\s*true|if:\s*false/u.test(step));
+  const verifyJob = workflowJob(workflow, "verify");
+  const requiredInput = (name: string): boolean => {
+    const start = dispatch.indexOf(`      ${name}:`);
+    if (start < 0) return false;
+    const remainder = dispatch.slice(start + 7);
+    const next = remainder.search(/^      [A-Za-z0-9_]+:/mu);
+    const block = next < 0 ? remainder : remainder.slice(0, next);
+    return block.includes("required: true") && block.includes("type: string");
+  };
+  if (
+    !requiredInput("expected_sha256")
+    || !requiredInput("expected_size")
+    || count(workflow, "pnpm --silent package:pack") !== 1
+    || packIndex < 0
+    || approvalIndex <= packIndex
+    || cleanRoomIndex <= approvalIndex
+    || uploadIndex <= approvalIndex
+    || count(buildJob, "name: Verify the approved release artifact identity") !== 1
+    || requiredApprovalMarkers.some((marker) => !approvalStep.includes(marker))
+    || !buildJob.includes("sha256: ${{ steps.approved.outputs.sha256 }}")
+    || !buildJob.includes("size: ${{ steps.approved.outputs.size }}")
+    || buildJob.includes("steps.artifact.outputs.sha256")
+    || downstreamJobs.some(([job, ...checks]) => !job.includes("EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}") || !job.includes("EXPECTED_SIZE: ${{ needs.build.outputs.size }}") || checks.some((check) => !job.includes(check)))
+    || stageSideEffectIndex < 0
+    || stageCheckIndexes.some((index) => index < 0 || index >= stageSideEffectIndex)
+    || publishSideEffectIndex < 0
+    || publishCheckIndexes.some((index) => index < 0 || index >= publishSideEffectIndex)
+    || downstreamBypass
+    || !verifyJob.includes("expected_sha256: ${{ needs.build.outputs.sha256 }}")
+    || !verifyJob.includes("expected_size: ${{ needs.build.outputs.size }}")
+    || /set\s+\+e|(?:\|\||&&)\s*true/u.test(approvalStep)
+    || /continue-on-error:\s*true|if:\s*false/u.test(approvalStep)
+  ) throw new Error("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+}
+
+export function assertReleaseVerificationArtifactApproval(workflow: string): void {
+  const validationStep = workflowStep(workflow, "Validate verification-only identity and immutable assets");
+  const compareStep = workflowStep(workflow, "Compare registry bytes and run clean-room verification");
+  const validationMarkers = [
+    "EXPECTED_SHA256: ${{ inputs.expected_sha256 }}",
+    "EXPECTED_SIZE: ${{ inputs.expected_size }}",
+    '[[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]',
+    '[[ "$expected_size" =~ ^[1-9][0-9]*$ ]]',
+    'test "$(sha256sum "post-publish/release/$asset" | cut -d\' \' -f1)" = "$expected_sha256"',
+    'test "$(wc -c < "post-publish/release/$asset" | tr -d \' \')" = "$expected_size"',
+  ];
+  const compareMarkers = [
+    "EXPECTED_SHA256: ${{ inputs.expected_sha256 }}",
+    "EXPECTED_SIZE: ${{ inputs.expected_size }}",
+    'test "$(sha256sum "$asset" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"',
+    'test "$(wc -c < "$asset" | tr -d \' \')" = "$EXPECTED_SIZE"',
+    'test "$(sha256sum "$registry_artifact" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"',
+    'test "$(wc -c < "$registry_artifact" | tr -d \' \')" = "$EXPECTED_SIZE"',
+    'cmp "$asset" "$registry_artifact"',
+    'BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room',
+  ];
+  const compareIndex = compareStep.indexOf('cmp "$asset" "$registry_artifact"');
+  const registrySizeIndex = compareStep.indexOf('test "$(wc -c < "$registry_artifact" | tr -d \' \')" = "$EXPECTED_SIZE"');
+  const cleanRoomIndex = compareStep.indexOf('BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room');
+  const requiredInputBlocks = (name: string): string[] => workflow.match(new RegExp(`^      ${name}:\\n(?:^ {8}.*\\n?)+`, "gmu")) ?? [];
+  const approvedInputs = ["expected_sha256", "expected_size"].every((name) => {
+    const blocks = requiredInputBlocks(name);
+    return blocks.length === 2 && blocks.every((block) => block.includes("required: true") && block.includes("type: string"));
+  });
+  if (
+    !approvedInputs
+    || validationMarkers.some((marker) => !validationStep.includes(marker))
+    || compareMarkers.some((marker) => !compareStep.includes(marker))
+    || compareIndex <= registrySizeIndex
+    || cleanRoomIndex <= compareIndex
+    || !validationStep.includes("set -euo pipefail")
+    || !compareStep.includes("set -euo pipefail")
+    || /set\s+\+e|(?:\|\||&&)\s*true/u.test(validationStep + compareStep)
+    || /continue-on-error:\s*true|if:\s*false/u.test(validationStep + compareStep)
+  ) throw new Error("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+}
+
 async function exists(path: string): Promise<boolean> {
   try { await access(path); return true; }
   catch { return false; }
 }
 
 function workflowJob(workflow: string, name: string): string {
-  const escaped = name.replaceAll(/[-/\\^$*+?.()|[\]{}]/gu, "\\$&");
+  const escaped = name.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const match = new RegExp(`(?:^|\\n)  ${escaped}:\\n([\\s\\S]*?)(?=\\n  [A-Za-z][A-Za-z0-9-]*:\\n|$)`, "u").exec(workflow);
   if (!match) throw new Error(`RT_RELEASE_WORKFLOW_JOB_MISSING:${name}`);
+  return match[1]!;
+}
+
+function workflowStep(workflow: string, name: string): string {
+  const escaped = name.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = new RegExp(`(?:^|\\n)      - name: ${escaped}\\n([\\s\\S]*?)(?=\\n      - |$)`, "u").exec(workflow);
+  if (!match) throw new Error(`RT_RELEASE_WORKFLOW_STEP_MISSING:${name}`);
   return match[1]!;
 }

@@ -12,6 +12,9 @@ on:
       expected_sha256:
         required: true
         type: string
+      expected_size:
+        required: true
+        type: string
       source_sha:
         required: true
         type: string
@@ -33,6 +36,10 @@ on:
         type: string
       expected_sha256:
         description: Expected lowercase SHA-256 from the reviewed artifact
+        required: true
+        type: string
+      expected_size:
+        description: Expected byte size from the reviewed artifact
         required: true
         type: string
       source_sha:
@@ -73,6 +80,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_TAG: ${{ inputs.tag }}
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.expected_size }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -80,10 +88,12 @@ jobs:
           version="$INPUT_VERSION"
           tag="$INPUT_TAG"
           expected_sha256="$EXPECTED_SHA256"
+          expected_size="$EXPECTED_SIZE"
           source_sha="$INPUT_SOURCE_SHA"
           [[ "$version" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
           test "$tag" = "v$version"
           [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
           test "$(node -p "require('./packages/runtime/package.json').version")" = "$version"
           test "$(git rev-parse HEAD)" = "$source_sha"
@@ -105,6 +115,7 @@ jobs:
           gh release download "$tag" --pattern "$asset" --pattern "$asset.sha256" --dir post-publish/release
           test "$(find post-publish/release -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
           test "$(sha256sum "post-publish/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(wc -c < "post-publish/release/$asset" | tr -d ' ')" = "$expected_size"
           test "$(cut -d' ' -f1 "post-publish/release/$asset.sha256")" = "$expected_sha256"
       - name: Wait for bounded npm registry convergence
         env:
@@ -127,11 +138,17 @@ jobs:
       - name: Compare registry bytes and run clean-room verification
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.expected_size }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
           asset="post-publish/release/better-realtime-$version.tgz"
           registry_artifact="post-publish/registry/better-realtime-$version.tgz"
+          test "$(sha256sum "$asset" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$asset" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(sha256sum "$registry_artifact" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$registry_artifact" | tr -d ' ')" = "$EXPECTED_SIZE"
           cmp "$asset" "$registry_artifact"
           BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room
       - name: Verify registry signatures, provenance, and dist-tag

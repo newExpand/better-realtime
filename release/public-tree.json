@@ -9,13 +9,13 @@
     },
     {
       "path": ".github/workflows/release-verify.yml",
-      "bytes": 6530,
-      "digest": "sha256:8995bff803528c072e033bd8b7e34234915f71f1a622d1d69adbba423b6f1b9d"
+      "bytes": 7382,
+      "digest": "sha256:f9e6956281021b9530261d2be8604288087a63a20f71f1a91529ab7b979a0bcd"
     },
     {
       "path": ".github/workflows/release.yml",
-      "bytes": 10555,
-      "digest": "sha256:ba76a1f4db18e72f7218bdecbf5bccdd37abcabf59703c2b29b749c063b099c1"
+      "bytes": 12532,
+      "digest": "sha256:3c4d1df486843fddd44bed2847ce0eafe7b5121d380a331b4fc1d237ef5b3ef8"
     },
     {
       "path": ".gitignore",
@@ -219,8 +219,8 @@
     },
     {
       "path": "docs/public/release.md",
-      "bytes": 6266,
-      "digest": "sha256:d50b3ae852ef54406affbfe364132d0e15a19b249c8eb72f44f5bb8ec7558673"
+      "bytes": 6792,
+      "digest": "sha256:e80cce6fa71aba283051afb811e7425eb11926ea279261b5b6a2526dda1466c7"
     },
     {
       "path": "docs/public/server.md",
@@ -879,8 +879,8 @@
     },
     {
       "path": "scripts/release-security-contract.ts",
-      "bytes": 10001,
-      "digest": "sha256:21c2c9b5789ae432f25423d2ba3b3e773ed7b6364514967b8a9e5275857ccbed"
+      "bytes": 18455,
+      "digest": "sha256:4060d10bd94caa5d3c6803e59e95719e70518d2a5631a55f3e67e4545ae9c817"
     },
     {
       "path": "scripts/run-two-gateway-dev.sh",
@@ -1014,13 +1014,13 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 15153,
-      "digest": "sha256:24bf48e9dcbda978a57f3ad65225fe940315a6130d267675de10bc65734319ec"
+      "bytes": 16940,
+      "digest": "sha256:78dd87d14aa59c1c14c022206b5e62b16831f08c216ddaa83fbc0c936ce4359d"
     },
     {
       "path": "tests/release-security-check.test.ts",
-      "bytes": 10500,
-      "digest": "sha256:f26da8cad67e3db23b4bacf68a9bca229fec9579619754c1f6cb9de7a490ef9b"
+      "bytes": 23670,
+      "digest": "sha256:cbcd39da6d877045ba1d349847786c07ea6fc894825578d143e8a131b597b7d1"
     },
     {
       "path": "tests/support-manifest.test.ts",

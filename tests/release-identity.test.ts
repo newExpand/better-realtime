@@ -176,6 +176,32 @@ describe("Better Realtime public release identity", () => {
     expect(audit).toBeLessThan(upload);
   });
 
+  it("requires the approved artifact digest and size before any release-side effect", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
+    const inputs = workflow.slice(workflow.indexOf("  workflow_dispatch:"), workflow.indexOf("\npermissions:"));
+    const buildStart = workflow.indexOf("\n  build:\n");
+    const stageStart = workflow.indexOf("\n  stage-release:\n");
+    const buildJob = workflow.slice(buildStart, stageStart);
+    for (const input of ["expected_sha256", "expected_size"]) {
+      expect(inputs).toContain(`${input}:`);
+      expect(inputs.slice(inputs.indexOf(`${input}:`), inputs.indexOf(`${input}:`) + 180)).toContain("required: true");
+    }
+    const pack = buildJob.indexOf("name: Build the release artifact once");
+    const approval = buildJob.indexOf("name: Verify the approved release artifact identity");
+    const cleanRoom = buildJob.indexOf("name: Verify the exact release artifact in a clean room");
+    const upload = buildJob.indexOf("name: Upload the reviewed release candidate");
+    expect(pack).toBeGreaterThan(-1);
+    expect(approval).toBeGreaterThan(pack);
+    expect(approval).toBeLessThan(cleanRoom);
+    expect(approval).toBeLessThan(upload);
+    expect(buildJob).toContain("INPUT_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}");
+    expect(buildJob).toContain("INPUT_EXPECTED_SIZE: ${{ inputs.expected_size }}");
+    expect(buildJob).toContain('test "$(sha256sum "$artifact" | cut -d\' \' -f1)" = "$expected_sha256"');
+    expect(buildJob).toContain('test "$(wc -c < "$artifact" | tr -d \' \')" = "$expected_size"');
+    expect(buildJob).toContain("sha256: ${{ steps.approved.outputs.sha256 }}");
+    expect(buildJob).toContain("size: ${{ steps.approved.outputs.size }}");
+  });
+
   it("boots public CI without requiring pnpm before corepack", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/ci.yml"), "utf8");
     const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> };

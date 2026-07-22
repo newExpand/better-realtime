@@ -10,8 +10,10 @@ import {
   nextReleaseContract,
   releaseAuthority,
   trustedPublisherEvidenceContract,
+  assertReleaseArtifactApproval,
   assertReleaseBuildAuditOrder,
   assertReleaseProvenanceVerification,
+  assertReleaseVerificationArtifactApproval,
 } from "../scripts/release-security-contract.ts";
 
 const closedReleaseContract = [
@@ -32,12 +34,25 @@ const closureCases = [
 const temporaryDirectories: string[] = [];
 afterEach(async () => Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
 
-const publishWorkflowContract = `permissions:
+const publishWorkflowContract = `on:
+  workflow_dispatch:
+    inputs:
+      expected_sha256:
+        required: true
+        type: string
+      expected_size:
+        required: true
+        type: string
+
+permissions:
   id-token: none
 jobs:
   build:
     permissions:
       id-token: none
+    outputs:
+      sha256: \${{ steps.approved.outputs.sha256 }}
+      size: \${{ steps.approved.outputs.size }}
     steps:
       - run: npm view "better-realtime@$version"
       - run: git ls-remote --exit-code --tags
@@ -48,40 +63,138 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level=high
       - run: pnpm package:export-public
-      - run: pnpm --silent package:pack
+      - name: Build the release artifact once
+        run: pnpm --silent package:pack
+      - name: Verify the approved release artifact identity
+        id: approved
+        env:
+          INPUT_EXPECTED_SHA256: \${{ inputs.expected_sha256 }}
+          INPUT_EXPECTED_SIZE: \${{ inputs.expected_size }}
+        run: |
+          set -euo pipefail
+          [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
+          test "$(sha256sum "$artifact" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(wc -c < "$artifact" | tr -d ' ')" = "$expected_size"
+          test "$(cut -d' ' -f1 "$artifact.sha256")" = "$expected_sha256"
+          node -e "if(report.size!==Number(process.argv[1]))throw new Error();if(report.files!==manifest.files.length)throw new Error()"
+          echo "sha256=$expected_sha256" >> "$GITHUB_OUTPUT"
+          echo "size=$expected_size" >> "$GITHUB_OUTPUT"
+      - name: Verify the exact release artifact in a clean room
+        run: pnpm package:clean-room
+      - name: Upload the reviewed release candidate
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+  stage-release:
+    steps:
+      - name: Create exact annotated tag and asset-complete draft prerelease
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          gh api --method POST "repos/\${GITHUB_REPOSITORY}/git/tags"
+        env:
+          EXPECTED_SHA256: \${{ needs.build.outputs.sha256 }}
+          EXPECTED_SIZE: \${{ needs.build.outputs.size }}
+  assert-immutable-release:
+    steps:
+      - name: Require the published GitHub release to be immutable before npm publication
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "immutable-release-assets/$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "immutable-release-assets/$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cut -d' ' -f1 "immutable-release-assets/$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+        env:
+          EXPECTED_SHA256: \${{ needs.build.outputs.sha256 }}
+          EXPECTED_SIZE: \${{ needs.build.outputs.size }}
   publish:
     environment: npm-alpha
     permissions:
       id-token: write
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-      - run: npm publish
+      - name: Publish the exact artifact through npm Trusted Publishing
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          npm publish "$ARTIFACT"
+        env:
+          EXPECTED_SHA256: \${{ needs.build.outputs.sha256 }}
+          EXPECTED_SIZE: \${{ needs.build.outputs.size }}
   verify:
     uses: ./.github/workflows/release-verify.yml
+    with:
+      expected_sha256: \${{ needs.build.outputs.sha256 }}
+      expected_size: \${{ needs.build.outputs.size }}
 `;
-const verifyWorkflowContract = `id-token: none
-workflow_call:
-workflow_dispatch:
+const verifyWorkflowContract = `on:
+  workflow_call:
+    inputs:
+      expected_sha256:
+        required: true
+        type: string
+      expected_size:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_sha256:
+        required: true
+        type: string
+      expected_size:
+        required: true
+        type: string
+permissions:
+  id-token: none
 source_sha:
 publish_run_id:
 publish_run_attempt:
-for attempt in $(seq 1 20)
-sleep 15
-cmp "$asset" "$registry_artifact"
-audit_output="post-publish/signatures/audit-signatures.json"
-npm audit signatures --json --include-attestations > "$GITHUB_WORKSPACE/$audit_output")
-pnpm tsx scripts/verify-npm-provenance.ts \\
---audit-signatures "$audit_output" \\
---tarball
---source-sha
---publish-run-id
---publish-run-attempt
-test "$(git rev-parse HEAD)" = "$source_sha"
-dist-tags.alpha
-jq -r .immutable
-git/ref/tags/$tag
-git/tags/$tag_object_sha
+jobs:
+  verify:
+    steps:
+      - name: Validate verification-only identity and immutable assets
+        env:
+          EXPECTED_SHA256: \${{ inputs.expected_sha256 }}
+          EXPECTED_SIZE: \${{ inputs.expected_size }}
+        run: |
+          set -euo pipefail
+          [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$source_sha"
+          jq -r .immutable
+          git/ref/tags/$tag
+          git/tags/$tag_object_sha
+          test "$(sha256sum "post-publish/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(wc -c < "post-publish/release/$asset" | tr -d ' ')" = "$expected_size"
+      - name: Wait for bounded npm registry convergence
+        run: |
+          for attempt in $(seq 1 20)
+          sleep 15
+      - name: Compare registry bytes and run clean-room verification
+        env:
+          EXPECTED_SHA256: \${{ inputs.expected_sha256 }}
+          EXPECTED_SIZE: \${{ inputs.expected_size }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$asset" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$asset" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(sha256sum "$registry_artifact" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$registry_artifact" | tr -d ' ')" = "$EXPECTED_SIZE"
+          cmp "$asset" "$registry_artifact"
+          BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room
+      - name: Verify registry signatures, provenance, and dist-tag
+        run: |
+          audit_output="post-publish/signatures/audit-signatures.json"
+          npm audit signatures --json --include-attestations > "$GITHUB_WORKSPACE/$audit_output")
+          pnpm tsx scripts/verify-npm-provenance.ts \\
+            --audit-signatures "$audit_output" \\
+            --tarball \\
+            --source-sha \\
+            --publish-run-id \\
+            --publish-run-attempt
+          dist-tags.alpha
 `;
 const publicRunbookContract = "OIDC Trusted Publishing only; verification-only workflow; required manual reviewers; disallow tokens; remains `immutable:false`; was `enabled:false`; is now `enabled:true`; immutability applies only to future releases";
 
@@ -138,6 +251,64 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("      - run: pnpm audit --audit-level=high\n", "      - run: pnpm audit --audit-level=high\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
   });
 
+  it("fails closed when approved artifact identity inputs or the pre-upload gate drift", () => {
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract)).not.toThrow();
+    for (const marker of ["      expected_sha256:\n", "      expected_size:\n", "name: Verify the approved release artifact identity\n", "INPUT_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}", "INPUT_EXPECTED_SIZE: ${{ inputs.expected_size }}", "report.files!==manifest.files.length"]) {
+      expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace(marker, "removed"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    }
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("sha256: ${{ steps.approved.outputs.sha256 }}", "sha256: ${{ steps.artifact.outputs.sha256 }}"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("size: ${{ steps.approved.outputs.size }}", "size: ${{ steps.artifact.outputs.size }}"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("      - name: Verify the exact release artifact in a clean room\n", "      - run: pnpm --silent package:pack\n      - name: Verify the exact release artifact in a clean room\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('wc -c < "immutable-release-assets/$ARTIFACT"', "removed"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('test "$(sha256sum "$ARTIFACT" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', 'sha256sum "$ARTIFACT" >/dev/null'))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    const downstreamChecks = `          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+`;
+    const stageAfterSideEffect = publishWorkflowContract.replace(downstreamChecks, "").replace('          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags"\n', `          gh api --method POST "repos/\${GITHUB_REPOSITORY}/git/tags"
+${downstreamChecks}`);
+    expect(() => assertReleaseArtifactApproval(stageAfterSideEffect)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    const publishStart = publishWorkflowContract.indexOf("\n  publish:\n");
+    const publishPrefix = publishWorkflowContract.slice(0, publishStart);
+    const publishSuffix = publishWorkflowContract.slice(publishStart).replace(downstreamChecks, "").replace('          npm publish "$ARTIFACT"\n', `          npm publish "$ARTIFACT"
+${downstreamChecks}`);
+    expect(() => assertReleaseArtifactApproval(publishPrefix + publishSuffix)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    const stageStepStart = publishWorkflowContract.indexOf("      - name: Create exact annotated tag and asset-complete draft prerelease\n");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.slice(0, stageStepStart) + publishWorkflowContract.slice(stageStepStart).replace("          set -euo pipefail", "          set +e"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("      - name: Create exact annotated tag and asset-complete draft prerelease\n", "      - name: Create exact annotated tag and asset-complete draft prerelease\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    const movedAfterUpload = publishWorkflowContract
+      .replace(/      - name: Verify the approved release artifact identity[\s\S]*?(?=      - name: Verify the exact release artifact)/u, "")
+      .replace("      - uses: actions/upload-artifact@", `${publishWorkflowContract.match(/      - name: Verify the approved release artifact identity[\s\S]*?(?=      - name: Verify the exact release artifact)/u)?.[0] ?? ""}      - uses: actions/upload-artifact@`);
+    expect(() => assertReleaseArtifactApproval(movedAfterUpload)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('echo "size=$expected_size" >> "$GITHUB_OUTPUT"', 'echo "size=$expected_size" >> "$GITHUB_OUTPUT" || true'))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("        id: approved\n", "        id: approved\n        if: false\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("        id: approved\n", "        id: approved\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    const approvalStart = publishWorkflowContract.indexOf("      - name: Verify the approved release artifact identity\n");
+    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.slice(0, approvalStart) + publishWorkflowContract.slice(approvalStart).replace("          [[", "          set +e\n          [["))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+  });
+
+  it("fails closed when verification-only stops using the approved digest or size", () => {
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract)).not.toThrow();
+    for (const marker of [
+      "EXPECTED_SIZE: ${{ inputs.expected_size }}",
+      '[[ "$expected_size" =~ ^[1-9][0-9]*$ ]]',
+      'wc -c < "post-publish/release/$asset"',
+      'sha256sum "$registry_artifact"',
+      'wc -c < "$registry_artifact"',
+    ]) expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace(marker, "removed"))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace('test "$(sha256sum "post-publish/release/$asset" | cut -d\' \' -f1)" = "$expected_sha256"', 'sha256sum "post-publish/release/$asset" >/dev/null'))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace('test "$(wc -c < "$registry_artifact" | tr -d \' \')" = "$EXPECTED_SIZE"', 'wc -c < "$registry_artifact" >/dev/null'))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace("        required: true", "        required: false"))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    const compareBeforeApproval = verifyWorkflowContract
+      .replace('          cmp "$asset" "$registry_artifact"\n', "")
+      .replace('          test "$(sha256sum "$asset" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"\n', '          cmp "$asset" "$registry_artifact"\n          test "$(sha256sum "$asset" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"\n');
+    expect(() => assertReleaseVerificationArtifactApproval(compareBeforeApproval)).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace('          cmp "$asset" "$registry_artifact"', '          cmp "$asset" "$registry_artifact" || true'))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.replace("      - name: Compare registry bytes and run clean-room verification\n", "      - name: Compare registry bytes and run clean-room verification\n        if: false\n"))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+    const compareStepStart = verifyWorkflowContract.indexOf("      - name: Compare registry bytes and run clean-room verification\n");
+    expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract.slice(0, compareStepStart) + verifyWorkflowContract.slice(compareStepStart).replace("          set -euo pipefail", "          set +e"))).toThrow("RT_RELEASE_VERIFICATION_ARTIFACT_APPROVAL_DRIFT");
+  });
+
   it("fails closed when provenance identity verification is absent or bypassed", () => {
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract)).not.toThrow();
     for (const marker of ["scripts/verify-npm-provenance.ts", "--audit-signatures", "--source-sha", "--publish-run-id", "publish_run_attempt:", "--include-attestations"]) expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace(marker, "removed"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
@@ -145,7 +316,7 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("npm audit signatures --json --include-attestations", "npm audit signatures --json --include-attestations && true"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(`${verifyWorkflowContract}\ncontinue-on-error: true`)).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("pnpm tsx scripts/verify-npm-provenance.ts \\\n", "").replace("dist-tags.alpha", "dist-tags.alpha\npnpm tsx scripts/verify-npm-provenance.ts \\\n"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
-    expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("npm audit signatures --json --include-attestations > \"$GITHUB_WORKSPACE/$audit_output\")\npnpm tsx scripts/verify-npm-provenance.ts", "pnpm tsx scripts/verify-npm-provenance.ts\nnpm audit signatures --json --include-attestations > \"$GITHUB_WORKSPACE/$audit_output\")"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
+    expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("          npm audit signatures --json --include-attestations > \"$GITHUB_WORKSPACE/$audit_output\")\n          pnpm tsx scripts/verify-npm-provenance.ts", "          pnpm tsx scripts/verify-npm-provenance.ts\n          npm audit signatures --json --include-attestations > \"$GITHUB_WORKSPACE/$audit_output\")"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("pnpm tsx scripts/verify-npm-provenance.ts", "node mutate-audit.js\npnpm tsx scripts/verify-npm-provenance.ts"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace('--audit-signatures "$audit_output"', '--audit-signatures "stale.json"'))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
   });
