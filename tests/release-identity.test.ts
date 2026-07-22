@@ -191,6 +191,20 @@ describe("Better Realtime public release identity", () => {
     expect(postgresHarness.startsWith("#!/usr/bin/env bash\n")).toBe(true);
   });
 
+  it("installs the pinned Playwright browser before the mixed-version CI journey", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/ci.yml"), "utf8");
+    const postgresStart = workflow.indexOf("\n  postgres:\n");
+    const postgresJob = workflow.slice(postgresStart);
+    const installDependencies = postgresJob.indexOf("pnpm install --frozen-lockfile");
+    const installBrowser = postgresJob.indexOf("pnpm exec playwright install --with-deps chromium");
+    const postgres = postgresJob.indexOf("pnpm test:postgres:docker");
+    const matrix = postgresJob.indexOf("pnpm compatibility:matrix");
+    expect(installDependencies).toBeGreaterThan(-1);
+    expect(installBrowser).toBeGreaterThan(installDependencies);
+    expect(installBrowser).toBeLessThan(postgres);
+    expect(installBrowser).toBeLessThan(matrix);
+  });
+
   it("does not expose internal diagnostic identity wrapping in public declarations", async () => {
     const source = await readFile(resolve(root, "packages/runtime/src/diagnostic-io.ts"), "utf8");
     expect(source).toContain("function withProductIdentity(");

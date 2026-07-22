@@ -4,8 +4,8 @@
   "files": [
     {
       "path": ".github/workflows/ci.yml",
-      "bytes": 1250,
-      "digest": "sha256:8a204edde76508b51d399355ab2f389f179e8b940c9f4588be62fa97e67f6356"
+      "bytes": 1313,
+      "digest": "sha256:e94edcee5e39919384b0ad561be1bfd8b80cd78cac40e4f20aa9d359c760a08c"
     },
     {
       "path": ".github/workflows/release-verify.yml",
@@ -1014,8 +1014,8 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 14297,
-      "digest": "sha256:5d92d6564f14e1341b63a0770322322beb2a58a355b453c1244f27a0211cdaf2"
+      "bytes": 15153,
+      "digest": "sha256:24bf48e9dcbda978a57f3ad65225fe940315a6130d267675de10bc65734319ec"
     },
     {
       "path": "tests/release-security-check.test.ts",

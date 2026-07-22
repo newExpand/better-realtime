@@ -38,5 +38,6 @@ jobs:
           package-manager-cache: false
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:postgres:docker
       - run: pnpm compatibility:matrix
