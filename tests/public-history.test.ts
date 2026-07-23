@@ -30,6 +30,13 @@ async function append(directory: string, sequence: number, subject = "fix: publi
   return (await exec("git", ["rev-parse", "HEAD"], { cwd: directory })).stdout.trim();
 }
 
+async function appendWithoutBody(directory: string, sequence: number): Promise<string> {
+  await writeFile(join(directory, "CHANGELOG.md"), `release ${sequence}\n`, "utf8");
+  await exec("git", ["add", "CHANGELOG.md"], { cwd: directory });
+  await exec("git", ["commit", "--no-gpg-sign", "-m", "fix: preserve a historical release source"], { cwd: directory });
+  return (await exec("git", ["rev-parse", "HEAD"], { cwd: directory })).stdout.trim();
+}
+
 const baseline = (rootCommit: string, tags: PublicHistoryBaseline["tags"] = []): PublicHistoryBaseline => ({ rootCommit, tags });
 
 async function annotatedTag(directory: string, name: string, target: string): Promise<PublicHistoryBaseline["tags"][number]> {
@@ -53,6 +60,17 @@ it("accepts exactly one linear release commit over the preserved root with the c
   const head = await append(directory, 2);
   const remoteSnapshot: PublicRemoteSnapshot = { main: root, tags: [tag] };
   await expect(checkPublicHistory(directory, author, root, root, { baseline: baseline(root, [tag]), remoteSnapshot })).resolves.toMatchObject({ commitCount: 2, appendedCommits: 1, rootCommit: root, baseCommit: root, headCommit: head, remotes: 1, tags: 1, status: "valid" });
+});
+
+it("grandfathers a bodyless immutable baseline while requiring a body on the new append", async () => {
+  const historical = await repository();
+  const historicalHead = await appendWithoutBody(historical.directory, 2);
+  const newHead = await append(historical.directory, 3);
+  await expect(checkPublicHistory(historical.directory, author, historical.root, historicalHead, { baseline: baseline(historical.root) })).resolves.toMatchObject({ baseCommit: historicalHead, headCommit: newHead, appendedCommits: 1, status: "valid" });
+
+  const missingNewBody = await repository();
+  const bodylessHead = await appendWithoutBody(missingNewBody.directory, 2);
+  await expect(checkPublicHistory(missingNewBody.directory, author, missingNewBody.root, missingNewBody.root, { baseline: baseline(missingNewBody.root) })).rejects.toThrow(`RT_PUBLIC_HISTORY_BODY_REQUIRED:${bodylessHead}`);
 });
 
 it("rejects root replacement, multiple appended commits, and merge history", async () => {

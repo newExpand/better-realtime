@@ -21,6 +21,12 @@ on:
       source_sha:
         required: true
         type: string
+      workflow_sha:
+        required: true
+        type: string
+      publish_workflow_sha:
+        required: true
+        type: string
       publish_run_id:
         required: true
         type: string
@@ -50,7 +56,15 @@ on:
         required: true
         type: string
       source_sha:
-        description: Exact 40-character public source commit published by the original release run
+        description: Exact 40-character immutable release/tag source commit
+        required: true
+        type: string
+      workflow_sha:
+        description: Exact reviewed commit containing this verification workflow
+        required: true
+        type: string
+      publish_workflow_sha:
+        description: Exact workflow commit recorded by the original publication provenance
         required: true
         type: string
       publish_run_id:
@@ -63,6 +77,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
   id-token: none
 
@@ -70,6 +85,18 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
+      - name: Bind verification to the reviewed workflow revision
+        env:
+          INPUT_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          RUN_REF: ${{ github.ref }}
+          RUN_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$RUN_REF" = refs/heads/main
+          test "$RUN_SHA" = "$INPUT_WORKFLOW_SHA"
+          test "$WORKFLOW_SHA" = "$INPUT_WORKFLOW_SHA"
       - name: Validate remote identity and immutable assets before repository code
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -98,6 +125,7 @@ jobs:
           test "$(jq -r .id <<<"$release_json")" = "$release_id"
           test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
           test "$(jq -r .name <<<"$release_json")" = "Better Realtime $version"
+          test "$(jq -r .target_commitish <<<"$release_json")" = "$source_sha"
           test "$(jq -r .draft <<<"$release_json")" = false
           test "$(jq -r .prerelease <<<"$release_json")" = true
           test "$(jq -r .immutable <<<"$release_json")" = true
@@ -136,19 +164,25 @@ jobs:
           test "$(jq -r '.[0].size' <<<"$checksum_json")" = "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset.sha256" | tr -d ' ')"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate the checked-out package and release notes
+      - name: Validate the release source from the approved workflow revision
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
           POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$INPUT_SOURCE_SHA"
-          test "$(node -p "require('./packages/runtime/package.json').version")" = "$INPUT_VERSION"
-          test "$(jq -r .body "$POST_PUBLISH_ROOT/identity/release.json")" = "$(cat CHANGELOG.md)"
+          [[ "$INPUT_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$INPUT_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$INPUT_WORKFLOW_SHA"
+          git cat-file -e "$INPUT_SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"
+          test "$(git show "$INPUT_SOURCE_SHA:packages/runtime/package.json" | jq -r .version)" = "$INPUT_VERSION"
+          git show "$INPUT_SOURCE_SHA:CHANGELOG.md" > "$POST_PUBLISH_ROOT/identity/source-changelog.md"
+          test "$(jq -r .body "$POST_PUBLISH_ROOT/identity/release.json")" = "$(cat "$POST_PUBLISH_ROOT/identity/source-changelog.md")"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.x"
@@ -211,20 +245,30 @@ jobs:
       - name: Verify registry signatures, provenance, and dist-tag
         env:
           INPUT_VERSION: ${{ inputs.version }}
-          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_PUBLISH_WORKFLOW_SHA: ${{ inputs.publish_workflow_sha }}
           PUBLISH_RUN_ID: ${{ inputs.publish_run_id }}
           PUBLISH_RUN_ATTEMPT: ${{ inputs.publish_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
           POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
+          [[ "$INPUT_PUBLISH_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PUBLISH_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PUBLISH_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          publish_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT")"
+          test "$(jq -r .id <<<"$publish_run")" = "$PUBLISH_RUN_ID"
+          test "$(jq -r .run_attempt <<<"$publish_run")" = "$PUBLISH_RUN_ATTEMPT"
+          test "$(jq -r .event <<<"$publish_run")" = workflow_dispatch
+          test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml
+          test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"
           audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"
           (cd "$POST_PUBLISH_ROOT/signatures" && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$version" && npm audit signatures --json --include-attestations > "$audit_output")
           pnpm tsx scripts/verify-npm-provenance.ts \
             --audit-signatures "$audit_output" \
             --tarball "$POST_PUBLISH_ROOT/registry/better-realtime-$version.tgz" \
             --version "$version" \
-            --source-sha "$INPUT_SOURCE_SHA" \
+            --workflow-sha "$INPUT_PUBLISH_WORKFLOW_SHA" \
             --publish-run-id "$PUBLISH_RUN_ID" \
             --publish-run-attempt "$PUBLISH_RUN_ATTEMPT"
           test "$(npm view better-realtime dist-tags.alpha)" = "$version"

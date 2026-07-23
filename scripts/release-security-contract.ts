@@ -75,7 +75,7 @@ export function assertPublishOidcBoundary(workflow: string): void {
   if (
     !prepareJob.includes("id-token: none")
     || !prepareJob.includes("checks: read")
-    || !prepareJob.includes("ref: ${{ inputs.source_sha }}")
+    || !prepareJob.includes("ref: ${{ inputs.workflow_sha }}")
     || !prepareJob.includes("persist-credentials: false")
     || !prepareJob.includes("scripts/release-state-machine-github.ts plan-publication")
     || prepareJob.includes("environment: npm-alpha")
@@ -109,7 +109,7 @@ export function assertPublishOidcBoundary(workflow: string): void {
 }
 
 export function assertReleaseProvenanceVerification(workflow: string): void {
-  const required = ["source_sha:", "publish_run_id:", "publish_run_attempt:", 'audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"', "npm audit signatures --json --include-attestations", "scripts/verify-npm-provenance.ts", "--audit-signatures", "--tarball", "--source-sha", "--publish-run-id", "--publish-run-attempt", "dist-tags.alpha"];
+  const required = ["source_sha:", "workflow_sha:", "publish_workflow_sha:", "publish_run_id:", "publish_run_attempt:", 'audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"', "npm audit signatures --json --include-attestations", "scripts/verify-npm-provenance.ts", "--audit-signatures", "--tarball", "--workflow-sha", "--publish-run-id", "--publish-run-attempt", "dist-tags.alpha", 'actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT', 'test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"', 'test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml'];
   const parser = "scripts/verify-npm-provenance.ts";
   const audit = 'npm audit signatures --json --include-attestations > "$audit_output")';
   const compareIndex = workflow.indexOf('cmp "$asset" "$registry_artifact"');
@@ -121,7 +121,22 @@ export function assertReleaseProvenanceVerification(workflow: string): void {
   const parserCommandIndex = workflow.indexOf(parserCommand);
   const parserLineStart = workflow.lastIndexOf("\n", parserCommandIndex) + 1;
   const adjacentAuditAndParser = auditLineEnd >= 0 && parserLineStart === auditLineEnd + 1 && workflow.slice(parserLineStart, parserCommandIndex).trim() === "" && workflow.includes('--audit-signatures "$audit_output"');
-  if (required.some((marker) => !workflow.includes(marker)) || count(workflow, parser) !== 1 || count(workflow, audit) !== 1 || count(workflow, parserCommand) !== 1 || compareIndex < 0 || auditIndex < compareIndex || parserIndex < auditIndex || distTagIndex < parserIndex || !adjacentAuditAndParser || /(?:\|\||&&)\s*true/u.test(workflow) || /continue-on-error:\s*true|if:\s*false/u.test(workflow) || !workflow.includes('test "$(git rev-parse HEAD)" = "$INPUT_SOURCE_SHA"')) throw new Error("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
+  if (
+    required.some((marker) => !workflow.includes(marker))
+    || count(workflow, parser) !== 1
+    || count(workflow, audit) !== 1
+    || count(workflow, parserCommand) !== 1
+    || compareIndex < 0
+    || auditIndex < compareIndex
+    || parserIndex < auditIndex
+    || distTagIndex < parserIndex
+    || !adjacentAuditAndParser
+    || /(?:\|\||&&)\s*true/u.test(workflow)
+    || /continue-on-error:\s*true|if:\s*false/u.test(workflow)
+    || !workflow.includes('test "$(git rev-parse HEAD)" = "$INPUT_WORKFLOW_SHA"')
+    || !workflow.includes('git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"')
+    || !workflow.includes('--workflow-sha "$INPUT_PUBLISH_WORKFLOW_SHA"')
+  ) throw new Error("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
 }
 
 export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWorkflow: string, adapter: string): void {
@@ -133,6 +148,8 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
   const verifyIdentityStep = workflowStep(verifyWorkflow, "Validate remote identity and immutable assets before repository code");
   const verifyCheckout = verifyWorkflow.indexOf("actions/checkout@");
   const verifyIdentity = verifyWorkflow.indexOf("name: Validate remote identity and immutable assets before repository code");
+  const exportIndex = buildJob.indexOf("pnpm package:export-public");
+  const sourceNotesIndex = buildJob.indexOf("name: Materialize the immutable source release notes");
   const forbiddenGhRelease = /^\s*gh release (?:view|create|edit|download|upload)\b/gmu;
   const attestationCommands = `${publishWorkflow}\n${verifyWorkflow}`.match(/^\s*gh release verify(?:-asset)?\b.*$/gmu) ?? [];
   const adapterMarkers = [
@@ -161,6 +178,7 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     '[[ "$release_id" =~ ^[1-9][0-9]*$ ]]',
     'release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/$release_id")"',
     'test "$(jq -r .id <<<"$release_json")" = "$release_id"',
+    'test "$(jq -r .target_commitish <<<"$release_json")" = "$source_sha"',
     'test "$(jq -r .object.type <<<"$tag_ref")" = tag',
     'test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"',
     '"repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"',
@@ -168,23 +186,36 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
   ];
   if (
     !publishWorkflow.includes("concurrency:\n  group: release-${{ inputs.version }}\n  cancel-in-progress: false")
-    || !buildJob.includes("name: Bind the dispatch to the approved main source")
+    || !publishWorkflow.includes("workflow_sha:")
+    || !buildJob.includes("name: Bind the dispatch to the approved source and workflow revisions")
     || !buildJob.includes('test "$RUN_REF" = refs/heads/main')
-    || !buildJob.includes('test "$RUN_SHA" = "$INPUT_SOURCE_SHA"')
-    || !buildJob.includes('test "$WORKFLOW_SHA" = "$INPUT_SOURCE_SHA"')
+    || !buildJob.includes('test "$RUN_SHA" = "$INPUT_WORKFLOW_SHA"')
+    || !buildJob.includes('test "$WORKFLOW_SHA" = "$INPUT_WORKFLOW_SHA"')
+    || !buildJob.includes('git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"')
+    || !buildJob.includes("ref: ${{ inputs.workflow_sha }}")
+    || !buildJob.includes("name: Check out the immutable package source")
+    || !buildJob.includes("ref: ${{ inputs.source_sha }}")
+    || !buildJob.includes("path: release-source")
+    || !buildJob.includes("pnpm --dir release-source --silent package:pack")
+    || !buildJob.includes("RELEASE_NOTES: approved-CHANGELOG.md")
+    || exportIndex < 0
+    || sourceNotesIndex <= exportIndex
     || !buildJob.includes("RUN_ATTEMPT: ${{ github.run_attempt }}")
     || !buildJob.includes('[[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]')
     || !buildJob.includes('artifact_name=release-candidate-$INPUT_SOURCE_SHA-$INPUT_VERSION-attempt-$RUN_ATTEMPT')
-    || buildJob.indexOf("name: Bind the dispatch to the approved main source") > buildJob.indexOf("actions/checkout@")
+    || buildJob.indexOf("name: Bind the dispatch to the approved source and workflow revisions") > buildJob.indexOf("actions/checkout@")
     || !buildJob.includes("scripts/release-state-machine-github.ts observe")
     || !stageJob.includes("release_id: ${{ steps.reconcile.outputs.release_id }}")
+    || !stageJob.includes("ref: ${{ inputs.workflow_sha }}")
     || !stageJob.includes("scripts/release-state-machine-github.ts reconcile-github")
     || !prepareJob.includes("needs: [build, stage-release]")
     || !prepareJob.includes("id-token: none")
     || !prepareJob.includes("scripts/release-state-machine-github.ts plan-publication")
+    || !prepareJob.includes("ref: ${{ inputs.workflow_sha }}")
     || !prepareJob.includes("EXPECTED_RELEASE_ID: ${{ needs.stage-release.outputs.release_id }}")
     || prepareJob.includes("environment: npm-alpha")
     || !publishJob.includes("needs: [build, stage-release, prepare-publication]")
+    || !publishJob.includes("actions: read")
     || !publishJob.includes("checks: write")
     || !publishJob.includes("id-token: write")
     || !publishJob.includes("environment: npm-alpha")
@@ -195,9 +226,15 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !publishJob.includes("if: steps.reobserve.outputs.publish == 'true'")
     || !publishJob.includes("name: Re-observe publication state at the OIDC boundary")
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/commits/$INPUT_SOURCE_SHA/check-runs?filter=all&per_page=100&page=$page"')
+    || publishJob.includes(".check_runs.length")
+    || !publishJob.includes("jq -r '.check_runs | length'")
     || !publishJob.includes('test "$intent_count" -le 1')
     || !publishJob.includes('echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"')
     || !publishJob.includes('echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"')
+    || !publishJob.includes('echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"')
+    || !publishJob.includes('"repos/$GITHUB_REPOSITORY/actions/runs/$original_publish_run_id/attempts/$original_publish_run_attempt"')
+    || !publishJob.includes('test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml')
+    || !publishJob.includes('echo "publish_workflow_sha=$original_publish_workflow_sha" >> "$GITHUB_OUTPUT"')
     || !publishJob.includes('PUBLISH_RUN_ID: ${{ steps.reobserve.outputs.publish_run_id }}')
     || !publishJob.includes('PUBLISH_RUN_ATTEMPT: ${{ steps.reobserve.outputs.publish_run_attempt }}')
     || !publishJob.includes("Record durable publish intent at the OIDC boundary")
@@ -207,13 +244,17 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || publishJob.indexOf("Record durable publish intent at the OIDC boundary") > publishJob.indexOf("npm publish ")
     || publishJob.indexOf("Validate the approved identity without repository code") > publishJob.indexOf("Record durable publish intent at the OIDC boundary")
     || !verifyJob.includes("release_id: ${{ needs.stage-release.outputs.release_id }}")
+    || !verifyJob.includes("workflow_sha: ${{ inputs.workflow_sha }}")
+    || !verifyJob.includes("publish_workflow_sha: ${{ needs.publish.outputs.publish_workflow_sha }}")
     || !verifyJob.includes("publish_run_id: ${{ needs.publish.outputs.publish_run_id }}")
     || !verifyJob.includes("publish_run_attempt: ${{ needs.publish.outputs.publish_run_attempt }}")
     || verifyMarkers.some((marker) => !verifyWorkflow.includes(marker))
     || verifyIdentity < 0
     || verifyCheckout < 0
     || verifyIdentity >= verifyCheckout
-    || !verifyWorkflow.includes("ref: ${{ inputs.source_sha }}")
+    || !verifyWorkflow.includes("ref: ${{ inputs.workflow_sha }}")
+    || !verifyWorkflow.includes('test "$(git rev-parse HEAD)" = "$INPUT_WORKFLOW_SHA"')
+    || !verifyWorkflow.includes('git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"')
     || verifyWorkflow.includes("ref: ${{ inputs.tag }}")
     || /^\s*npm publish\b/gmu.test(verifyWorkflow + adapter)
     || /releases\/tags\//u.test(publishWorkflow + verifyWorkflow + adapter)
@@ -230,19 +271,39 @@ export function assertReleaseBuildAuditOrder(workflow: string): void {
   const buildJob = workflowJob(workflow, "build");
   const auditCommand = "pnpm audit --audit-level=high";
   const auditStep = `      - run: ${auditCommand}`;
+  const sourceAuditCommand = "pnpm --dir release-source audit --audit-level=high";
+  const sourceAuditStep = `      - run: ${sourceAuditCommand}`;
   const auditSteps = buildJob.match(/^ {6}- run: pnpm audit --audit-level=high$/gmu) ?? [];
+  const sourceAuditSteps = buildJob.match(/^ {6}- run: pnpm --dir release-source audit --audit-level=high$/gmu) ?? [];
   const auditIndex = buildJob.indexOf(auditStep);
+  const sourceAuditIndex = buildJob.indexOf(sourceAuditStep);
   const installIndex = buildJob.indexOf("pnpm install --frozen-lockfile");
+  const sourceInstallIndex = buildJob.indexOf("pnpm --dir release-source install --frozen-lockfile");
   const artifactMarkers = [
     "pnpm package:export-public",
-    "pnpm --silent package:pack",
+    "pnpm --dir release-source --silent package:pack",
     "actions/upload-artifact@",
   ];
   const artifactIndexes = artifactMarkers.map((marker) => buildJob.indexOf(marker));
-  const auditStepRemainder = auditIndex < 0 ? "" : buildJob.slice(auditIndex + auditStep.length);
-  const nextStepIndex = auditStepRemainder.search(/^ {6}- /mu);
-  const auditStepTail = nextStepIndex < 0 ? auditStepRemainder : auditStepRemainder.slice(0, nextStepIndex);
-  if (auditSteps.length !== 1 || auditStepTail.trim() || buildJob.includes("continue-on-error:") || installIndex < 0 || auditIndex < installIndex || artifactIndexes.some((index) => index < 0) || artifactIndexes.some((index) => auditIndex > index)) throw new Error("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
+  const isBareStep = (index: number, step: string): boolean => {
+    const remainder = index < 0 ? "" : buildJob.slice(index + step.length);
+    const nextStepIndex = remainder.search(/^ {6}- /mu);
+    return (nextStepIndex < 0 ? remainder : remainder.slice(0, nextStepIndex)).trim() === "";
+  };
+  if (
+    auditSteps.length !== 1
+    || sourceAuditSteps.length !== 1
+    || !isBareStep(auditIndex, auditStep)
+    || !isBareStep(sourceAuditIndex, sourceAuditStep)
+    || buildJob.includes("continue-on-error:")
+    || installIndex < 0
+    || auditIndex < installIndex
+    || sourceInstallIndex < 0
+    || sourceAuditIndex < sourceInstallIndex
+    || artifactIndexes.some((index) => index < 0)
+    || artifactIndexes.some((index) => auditIndex > index)
+    || sourceAuditIndex > artifactIndexes[1]!
+  ) throw new Error("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
 }
 
 export function assertReleaseArtifactApproval(workflow: string, adapter: string): void {
@@ -301,7 +362,7 @@ export function assertReleaseArtifactApproval(workflow: string, adapter: string)
   if (
     !requiredInput("expected_sha256")
     || !requiredInput("expected_size")
-    || count(workflow, "pnpm --silent package:pack") !== 1
+    || count(workflow, "package:pack") !== 1
     || packIndex < 0
     || approvalIndex <= packIndex
     || identityIndex <= approvalIndex
@@ -350,6 +411,7 @@ export function assertReleaseVerificationArtifactApproval(workflow: string): voi
     'test "$(sha256sum "$POST_PUBLISH_ROOT/release/$asset" | cut -d\' \' -f1)" = "$expected_sha256"',
     'test "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset" | tr -d \' \')" = "$expected_size"',
     'test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"',
+    'test "$(jq -r .target_commitish <<<"$release_json")" = "$source_sha"',
     'cmp "$POST_PUBLISH_ROOT/identity/approved.sha256" "$POST_PUBLISH_ROOT/release/$asset.sha256"',
   ];
   const compareMarkers = [

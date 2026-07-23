@@ -8,7 +8,11 @@ on:
         required: true
         type: string
       source_sha:
-        description: Exact reviewed public commit SHA
+        description: Exact immutable release/tag source commit SHA
+        required: true
+        type: string
+      workflow_sha:
+        description: Exact reviewed main commit containing the release workflow
         required: true
         type: string
       expected_sha256:
@@ -43,21 +47,23 @@ jobs:
       sha256: ${{ steps.approved.outputs.sha256 }}
       size: ${{ steps.approved.outputs.size }}
     steps:
-      - name: Bind the dispatch to the approved main source
+      - name: Bind the dispatch to the approved source and workflow revisions
         env:
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
           RUN_REF: ${{ github.ref }}
           RUN_SHA: ${{ github.sha }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           [[ "$INPUT_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$INPUT_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           test "$RUN_REF" = refs/heads/main
-          test "$RUN_SHA" = "$INPUT_SOURCE_SHA"
-          test "$WORKFLOW_SHA" = "$INPUT_SOURCE_SHA"
+          test "$RUN_SHA" = "$INPUT_WORKFLOW_SHA"
+          test "$WORKFLOW_SHA" = "$INPUT_WORKFLOW_SHA"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -72,14 +78,18 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$INPUT_VERSION" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
           [[ "$INPUT_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$INPUT_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          test "$(git rev-parse HEAD)" = "$INPUT_SOURCE_SHA"
-          test "$(node -p "require('./packages/runtime/package.json').version")" = "$INPUT_VERSION"
+          test "$(git rev-parse HEAD)" = "$INPUT_WORKFLOW_SHA"
+          git cat-file -e "$INPUT_SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"
+          test "$(git show "$INPUT_SOURCE_SHA:packages/runtime/package.json" | jq -r .version)" = "$INPUT_VERSION"
           echo "artifact_name=release-candidate-$INPUT_SOURCE_SHA-$INPUT_VERSION-attempt-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           echo "tag=v$INPUT_VERSION" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
@@ -90,6 +100,19 @@ jobs:
       - run: pnpm package:export-public
         env:
           BETTER_REALTIME_RELEASE_EXPORT: "1"
+      - name: Materialize the immutable source release notes
+        env:
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: git show "$INPUT_SOURCE_SHA:CHANGELOG.md" > approved-CHANGELOG.md
+      - name: Check out the immutable package source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - name: Install the immutable package source
+        run: pnpm --dir release-source install --frozen-lockfile
+      - run: pnpm --dir release-source audit --audit-level=high
       - name: Build the release artifact once
         id: artifact
         env:
@@ -98,8 +121,8 @@ jobs:
           set -euo pipefail
           artifact="better-realtime-$INPUT_VERSION.tgz"
           mkdir -p output
-          pnpm --silent package:pack > output/package-report.json
-          node -e "const fs=require('fs');const report=JSON.parse(fs.readFileSync('output/package-report.json','utf8'));if(report.version!==process.argv[1])throw new Error('RT_RELEASE_VERSION_MISMATCH');fs.copyFileSync(report.tarball,process.argv[2])" "$INPUT_VERSION" "$artifact"
+          pnpm --dir release-source --silent package:pack > output/package-report.json
+          node -e "const fs=require('fs');const report=JSON.parse(fs.readFileSync('output/package-report.json','utf8'));if(report.version!==process.argv[1])throw new Error('RT_RELEASE_VERSION_MISMATCH');fs.copyFileSync(report.tarball,process.argv[2])" "$INPUT_VERSION" "$GITHUB_WORKSPACE/$artifact"
           sha256sum "$artifact" > "$artifact.sha256"
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
       - name: Verify the approved release artifact identity
@@ -126,7 +149,7 @@ jobs:
           RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_ARTIFACT: ${{ steps.artifact.outputs.artifact }}
           RELEASE_CHECKSUM: ${{ steps.artifact.outputs.artifact }}.sha256
-          RELEASE_NOTES: CHANGELOG.md
+          RELEASE_NOTES: approved-CHANGELOG.md
           RELEASE_IDENTITY_OUTPUT: release-identity.json
           RELEASE_EXPECTED_SHA256: ${{ steps.approved.outputs.sha256 }}
           RELEASE_EXPECTED_SIZE: ${{ steps.approved.outputs.size }}
@@ -148,7 +171,7 @@ jobs:
             ${{ steps.artifact.outputs.artifact }}
             ${{ steps.artifact.outputs.artifact }}.sha256
             release-identity.json
-            CHANGELOG.md
+            approved-CHANGELOG.md
           if-no-files-found: error
           retention-days: 2
           compression-level: 0
@@ -166,7 +189,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.workflow_sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -183,7 +206,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_IDENTITY_FILE: release-assets/release-identity.json
-          RELEASE_NOTES_FILE: release-assets/CHANGELOG.md
+          RELEASE_NOTES_FILE: release-assets/approved-CHANGELOG.md
           RELEASE_ASSET_DIR: release-assets
         run: pnpm tsx scripts/release-state-machine-github.ts reconcile-github
       - name: Verify GitHub release attestations
@@ -212,7 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.workflow_sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -237,11 +260,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-alpha
     permissions:
+      actions: read
       contents: read
       checks: write
       id-token: write
     outputs:
       release_id: ${{ steps.result.outputs.release_id }}
+      publish_workflow_sha: ${{ steps.result.outputs.publish_workflow_sha }}
       publish_run_id: ${{ steps.result.outputs.publish_run_id }}
       publish_run_attempt: ${{ steps.result.outputs.publish_run_attempt }}
     steps:
@@ -364,8 +389,8 @@ jobs:
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "repos/$GITHUB_REPOSITORY/commits/$INPUT_SOURCE_SHA/check-runs?filter=all&per_page=100&page=$page")"
             jq -c --arg prefix "$prefix" '.check_runs[] | select(.name | startswith($prefix))' <<<"$response" >> publish-intents.jsonl
-            test "$(jq -r .check_runs.length <<<"$response")" -le 100
-            if [ "$(jq -r .check_runs.length <<<"$response")" -lt 100 ]; then break; fi
+            test "$(jq -r '.check_runs | length' <<<"$response")" -le 100
+            if [ "$(jq -r '.check_runs | length' <<<"$response")" -lt 100 ]; then break; fi
             test "$page" -lt 100
           done
           intent_count="$(wc -l < publish-intents.jsonl | tr -d ' ')"
@@ -375,6 +400,7 @@ jobs:
             test "$intent_count" = 0
             test "$PREPARED_PUBLISH" = true
             echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
             echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
             echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           elif [ "$registry_status" = 200 ]; then
@@ -387,12 +413,23 @@ jobs:
             [[ "$marker_suffix" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]
             original_publish_run_id="${BASH_REMATCH[1]}"
             original_publish_run_attempt="${BASH_REMATCH[2]}"
+            publish_run="$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$original_publish_run_id/attempts/$original_publish_run_attempt")"
+            test "$(jq -r .id <<<"$publish_run")" = "$original_publish_run_id"
+            test "$(jq -r .run_attempt <<<"$publish_run")" = "$original_publish_run_attempt"
+            test "$(jq -r .event <<<"$publish_run")" = workflow_dispatch
+            test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml
+            original_publish_workflow_sha="$(jq -r .head_sha <<<"$publish_run")"
+            [[ "$original_publish_workflow_sha" =~ ^[a-f0-9]{40}$ ]]
             tarball_url="$(jq -r .dist.tarball registry-state.json)"
             [[ "$tarball_url" == https://registry.npmjs.org/better-realtime/-/* ]]
             curl --fail --silent --show-error --location "$tarball_url" --output registry-artifact.tgz
             test "$(sha256sum registry-artifact.tgz | cut -d' ' -f1)" = "$EXPECTED_SHA256"
             test "$(wc -c < registry-artifact.tgz | tr -d ' ')" = "$EXPECTED_SIZE"
             echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "publish_workflow_sha=$original_publish_workflow_sha" >> "$GITHUB_OUTPUT"
             echo "publish_run_id=$original_publish_run_id" >> "$GITHUB_OUTPUT"
             echo "publish_run_attempt=$original_publish_run_attempt" >> "$GITHUB_OUTPUT"
           else
@@ -440,17 +477,20 @@ jobs:
         id: result
         env:
           RELEASE_ID: ${{ needs.prepare-publication.outputs.release_id }}
+          PUBLISH_WORKFLOW_SHA: ${{ steps.reobserve.outputs.publish_workflow_sha }}
           PUBLISH_RUN_ID: ${{ steps.reobserve.outputs.publish_run_id }}
           PUBLISH_RUN_ATTEMPT: ${{ steps.reobserve.outputs.publish_run_attempt }}
         run: |
           set -euo pipefail
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "publish_workflow_sha=$PUBLISH_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
           echo "publish_run_id=$PUBLISH_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "publish_run_attempt=$PUBLISH_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: [build, stage-release, prepare-publication, publish]
     permissions:
+      actions: read
       contents: read
       id-token: none
     uses: ./.github/workflows/release-verify.yml
@@ -461,5 +501,7 @@ jobs:
       expected_sha256: ${{ needs.build.outputs.sha256 }}
       expected_size: ${{ needs.build.outputs.size }}
       source_sha: ${{ inputs.source_sha }}
+      workflow_sha: ${{ inputs.workflow_sha }}
+      publish_workflow_sha: ${{ needs.publish.outputs.publish_workflow_sha }}
       publish_run_id: ${{ needs.publish.outputs.publish_run_id }}
       publish_run_attempt: ${{ needs.publish.outputs.publish_run_attempt }}

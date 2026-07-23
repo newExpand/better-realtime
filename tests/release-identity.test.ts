@@ -144,6 +144,14 @@ describe("Better Realtime public release identity", () => {
     expect(workflow).toContain("scripts/release-state-machine-github.ts plan-publication");
     expect(workflow).toContain("Record durable publish intent at the OIDC boundary");
     expect(workflow).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");
+    expect(workflow).toContain("workflow_sha:");
+    expect(workflow).toContain('test "$RUN_SHA" = "$INPUT_WORKFLOW_SHA"');
+    expect(workflow).toContain('git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"');
+    expect(workflow).toContain("name: Check out the immutable package source");
+    expect(workflow).toContain("path: release-source");
+    expect(workflow).toContain("pnpm --dir release-source --silent package:pack");
+    expect(workflow).not.toContain(".check_runs.length");
+    expect(workflow).toContain("jq -r '.check_runs | length'");
     expect(workflow).toContain("uses: ./.github/workflows/release-verify.yml");
     expect(verifyWorkflow).toContain("for attempt in $(seq 1 20)");
     expect(verifyWorkflow).toContain("sleep 15");
@@ -151,7 +159,9 @@ describe("Better Realtime public release identity", () => {
     expect(verifyWorkflow).toContain("pnpm package:clean-room");
     expect(verifyWorkflow).toContain("npm audit signatures --json --include-attestations");
     expect(verifyWorkflow).toContain("scripts/verify-npm-provenance.ts");
-    for (const input of ["source_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
+    expect(verifyWorkflow).toContain("ref: ${{ inputs.workflow_sha }}");
+    expect(verifyWorkflow).toContain("--workflow-sha");
+    for (const input of ["source_sha", "workflow_sha", "publish_workflow_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
     const changelog = await readFile(resolve(root, "CHANGELOG.md"), "utf8");
     expect(changelog.indexOf("## 0.1.0-alpha.4")).toBeLessThan(changelog.indexOf("## 0.1.0-alpha.2"));
     expect(changelog).toContain("0.1.0-alpha.2 — Unpublished tag-only attempt");
@@ -197,10 +207,14 @@ describe("Better Realtime public release identity", () => {
     const stageStart = workflow.indexOf("\n  stage-release:\n");
     const buildJob = workflow.slice(buildStart, stageStart);
     const audit = buildJob.indexOf("pnpm audit --audit-level=high");
-    const pack = buildJob.indexOf("pnpm --silent package:pack");
+    const pack = buildJob.indexOf("pnpm --dir release-source --silent package:pack");
+    const sourceInstall = buildJob.indexOf("pnpm --dir release-source install --frozen-lockfile");
+    const sourceAudit = buildJob.indexOf("pnpm --dir release-source audit --audit-level=high");
     const upload = buildJob.indexOf("actions/upload-artifact@");
     expect(audit).toBeGreaterThan(-1);
     expect(audit).toBeLessThan(pack);
+    expect(sourceAudit).toBeGreaterThan(sourceInstall);
+    expect(sourceAudit).toBeLessThan(pack);
     expect(audit).toBeLessThan(upload);
   });
 

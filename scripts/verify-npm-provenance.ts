@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 interface ExpectedProvenance {
   version: string;
-  sourceSha: string;
+  workflowSha: string;
   publishRunId: string;
   publishRunAttempt: string;
   repository?: string;
@@ -27,7 +27,7 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
   const environment = expected.environment ?? "npm-alpha";
   const ref = expected.ref ?? "refs/heads/main";
   const trigger = "workflow_dispatch";
-  if (!/^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$/u.test(expected.version) || !/^[a-f0-9]{40}$/u.test(expected.sourceSha) || !/^[1-9][0-9]*$/u.test(expected.publishRunId) || !/^[1-9][0-9]*$/u.test(expected.publishRunAttempt)) throw new Error("RT_PROVENANCE_EXPECTATION_INVALID");
+  if (!/^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$/u.test(expected.version) || !/^[a-f0-9]{40}$/u.test(expected.workflowSha) || !/^[1-9][0-9]*$/u.test(expected.publishRunId) || !/^[1-9][0-9]*$/u.test(expected.publishRunAttempt)) throw new Error("RT_PROVENANCE_EXPECTATION_INVALID");
   const root = requireRecord(attestationsValue, "RT_PROVENANCE_AUDIT_RESPONSE_INVALID");
   if (!Array.isArray(root.invalid) || root.invalid.length !== 0 || !Array.isArray(root.missing) || root.missing.length !== 0 || !Array.isArray(root.verified)) throw new Error("RT_PROVENANCE_AUDIT_NOT_CLEAN");
   const packageEntries = root.verified.filter((entry) => { const record = requireRecord(entry, "RT_PROVENANCE_AUDIT_ENTRY_INVALID"); return record.name === "better-realtime" && record.version === expected.version && record.location === "node_modules/better-realtime" && record.registry === "https://registry.npmjs.org/"; });
@@ -63,7 +63,7 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
   if (workflow.repository !== repositoryUrl || workflow.path !== workflowPath || workflow.ref !== ref) throw new Error("RT_PROVENANCE_WORKFLOW_MISMATCH");
   const dependencies = Array.isArray(buildDefinition.resolvedDependencies) ? buildDefinition.resolvedDependencies : [];
   const dependency = dependencies.find((entry) => requireRecord(entry, "RT_PROVENANCE_DEPENDENCY_INVALID").uri === `git+${repositoryUrl}@${ref}`);
-  if (!dependency || requireRecord(requireRecord(dependency, "RT_PROVENANCE_DEPENDENCY_INVALID").digest, "RT_PROVENANCE_DEPENDENCY_INVALID").gitCommit !== expected.sourceSha) throw new Error("RT_PROVENANCE_SOURCE_MISMATCH");
+  if (!dependency || requireRecord(requireRecord(dependency, "RT_PROVENANCE_DEPENDENCY_INVALID").digest, "RT_PROVENANCE_DEPENDENCY_INVALID").gitCommit !== expected.workflowSha) throw new Error("RT_PROVENANCE_SOURCE_MISMATCH");
   const invocation = `https://github.com/${repository}/actions/runs/${expected.publishRunId}/attempts/${expected.publishRunAttempt}`;
   const runDetails = requireRecord(predicate.runDetails, "RT_PROVENANCE_RUN_INVALID");
   const builder = requireRecord(runDetails.builder, "RT_PROVENANCE_BUILDER_INVALID");
@@ -78,14 +78,14 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
   const extensions = certificateExtensions(Buffer.from(certificate.rawBytes, "base64"));
   const workflowIdentity = `${repositoryUrl}/${workflowPath}@${ref}`;
   const expectedExtensions = new Map([
-    ["1.3.6.1.4.1.57264.1.3", expected.sourceSha],
+    ["1.3.6.1.4.1.57264.1.3", expected.workflowSha],
     ["1.3.6.1.4.1.57264.1.5", repository],
     ["1.3.6.1.4.1.57264.1.8", githubOidcIssuer],
     ["1.3.6.1.4.1.57264.1.11", "github-hosted"],
     ["1.3.6.1.4.1.57264.1.12", repositoryUrl],
     ["1.3.6.1.4.1.57264.1.14", ref],
     ["1.3.6.1.4.1.57264.1.18", workflowIdentity],
-    ["1.3.6.1.4.1.57264.1.19", expected.sourceSha],
+    ["1.3.6.1.4.1.57264.1.19", expected.workflowSha],
     ["1.3.6.1.4.1.57264.1.20", trigger],
     ["1.3.6.1.4.1.57264.1.21", invocation],
     ["1.3.6.1.4.1.57264.1.22", "public"],
@@ -96,7 +96,7 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
     const actual = extensions.get(oid);
     if (oid.endsWith(".24") ? !actual?.startsWith(value) || !actual.endsWith(`:environment:${environment}`) : actual !== value) throw new Error(`RT_PROVENANCE_CERTIFICATE_IDENTITY_MISMATCH:${oid}`);
   }
-  return { package: `better-realtime@${expected.version}`, sha512, repository, workflow: workflowPath, environment, sourceSha: expected.sourceSha, invocation };
+  return { package: `better-realtime@${expected.version}`, sha512, repository, workflow: workflowPath, environment, workflowSha: expected.workflowSha, invocation };
 }
 
 interface DerNode { tag: number; valueStart: number; end: number; children: DerNode[] }
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   const required = (name: string) => { const value = argumentsMap.get(name); if (!value) throw new Error(`RT_PROVENANCE_ARGUMENT_MISSING:${name}`); return value; };
   const attestations = JSON.parse(await readFile(resolve(required("audit-signatures")), "utf8"));
   const tarball = await readFile(resolve(required("tarball")));
-  const result = verifyNpmProvenanceAttestation(attestations, tarball, { version: required("version"), sourceSha: required("source-sha"), publishRunId: required("publish-run-id"), publishRunAttempt: required("publish-run-attempt") });
+  const result = verifyNpmProvenanceAttestation(attestations, tarball, { version: required("version"), workflowSha: required("workflow-sha"), publishRunId: required("publish-run-id"), publishRunAttempt: required("publish-run-attempt") });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

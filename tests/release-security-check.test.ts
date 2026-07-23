@@ -69,8 +69,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level=high
       - run: pnpm package:export-public
+      - run: pnpm --dir release-source install --frozen-lockfile
+      - run: pnpm --dir release-source audit --audit-level=high
       - name: Build the release artifact once
-        run: pnpm --silent package:pack
+        run: pnpm --dir release-source --silent package:pack
       - name: Verify the approved release artifact identity
         id: approved
         env:
@@ -187,6 +189,8 @@ const verifyWorkflowContract = `on:
 permissions:
   id-token: none
 source_sha:
+workflow_sha:
+publish_workflow_sha:
 publish_run_id:
 publish_run_attempt:
 jobs:
@@ -200,13 +204,15 @@ jobs:
           set -euo pipefail
           [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
-          test "$(git rev-parse HEAD)" = "$INPUT_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$INPUT_WORKFLOW_SHA"
+          git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"
           jq -r .immutable
           test "$(jq -r .object.type <<<"$tag_ref")" = tag
           test "$(jq -r .tag <<<"$tag_object")" = "$tag"
           test "$(jq -r .message <<<"$tag_object")" = "Better Realtime \${tag#v}"
           test "$(jq -r .object.type <<<"$tag_object")" = commit
           test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"
+          test "$(jq -r .target_commitish <<<"$release_json")" = "$source_sha"
           git/ref/tags/$tag
           git/tags/$tag_object_sha
           gh release download "$tag" --repo "$GITHUB_REPOSITORY"
@@ -232,11 +238,14 @@ jobs:
       - name: Verify registry signatures, provenance, and dist-tag
         run: |
           audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"
+          publish_run="$(gh api "repos/\${GITHUB_REPOSITORY}/actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT")"
+          test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml
+          test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"
           npm audit signatures --json --include-attestations > "$audit_output")
           pnpm tsx scripts/verify-npm-provenance.ts \\
             --audit-signatures "$audit_output" \\
             --tarball \\
-            --source-sha \\
+            --workflow-sha "$INPUT_PUBLISH_WORKFLOW_SHA" \\
             --publish-run-id \\
             --publish-run-attempt
           dist-tags.alpha
@@ -294,6 +303,11 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("pnpm audit --audit-level=high", "pnpm audit --audit-level=high || true"))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
     expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("      - run: pnpm audit --audit-level=high\n", "      - run: pnpm audit --audit-level=high\n        if: false\n"))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
     expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("      - run: pnpm audit --audit-level=high\n", "      - run: pnpm audit --audit-level=high\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
+    expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("      - run: pnpm --dir release-source audit --audit-level=high\n", ""))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
+    const sourceAuditAfterPack = publishWorkflowContract
+      .replace("      - run: pnpm --dir release-source audit --audit-level=high\n", "")
+      .replace("      - name: Build the release artifact once\n", "      - name: Build the release artifact once\n        run: pnpm --dir release-source --silent package:pack\n      - run: pnpm --dir release-source audit --audit-level=high\n");
+    expect(() => assertReleaseBuildAuditOrder(sourceAuditAfterPack)).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
   });
 
   it("fails closed when approved artifact identity or byte checks drift", async () => {
@@ -326,7 +340,14 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseRecoveryContract(publish, verify, adapter)).not.toThrow();
     const publishMutations = [
       publish.replace("concurrency:\n  group: release-${{ inputs.version }}\n  cancel-in-progress: false\n", ""),
-      publish.replace('          test "$WORKFLOW_SHA" = "$INPUT_SOURCE_SHA"\n', ""),
+      publish.replace('          test "$WORKFLOW_SHA" = "$INPUT_WORKFLOW_SHA"\n', ""),
+      publish.replace('          git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"\n', ""),
+      publish.replace("jq -r '.check_runs | length'", "jq -r .check_runs.length"),
+      publish.replace("          path: release-source\n", ""),
+      publish.replace("          ref: ${{ inputs.workflow_sha }}", "          ref: ${{ inputs.source_sha }}"),
+      publish.replace('          echo "publish_workflow_sha=$original_publish_workflow_sha" >> "$GITHUB_OUTPUT"\n', ""),
+      publish.replace("publish_workflow_sha: ${{ needs.publish.outputs.publish_workflow_sha }}", "publish_workflow_sha: ${{ inputs.workflow_sha }}"),
+      publish.replace("      - name: Materialize the immutable source release notes\n", "").replace("      - run: pnpm package:export-public\n", "      - name: Materialize the immutable source release notes\n      - run: pnpm package:export-public\n"),
       publish.replace("-attempt-$RUN_ATTEMPT", ""),
       publish.replace("release_id: ${{ steps.reconcile.outputs.release_id }}", "release_id: guessed"),
       publish.replace("scripts/release-state-machine-github.ts reconcile-github", "scripts/release-state-machine-github.ts observe"),
@@ -341,7 +362,9 @@ describe("release-security contract modes", () => {
       verify.replace('release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/$release_id")"', 'release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag")"'),
       verify.replace('test "$(jq -r .id <<<"$release_json")" = "$release_id"\n', ""),
       verify.replace('test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"\n', ""),
-      verify.replace("          ref: ${{ inputs.source_sha }}", "          ref: ${{ inputs.tag }}"),
+      verify.replace('test "$(jq -r .target_commitish <<<"$release_json")" = "$source_sha"\n', ""),
+      verify.replace("          ref: ${{ inputs.workflow_sha }}", "          ref: ${{ inputs.tag }}"),
+      verify.replace('          git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"\n', ""),
     ];
     for (const [index, mutation] of verifyMutations.entries()) expect(() => assertReleaseRecoveryContract(publish, mutation, adapter), `verification mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
     const adapterMutations = [
@@ -419,7 +442,7 @@ describe("release-security contract modes", () => {
 
   it("fails closed when provenance identity verification is absent or bypassed", () => {
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract)).not.toThrow();
-    for (const marker of ["scripts/verify-npm-provenance.ts", "--audit-signatures", "--source-sha", "--publish-run-id", "publish_run_attempt:", "--include-attestations"]) expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace(marker, "removed"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
+    for (const marker of ["scripts/verify-npm-provenance.ts", "--audit-signatures", "--workflow-sha", "workflow_sha:", "publish_workflow_sha:", "actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT", 'test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"', "--publish-run-id", "publish_run_attempt:", "--include-attestations"]) expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replaceAll(marker, "removed"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("scripts/verify-npm-provenance.ts", "scripts/verify-npm-provenance.ts || true"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("npm audit signatures --json --include-attestations", "npm audit signatures --json --include-attestations && true"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(`${verifyWorkflowContract}\ncontinue-on-error: true`)).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
@@ -427,6 +450,7 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("          npm audit signatures --json --include-attestations > \"$audit_output\")\n          pnpm tsx scripts/verify-npm-provenance.ts", "          pnpm tsx scripts/verify-npm-provenance.ts\n          npm audit signatures --json --include-attestations > \"$audit_output\")"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace("pnpm tsx scripts/verify-npm-provenance.ts", "node mutate-audit.js\npnpm tsx scripts/verify-npm-provenance.ts"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
     expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replace('--audit-signatures "$audit_output"', '--audit-signatures "stale.json"'))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
+    expect(() => assertReleaseProvenanceVerification(verifyWorkflowContract.replaceAll("$INPUT_PUBLISH_WORKFLOW_SHA", "$INPUT_WORKFLOW_SHA"))).toThrow("RT_RELEASE_PROVENANCE_VERIFICATION_DRIFT");
   });
 });
 

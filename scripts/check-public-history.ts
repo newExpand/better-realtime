@@ -76,9 +76,12 @@ export async function checkPublicHistory(
   const records = (await git(["log", "--format=%H%x1f%s%x1f%b%x1f%ae%x1e", "HEAD"]))
     .split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => record.split("\x1f"));
   if (records.length !== commitCount) throw new Error("RT_PUBLIC_HISTORY_LOG_INVALID");
+  const bodyRequiredCommits = new Set(expectedBaseCommit
+    ? (await git(["rev-list", `${expectedBaseCommit}..HEAD`])).split("\n").filter(Boolean)
+    : [headCommit]);
   for (const [commit, subject, body, authorEmail] of records) {
     if (!subject || !conventionalSubject.test(subject)) throw new Error(`RT_PUBLIC_HISTORY_SUBJECT_INVALID:${commit}:${subject ?? ""}`);
-    if (!body) throw new Error(`RT_PUBLIC_HISTORY_BODY_REQUIRED:${commit}`);
+    if (bodyRequiredCommits.has(commit ?? "") && !body) throw new Error(`RT_PUBLIC_HISTORY_BODY_REQUIRED:${commit}`);
     if (/[^\x09\x0a\x0d\x20-\x7e]/u.test(`${subject}\n${body}`)) throw new Error(`RT_PUBLIC_HISTORY_MESSAGE_NON_ENGLISH:${commit}`);
     if (authorEmail?.toLocaleLowerCase("en-US") === "support@byteloft.app") throw new Error("RT_PUBLIC_HISTORY_CONDUCT_EMAIL_FORBIDDEN");
     if (authorEmail?.toLocaleLowerCase("en-US") !== expectedAuthorEmail.toLocaleLowerCase("en-US")) throw new Error(`RT_PUBLIC_HISTORY_AUTHOR_EMAIL_MISMATCH:${commit}:${authorEmail ?? ""}`);
