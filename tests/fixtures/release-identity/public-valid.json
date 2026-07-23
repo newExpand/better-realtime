@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "better-realtime.release-identity.v1",
+  "package": {
+    "name": "better-realtime",
+    "version": "0.1.0-alpha.5"
+  },
+  "packageSource": {
+    "repository": "newExpand/better-realtime",
+    "commit": "1111111111111111111111111111111111111111",
+    "tag": "v0.1.0-alpha.5",
+    "annotatedTagObject": "2222222222222222222222222222222222222222"
+  },
+  "workflow": {
+    "repository": "newExpand/better-realtime",
+    "path": ".github/workflows/release.yml",
+    "ref": "refs/heads/main",
+    "commit": "3333333333333333333333333333333333333333",
+    "runId": "30010000000",
+    "runAttempt": "1",
+    "environment": "npm-alpha"
+  },
+  "githubRelease": {
+    "id": 358600000,
+    "tag": "v0.1.0-alpha.5",
+    "artifactAsset": {
+      "name": "better-realtime-0.1.0-alpha.5.tgz",
+      "sha256": "94a6d31f9921e60fc9df1c4ef87e389e12cef1ab2f458eb82e9b58520cf9e878",
+      "size": 18
+    }
+  },
+  "artifact": {
+    "name": "better-realtime-0.1.0-alpha.5.tgz",
+    "sha256": "94a6d31f9921e60fc9df1c4ef87e389e12cef1ab2f458eb82e9b58520cf9e878",
+    "sha512": "35fc59f81462a66150b8d5d82ea88b6323257d1cca2636c89425deb817eabb4ec2d92aa1b7a2d54ff3e017f6acf55dda3901b58501e4a0fb884327d1a9c8f19d",
+    "integrity": "sha512-NfxZ+BRipmFQuNXYLqiLYyMlfRzKJjbIlCXeuBfqu07C2Sqht6LVT/PgF/as9V3aOQG1hQHkoPuIQyfRqcjxnQ==",
+    "size": 18,
+    "fileCount": 32
+  },
+  "npmRegistry": {
+    "tarball": "https://registry.npmjs.org/better-realtime/-/better-realtime-0.1.0-alpha.5.tgz",
+    "sha256": "94a6d31f9921e60fc9df1c4ef87e389e12cef1ab2f458eb82e9b58520cf9e878",
+    "sha512": "35fc59f81462a66150b8d5d82ea88b6323257d1cca2636c89425deb817eabb4ec2d92aa1b7a2d54ff3e017f6acf55dda3901b58501e4a0fb884327d1a9c8f19d",
+    "integrity": "sha512-NfxZ+BRipmFQuNXYLqiLYyMlfRzKJjbIlCXeuBfqu07C2Sqht6LVT/PgF/as9V3aOQG1hQHkoPuIQyfRqcjxnQ==",
+    "size": 18,
+    "fileCount": 32,
+    "distTags": {
+      "alpha": "0.1.0-alpha.5",
+      "latest": "0.1.0-alpha.5"
+    }
+  },
+  "evidence": {
+    "generatedAt": "2026-07-24T00:00:00.000Z",
+    "verification": {
+      "status": "prepublication-approved",
+      "checks": [
+        "package-source-tag",
+        "reviewed-workflow-revision",
+        "approved-artifact",
+        "github-asset-bytes",
+        "npm-registry-bytes"
+      ]
+    }
+  }
+}

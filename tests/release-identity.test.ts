@@ -146,7 +146,13 @@ describe("Better Realtime public release identity", () => {
     expect(workflow).toContain("scripts/release-state-machine-github.ts recover-local-artifact-spec-failure");
     expect(workflow).toContain("scripts/release-state-machine-github.ts plan-publication");
     expect(workflow).toContain("Record durable publish intent at the OIDC boundary");
-    expect(workflow).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");
+    expect(workflow).toContain("release_id: ${{ needs.finalize-release.outputs.release_id }}");
+    expect(workflow).toContain("scripts/release-state-machine-github.ts stage-github-draft");
+    expect(workflow).toContain("scripts/create-public-release-identity.ts");
+    expect(workflow).toContain("scripts/adopt-public-release-identity.ts");
+    expect(workflow).toContain("actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6");
+    expect(verifyWorkflow).toContain("pnpm release:identity:verify --");
+    expect(workflow).not.toMatch(/test "\$\(jq -r \.workflow\.run(?:Id|Attempt) [^\\n]+\)" = "\$GITHUB_RUN/u);
     expect(workflow).toContain("workflow_sha:");
     expect(workflow).toContain('test "$RUN_SHA" = "$INPUT_WORKFLOW_SHA"');
     expect(workflow).toContain('git merge-base --is-ancestor "$INPUT_SOURCE_SHA" "$INPUT_WORKFLOW_SHA"');
@@ -164,7 +170,7 @@ describe("Better Realtime public release identity", () => {
     expect(verifyWorkflow).toContain("scripts/verify-npm-provenance.ts");
     expect(verifyWorkflow).toContain("ref: ${{ inputs.workflow_sha }}");
     expect(verifyWorkflow).toContain("--workflow-sha");
-    for (const input of ["source_sha", "workflow_sha", "publish_workflow_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
+    for (const input of ["source_sha", "workflow_sha", "identity_workflow_sha", "publish_workflow_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
     const changelog = await readFile(resolve(root, "CHANGELOG.md"), "utf8");
     expect(changelog.indexOf("## 0.1.0-alpha.4")).toBeLessThan(changelog.indexOf("## 0.1.0-alpha.2"));
     expect(changelog).toContain("0.1.0-alpha.2 — Unpublished tag-only attempt");

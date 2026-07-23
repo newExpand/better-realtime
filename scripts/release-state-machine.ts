@@ -14,6 +14,7 @@ export interface ApprovedReleaseIdentity {
   bodySha256: string;
   artifact: ApprovedAssetIdentity;
   checksum: ApprovedAssetIdentity;
+  publicIdentity?: ApprovedAssetIdentity;
   packageFiles: number;
 }
 
@@ -61,6 +62,7 @@ export type ReleaseAction =
   | "create_release"
   | "upload_artifact"
   | "upload_checksum"
+  | "upload_public_identity"
   | "finalize_release"
   | "wait_for_immutable"
   | "mark_publish_intent"
@@ -82,8 +84,8 @@ export interface ReleaseProvider {
 }
 
 type MutationAction = Parameters<ReleaseProvider["apply"]>[0];
-const mutationActions = new Set<ReleaseAction>(["create_tag", "create_release", "upload_artifact", "upload_checksum", "finalize_release", "mark_publish_intent", "publish_once"]);
-const preservedReleaseVersions = new Set(["0.1.0-alpha.1", "0.1.0-alpha.2", "0.1.0-alpha.3"]);
+const mutationActions = new Set<ReleaseAction>(["create_tag", "create_release", "upload_artifact", "upload_checksum", "upload_public_identity", "finalize_release", "mark_publish_intent", "publish_once"]);
+const preservedReleaseVersions = new Set(["0.1.0-alpha.1", "0.1.0-alpha.2", "0.1.0-alpha.3", "0.1.0-alpha.4"]);
 
 function isMutationAction(action: ReleaseAction): action is MutationAction {
   return mutationActions.has(action);
@@ -101,10 +103,11 @@ function assertIdentity(identity: ApprovedReleaseIdentity): void {
   if (!/^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$/u.test(identity.version)) fail("INVALID_VERSION");
   if (identity.tag !== `v${identity.version}` || identity.tagMessage !== identity.title) fail("INVALID_RELEASE_IDENTITY");
   if (!/^[a-f0-9]{40}$/u.test(identity.sourceSha)) fail("INVALID_SOURCE_SHA");
-  for (const value of [identity.bodySha256, identity.artifact.sha256, identity.checksum.sha256]) if (!/^[a-f0-9]{64}$/u.test(value)) fail("INVALID_DIGEST");
-  if (!Number.isSafeInteger(identity.artifact.size) || identity.artifact.size <= 0 || !Number.isSafeInteger(identity.checksum.size) || identity.checksum.size <= 0) fail("INVALID_SIZE");
+  for (const value of [identity.bodySha256, identity.artifact.sha256, identity.checksum.sha256, identity.publicIdentity?.sha256].filter(Boolean)) if (!/^[a-f0-9]{64}$/u.test(value!)) fail("INVALID_DIGEST");
+  if (!Number.isSafeInteger(identity.artifact.size) || identity.artifact.size <= 0 || !Number.isSafeInteger(identity.checksum.size) || identity.checksum.size <= 0 || (identity.publicIdentity !== undefined && (!Number.isSafeInteger(identity.publicIdentity.size) || identity.publicIdentity.size <= 0))) fail("INVALID_SIZE");
   if (!Number.isSafeInteger(identity.packageFiles) || identity.packageFiles <= 0) fail("INVALID_FILE_COUNT");
   if (identity.artifact.name !== `better-realtime-${identity.version}.tgz` || identity.checksum.name !== `${identity.artifact.name}.sha256`) fail("INVALID_ASSET_NAME");
+  if (identity.publicIdentity && identity.publicIdentity.name !== `better-realtime-${identity.version}.identity.json`) fail("INVALID_ASSET_NAME");
 }
 
 export function releaseIdentityDigest(identity: ApprovedReleaseIdentity, releaseId = 42): string {
@@ -123,6 +126,9 @@ export function releaseIdentityDigest(identity: ApprovedReleaseIdentity, release
     identity.checksum.name,
     identity.checksum.sha256,
     identity.checksum.size,
+    identity.publicIdentity?.name ?? null,
+    identity.publicIdentity?.sha256 ?? null,
+    identity.publicIdentity?.size ?? null,
     identity.packageFiles,
     releaseId,
   ]);
@@ -163,7 +169,7 @@ export function planReleaseTransition(identity: ApprovedReleaseIdentity, observe
     || !release.prerelease
   ) fail("RELEASE_IDENTITY_MISMATCH");
   if (observed.publishIntent.state === "present" && (observed.publishIntent.releaseId !== release.id || observed.publishIntent.identityDigest !== releaseIdentityDigest(identity, release.id))) fail("PUBLISH_INTENT_MISMATCH");
-  const allowedNames = new Set([identity.artifact.name, identity.checksum.name]);
+  const allowedNames = new Set([identity.artifact.name, identity.checksum.name, identity.publicIdentity?.name ?? `better-realtime-${identity.version}.identity.json`]);
   if (release.assets.some(({ name }) => !allowedNames.has(name))) fail("UNEXPECTED_ASSET");
   const artifact = exactAsset(release, identity.artifact);
   const checksum = exactAsset(release, identity.checksum);
@@ -171,9 +177,10 @@ export function planReleaseTransition(identity: ApprovedReleaseIdentity, observe
     if (release.immutable || observed.npm.state === "exact" || observed.publishIntent.state === "present") fail("IMPOSSIBLE_ORDER");
     if (!artifact) return { action: "upload_artifact", releaseId: release.id, reason: "approved package asset is missing" };
     if (!checksum) return { action: "upload_checksum", releaseId: release.id, reason: "approved checksum asset is missing" };
+    if (identity.publicIdentity && !exactAsset(release, identity.publicIdentity)) return { action: "upload_public_identity", releaseId: release.id, reason: "approved public identity asset is missing" };
     return { action: "finalize_release", releaseId: release.id, reason: "asset-complete draft is ready to finalize" };
   }
-  if (!artifact || !checksum) fail("FINAL_RELEASE_ASSET_MISMATCH");
+  if (!artifact || !checksum || (identity.publicIdentity && !exactAsset(release, identity.publicIdentity))) fail("FINAL_RELEASE_ASSET_MISMATCH");
   if (!release.immutable) {
     if (observed.npm.state === "exact" || observed.publishIntent.state === "present") fail("IMPOSSIBLE_ORDER");
     return { action: "wait_for_immutable", releaseId: release.id, reason: "finalized release is awaiting immutable enforcement" };

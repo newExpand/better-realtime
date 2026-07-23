@@ -26,7 +26,11 @@ describe("deterministic clean-history public export", () => {
     expect(report.gitHistoryIncluded).toBe(false);
     expect(report.files.map(({ path }) => path)).toContain("packages/runtime/package.json");
     expect(report.files.map(({ path }) => path)).toContain("release/public-export.json");
+    expect(report.files.map(({ path }) => path)).toContain("release/public-release-identity.schema.json");
     expect(report.files.map(({ path }) => path)).not.toContain("release/.private-export-policy.json");
+    expect(report.files.map(({ path }) => path)).not.toContain(["docs", "internal", "schemas", "private-release-identity.schema.json"].join("/"));
+    expect(report.files.map(({ path }) => path)).not.toContain(["docs", "internal", "releases", "v0.1.0-alpha.4.identity.json"].join("/"));
+    expect(report.files.map(({ path }) => path)).not.toContain(["docs", "internal", "tools", "create-private-release-identity.mjs"].join("/"));
     expect(report.files.map(({ path }) => path)).toContain("docs/public/assets/recovery-demo.gif");
     expect(report.files.some(({ path }) => /(^|\/)(?:AGENTS|CLAUDE)(?:\.override)?\.md$/iu.test(path))).toBe(false);
     expect(report.files.some(({ path }) => path.startsWith(["docs", "internal", ""].join("/")))).toBe(false);

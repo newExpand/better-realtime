@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/newExpand/better-realtime/blob/main/release/public-release-identity.schema.json",
+  "title": "Better Realtime public release identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "package",
+    "packageSource",
+    "workflow",
+    "githubRelease",
+    "artifact",
+    "npmRegistry",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "better-realtime.release-identity.v1" },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "better-realtime" },
+        "version": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" }
+      }
+    },
+    "packageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "tag", "annotatedTagObject"],
+      "properties": {
+        "repository": { "const": "newExpand/better-realtime" },
+        "commit": { "$ref": "#/$defs/sha1" },
+        "tag": { "type": "string", "pattern": "^v0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+        "annotatedTagObject": { "$ref": "#/$defs/sha1" }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "description": "Prepublication workflow execution that generated and attested this immutable identity asset; npm provenance publication execution is verified separately.",
+      "additionalProperties": false,
+      "required": ["repository", "path", "ref", "commit", "runId", "runAttempt", "environment"],
+      "properties": {
+        "repository": { "const": "newExpand/better-realtime" },
+        "path": { "const": ".github/workflows/release.yml" },
+        "ref": { "const": "refs/heads/main" },
+        "commit": { "$ref": "#/$defs/sha1" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "environment": { "const": "npm-alpha" }
+      }
+    },
+    "githubRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "tag", "artifactAsset"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "tag": { "type": "string", "pattern": "^v0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+        "artifactAsset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "sha256", "size"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^better-realtime-0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+\\.tgz$" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "size": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "npmRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tarball", "sha256", "sha512", "integrity", "size", "fileCount", "distTags"],
+      "properties": {
+        "tarball": { "type": "string", "pattern": "^https://registry\\.npmjs\\.org/better-realtime/-/better-realtime-.*\\.tgz$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha512": { "$ref": "#/$defs/sha512" },
+        "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "size": { "type": "integer", "minimum": 1 },
+        "fileCount": { "type": "integer", "minimum": 1 },
+        "distTags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["alpha", "latest"],
+          "properties": {
+            "alpha": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+            "latest": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedAt", "verification"],
+      "properties": {
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "checks"],
+          "properties": {
+            "status": { "enum": ["prepublication-approved", "verified"] },
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sha512": { "type": "string", "pattern": "^[a-f0-9]{128}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "sha512", "integrity", "size", "fileCount"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^better-realtime-0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+\\.tgz$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha512": { "$ref": "#/$defs/sha512" },
+        "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "size": { "type": "integer", "minimum": 1 },
+        "fileCount": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

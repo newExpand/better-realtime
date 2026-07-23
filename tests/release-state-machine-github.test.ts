@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,22 +15,23 @@ function json(value: unknown): Response {
 
 interface FakeProviderOptions {
   ambiguousAfterCreate?: boolean;
+  existingImmutableIdentity?: boolean;
 }
 
 async function fakeProvider(options: FakeProviderOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "better-realtime-release-provider-"));
-  const notes = "Better Realtime alpha.4 test release\n";
-  const artifactBytes = new TextEncoder().encode("approved alpha.4 artifact");
-  const artifactName = "better-realtime-0.1.0-alpha.4.tgz";
+  const notes = "Better Realtime alpha.5 test release\n";
+  const artifactBytes = new TextEncoder().encode("approved alpha.5 artifact");
+  const artifactName = "better-realtime-0.1.0-alpha.5.tgz";
   const artifactSha = sha256(artifactBytes);
   const checksumBytes = new TextEncoder().encode(`${artifactSha}  ${artifactName}\n`);
   const identity: ApprovedReleaseIdentity = {
     repository: "newExpand/better-realtime",
-    version: "0.1.0-alpha.4",
+    version: "0.1.0-alpha.5",
     sourceSha: "a".repeat(40),
-    tag: "v0.1.0-alpha.4",
-    tagMessage: "Better Realtime 0.1.0-alpha.4",
-    title: "Better Realtime 0.1.0-alpha.4",
+    tag: "v0.1.0-alpha.5",
+    tagMessage: "Better Realtime 0.1.0-alpha.5",
+    title: "Better Realtime 0.1.0-alpha.5",
     bodySha256: sha256(notes),
     artifact: { name: artifactName, sha256: artifactSha, size: artifactBytes.byteLength },
     checksum: {
@@ -45,13 +46,22 @@ async function fakeProvider(options: FakeProviderOptions = {}) {
   await writeFile(join(directory, identity.artifact.name), artifactBytes);
   await writeFile(join(directory, identity.checksum.name), checksumBytes);
 
-  let created = false;
-  let draft = true;
-  let immutable = false;
+  const existingIdentityBytes = new TextEncoder().encode('{"schemaVersion":"better-realtime.release-identity.v1"}\n');
+  const existingIdentityName = `better-realtime-${identity.version}.identity.json`;
+  const preexisting = options.existingImmutableIdentity === true;
+  let created = preexisting;
+  let draft = !preexisting;
+  let immutable = preexisting;
   let createCalls = 0;
   let directCreatedReleaseReads = 0;
   const mutations: string[] = [];
-  const assets: Array<{ id: number; name: string; digest: string; size: number; state: string; bytes: Uint8Array }> = [];
+  const assets: Array<{ id: number; name: string; digest: string; size: number; state: string; bytes: Uint8Array }> = preexisting
+    ? [
+        { id: 11, name: identity.artifact.name, digest: `sha256:${identity.artifact.sha256}`, size: identity.artifact.size, state: "uploaded", bytes: artifactBytes },
+        { id: 12, name: identity.checksum.name, digest: `sha256:${identity.checksum.sha256}`, size: identity.checksum.size, state: "uploaded", bytes: checksumBytes },
+        { id: 13, name: existingIdentityName, digest: `sha256:${sha256(existingIdentityBytes)}`, size: existingIdentityBytes.byteLength, state: "uploaded", bytes: existingIdentityBytes },
+      ]
+    : [];
 
   const release = (id: number) => ({
     id,
@@ -80,6 +90,7 @@ async function fakeProvider(options: FakeProviderOptions = {}) {
       return json({ total_count: 0, check_runs: [] });
     }
     if (path.endsWith("/releases") && method === "GET") {
+      if (preexisting) return json([release(42)]);
       return json(created && options.ambiguousAfterCreate ? [release(43)] : []);
     }
     if (path.endsWith("/releases") && method === "POST") {
@@ -139,6 +150,64 @@ afterEach(() => {
 });
 
 describe.sequential("GitHub release provider recovery", () => {
+  it("stages the exact draft and returns its numeric ID and annotated tag object without finalizing", async () => {
+    const provider = await fakeProvider();
+    const priorToken = process.env.GH_TOKEN;
+    const priorNotes = process.env.RELEASE_NOTES_FILE;
+    const priorAssets = process.env.RELEASE_ASSET_DIR;
+    process.env.GH_TOKEN = "test-token";
+    process.env.RELEASE_NOTES_FILE = provider.notesPath;
+    process.env.RELEASE_ASSET_DIR = provider.directory;
+    vi.stubGlobal("fetch", provider.fetch);
+    vi.resetModules();
+    try {
+      const { stageGithubDraft } = await import("../scripts/release-state-machine-github.ts");
+      await expect(stageGithubDraft(provider.identity)).resolves.toMatchObject({ releaseId: 42, tagObject: "e".repeat(40) });
+      expect(provider.mutations).toEqual([
+        "create_release",
+        `upload:${provider.identity.artifact.name}`,
+        `upload:${provider.identity.checksum.name}`,
+      ]);
+    } finally {
+      if (priorToken === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = priorToken;
+      if (priorNotes === undefined) delete process.env.RELEASE_NOTES_FILE; else process.env.RELEASE_NOTES_FILE = priorNotes;
+      if (priorAssets === undefined) delete process.env.RELEASE_ASSET_DIR; else process.env.RELEASE_ASSET_DIR = priorAssets;
+      await rm(provider.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("re-adopts the identity asset from an exact immutable Release without repeating a mutation", async () => {
+    const provider = await fakeProvider({ existingImmutableIdentity: true });
+    const priorToken = process.env.GH_TOKEN;
+    const priorNotes = process.env.RELEASE_NOTES_FILE;
+    const priorAssets = process.env.RELEASE_ASSET_DIR;
+    process.env.GH_TOKEN = "test-token";
+    process.env.RELEASE_NOTES_FILE = provider.notesPath;
+    process.env.RELEASE_ASSET_DIR = provider.directory;
+    vi.stubGlobal("fetch", provider.fetch);
+    vi.resetModules();
+    try {
+      const { stageGithubDraft } = await import("../scripts/release-state-machine-github.ts");
+      const result = await stageGithubDraft(provider.identity);
+      expect(result).toMatchObject({
+        releaseId: 42,
+        tagObject: "e".repeat(40),
+        existingPublicIdentity: {
+          name: `better-realtime-${provider.identity.version}.identity.json`,
+          sha256: sha256(new TextEncoder().encode('{"schemaVersion":"better-realtime.release-identity.v1"}\n')),
+        },
+      });
+      expect(provider.mutations).toEqual([]);
+      await expect(readFile(join(provider.directory, `better-realtime-${provider.identity.version}.identity.json`), "utf8"))
+        .resolves.toBe('{"schemaVersion":"better-realtime.release-identity.v1"}\n');
+    } finally {
+      if (priorToken === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = priorToken;
+      if (priorNotes === undefined) delete process.env.RELEASE_NOTES_FILE; else process.env.RELEASE_NOTES_FILE = priorNotes;
+      if (priorAssets === undefined) delete process.env.RELEASE_ASSET_DIR; else process.env.RELEASE_ASSET_DIR = priorAssets;
+      await rm(provider.directory, { recursive: true, force: true });
+    }
+  });
+
   it("pins the create response ID and never creates a duplicate while the Release list lags", async () => {
     const provider = await fakeProvider();
     const priorToken = process.env.GH_TOKEN;

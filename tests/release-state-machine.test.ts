@@ -15,22 +15,26 @@ const root = resolve(import.meta.dirname, "..");
 
 const identity: ApprovedReleaseIdentity = {
   repository: "newExpand/better-realtime",
-  version: "0.1.0-alpha.4",
+  version: "0.1.0-alpha.5",
   sourceSha: "a".repeat(40),
-  tag: "v0.1.0-alpha.4",
-  tagMessage: "Better Realtime 0.1.0-alpha.4",
-  title: "Better Realtime 0.1.0-alpha.4",
+  tag: "v0.1.0-alpha.5",
+  tagMessage: "Better Realtime 0.1.0-alpha.5",
+  title: "Better Realtime 0.1.0-alpha.5",
   bodySha256: "b".repeat(64),
-  artifact: { name: "better-realtime-0.1.0-alpha.4.tgz", sha256: "c".repeat(64), size: 127_292 },
-  checksum: { name: "better-realtime-0.1.0-alpha.4.tgz.sha256", sha256: "d".repeat(64), size: 100 },
+  artifact: { name: "better-realtime-0.1.0-alpha.5.tgz", sha256: "c".repeat(64), size: 127_292 },
+  checksum: { name: "better-realtime-0.1.0-alpha.5.tgz.sha256", sha256: "d".repeat(64), size: 100 },
+  publicIdentity: { name: "better-realtime-0.1.0-alpha.5.identity.json", sha256: "f".repeat(64), size: 1_024 },
   packageFiles: 32,
 };
+const legacyIdentity: ApprovedReleaseIdentity = structuredClone(identity);
+delete legacyIdentity.publicIdentity;
 
 const exactTag = { state: "exact" as const, objectSha: "e".repeat(40), targetSha: identity.sourceSha };
 const artifact = { id: 11, name: identity.artifact.name, sha256: identity.artifact.sha256, size: identity.artifact.size, state: "uploaded" as const };
 const checksum = { id: 12, name: identity.checksum.name, sha256: identity.checksum.sha256, size: identity.checksum.size, state: "uploaded" as const };
+const publicIdentity = { id: 13, name: identity.publicIdentity!.name, sha256: identity.publicIdentity!.sha256, size: identity.publicIdentity!.size, state: "uploaded" as const };
 const draft: ObservedRelease = { id: 42, tag: identity.tag, target: identity.sourceSha, title: identity.title, bodySha256: identity.bodySha256, draft: true, prerelease: true, immutable: false, assets: [] };
-const immutable: ObservedRelease = { ...draft, draft: false, immutable: true, assets: [artifact, checksum] };
+const immutable: ObservedRelease = { ...draft, draft: false, immutable: true, assets: [artifact, checksum, publicIdentity] };
 const intent = { state: "present" as const, runId: "10", runAttempt: "1", releaseId: 42, identityDigest: releaseIdentityDigest(identity, 42) };
 
 function observed(overrides: Partial<ObservedReleaseState> = {}): ObservedReleaseState {
@@ -62,6 +66,7 @@ class FakeProvider implements ReleaseProvider {
     else if (action === "create_release") this.state.releases = [structuredClone(draft)];
     else if (action === "upload_artifact") this.state.releases[0]!.assets = [artifact];
     else if (action === "upload_checksum") this.state.releases[0]!.assets = [artifact, checksum];
+    else if (action === "upload_public_identity") this.state.releases[0]!.assets = [artifact, checksum, publicIdentity];
     else if (action === "finalize_release") this.state.releases = [structuredClone(immutable)];
     else if (action === "mark_publish_intent") this.state.publishIntent = intent;
     else if (action === "publish_once") this.state.npm = { state: "exact", sha256: identity.artifact.sha256, size: identity.artifact.size };
@@ -74,12 +79,13 @@ describe("resumable release state planner", () => {
     ["2. annotated tag only", observed({ tag: exactTag }), "create_release", undefined],
     ["3. tag plus empty draft", observed({ tag: exactTag, releases: [draft] }), "upload_artifact", 42],
     ["4. draft with only the package asset", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact] }] }), "upload_checksum", 42],
-    ["5. asset-complete draft", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact, checksum] }] }), "finalize_release", 42],
+    ["5a. package-asset-complete draft", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact, checksum] }] }), "upload_public_identity", 42],
+    ["5b. identity-complete draft", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact, checksum, publicIdentity] }] }), "finalize_release", 42],
     ["6. immutable Release with no npm version", observed({ tag: exactTag, releases: [immutable] }), "mark_publish_intent", 42],
     ["7. ambiguous publish result with exact registry version", observed({ tag: exactTag, releases: [immutable], npm: { state: "exact", sha256: identity.artifact.sha256, size: identity.artifact.size }, publishIntent: intent }), "verify_only", 42],
     ["8. npm version with incomplete post-publish verification", observed({ tag: exactTag, releases: [immutable], npm: { state: "exact", sha256: identity.artifact.sha256, size: identity.artifact.size }, publishIntent: intent }), "verify_only", 42],
     ["9. transient registry E404 after publish intent", observed({ tag: exactTag, releases: [immutable], npm: { state: "transient_e404" }, publishIntent: intent }), "poll_registry", 42],
-    ["10. a new dispatch resumes an asset-complete draft", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact, checksum] }] }), "finalize_release", 42],
+    ["10. a new dispatch resumes an identity-complete draft", observed({ tag: exactTag, releases: [{ ...draft, assets: [artifact, checksum, publicIdentity] }] }), "finalize_release", 42],
   ] as const)("plans %s", (_name, state, action, releaseId) => {
     expect(planReleaseTransition(identity, state)).toMatchObject({ action, ...(releaseId === undefined ? {} : { releaseId }) });
   });
@@ -119,12 +125,12 @@ describe("resumable release state planner", () => {
 
   it("never repeats a successful mutation after a crash and re-observation", async () => {
     const provider = new FakeProvider();
-    for (let crash = 0; crash < 5; crash += 1) {
+    for (let crash = 0; crash < 6; crash += 1) {
       await reconcileReleaseState(identity, provider, { stopAfterMutations: 1 });
     }
     expect(await reconcileReleaseState(identity, provider)).toMatchObject({ action: "publish_once", releaseId: 42 });
     expect(await reconcileReleaseState(identity, provider)).toMatchObject({ action: "verify_only", releaseId: 42 });
-    expect(provider.calls).toEqual(["create_tag", "create_release", "upload_artifact", "upload_checksum", "finalize_release", "mark_publish_intent", "publish_once"]);
+    expect(provider.calls).toEqual(["create_tag", "create_release", "upload_artifact", "upload_checksum", "upload_public_identity", "finalize_release", "mark_publish_intent", "publish_once"]);
   });
 
   it("blocks rather than republishing when a prior invocation left durable intent", () => {
@@ -156,7 +162,7 @@ describe("resumable release state planner", () => {
 describe("historical failed release preservation", () => {
   it("refuses every mutation of the preserved alpha.2 tag-only identity", async () => {
     const alpha2: ApprovedReleaseIdentity = {
-      ...identity,
+      ...legacyIdentity,
       version: "0.1.0-alpha.2",
       sourceSha: "fd10345b9fa2e2fc31598987d856e0a6ed1bc51c",
       tag: "v0.1.0-alpha.2",
@@ -177,7 +183,7 @@ describe("historical failed release preservation", () => {
 
   it("refuses to finalize the preserved alpha.3 draft Release ID", async () => {
     const alpha3: ApprovedReleaseIdentity = {
-      ...identity,
+      ...legacyIdentity,
       version: "0.1.0-alpha.3",
       sourceSha: "d51851a94809f6886af3f37639d7fb9b3758d94d",
       tag: "v0.1.0-alpha.3",
@@ -207,6 +213,21 @@ describe("historical failed release preservation", () => {
       async apply(action) { this.calls.push(action); },
     };
     await expect(reconcileReleaseState(alpha3, provider, { stopAfterMutations: 1 })).rejects.toThrow("RT_RELEASE_STATE_PRESERVED_IDENTITY_MUTATION_FORBIDDEN");
+    expect(provider.calls).toEqual([]);
+  });
+
+  it("refuses every mutation against the completed alpha.4 identity", async () => {
+    const alpha4: ApprovedReleaseIdentity = {
+      ...legacyIdentity,
+      version: "0.1.0-alpha.4",
+      tag: "v0.1.0-alpha.4",
+      tagMessage: "Better Realtime 0.1.0-alpha.4",
+      title: "Better Realtime 0.1.0-alpha.4",
+      artifact: { ...identity.artifact, name: "better-realtime-0.1.0-alpha.4.tgz" },
+      checksum: { ...identity.checksum, name: "better-realtime-0.1.0-alpha.4.tgz.sha256" },
+    };
+    const provider = new FakeProvider();
+    await expect(reconcileReleaseState(alpha4, provider, { stopAfterMutations: 1 })).rejects.toThrow("RT_RELEASE_STATE_PRESERVED_IDENTITY_MUTATION_FORBIDDEN");
     expect(provider.calls).toEqual([]);
   });
 });
@@ -284,7 +305,7 @@ describe("release workflow state-machine structure", () => {
     const adapter = await readFile(resolve(root, "scripts/release-state-machine-github.ts"), "utf8");
     expect(publish).toContain("release_id:");
     expect(publish).toMatch(/release_id:\s*\$\{\{\s*(?:steps|needs)\.[^}]+\.outputs\.release_id\s*\}\}/u);
-    expect(publish).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");
+    expect(publish).toContain("release_id: ${{ needs.finalize-release.outputs.release_id }}");
     expect(verify).toMatch(/release_id:\s*\n\s+required:\s*true/u);
     expect(`${publish}\n${verify}`).toMatch(/repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$release_id/u);
     expect(adapter).toContain("await observe(identity, fixedReleaseId)");

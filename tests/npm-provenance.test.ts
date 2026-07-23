@@ -12,7 +12,7 @@ describe("npm provenance identity", () => {
     expect(() => verifyNpmProvenanceAttestation({ invalid: [{ name: "better-realtime" }], missing: [], verified: [] }, tarball, expected)).toThrow("RT_PROVENANCE_AUDIT_NOT_CLEAN");
     expect(() => verifyNpmProvenanceAttestation(attestation({ subjectSha512: "b".repeat(128) }), tarball, expected)).toThrow("RT_PROVENANCE_SUBJECT_MISMATCH");
     expect(() => verifyNpmProvenanceAttestation(attestation({ environment: "different" }), tarball, expected)).toThrow("RT_PROVENANCE_CERTIFICATE_IDENTITY_MISMATCH:1.3.6.1.4.1.57264.1.23");
-    expect(() => verifyNpmProvenanceAttestation(attestation({ sourceSha: "b".repeat(40) }), tarball, expected)).toThrow(/RT_PROVENANCE_(SOURCE_MISMATCH|CERTIFICATE_IDENTITY_MISMATCH)/u);
+    expect(() => verifyNpmProvenanceAttestation(attestation({ workflowSha: "b".repeat(40) }), tarball, expected)).toThrow(/RT_PROVENANCE_(SOURCE_MISMATCH|CERTIFICATE_IDENTITY_MISMATCH)/u);
     expect(() => verifyNpmProvenanceAttestation(attestation({ invocation: "https://github.com/newExpand/better-realtime/actions/runs/999/attempts/1" }), tarball, expected)).toThrow("RT_PROVENANCE_RUN_MISMATCH");
     for (const [override, error] of [
       [{ issuer: "https://issuer.invalid" }, "RT_PROVENANCE_CERTIFICATE_IDENTITY_MISMATCH:1.3.6.1.4.1.57264.1.8"],
@@ -25,22 +25,22 @@ describe("npm provenance identity", () => {
   });
 });
 
-function attestation(overrides: { subjectSha512?: string; environment?: string; sourceSha?: string; invocation?: string; issuer?: string; builder?: string; trigger?: string; visibility?: string; statementType?: string; bundleMediaType?: string } = {}): Record<string, unknown> {
+function attestation(overrides: { subjectSha512?: string; environment?: string; workflowSha?: string; invocation?: string; issuer?: string; builder?: string; trigger?: string; visibility?: string; statementType?: string; bundleMediaType?: string } = {}): Record<string, unknown> {
   const repository = "newExpand/better-realtime";
   const repositoryUrl = `https://github.com/${repository}`;
   const ref = "refs/heads/main";
-  const sourceSha = overrides.sourceSha ?? expected.workflowSha;
+  const workflowSha = overrides.workflowSha ?? expected.workflowSha;
   const invocation = overrides.invocation ?? `${repositoryUrl}/actions/runs/${expected.publishRunId}/attempts/${expected.publishRunAttempt}`;
   const workflowIdentity = `${repositoryUrl}/.github/workflows/release.yml@${ref}`;
   const certificate = sequence([
-    extension("1.3.6.1.4.1.57264.1.3", sourceSha),
+    extension("1.3.6.1.4.1.57264.1.3", workflowSha),
     extension("1.3.6.1.4.1.57264.1.5", repository),
     extension("1.3.6.1.4.1.57264.1.8", overrides.issuer ?? "https://token.actions.githubusercontent.com"),
     extension("1.3.6.1.4.1.57264.1.11", "github-hosted"),
     extension("1.3.6.1.4.1.57264.1.12", repositoryUrl),
     extension("1.3.6.1.4.1.57264.1.14", ref),
     extension("1.3.6.1.4.1.57264.1.18", workflowIdentity),
-    extension("1.3.6.1.4.1.57264.1.19", sourceSha),
+    extension("1.3.6.1.4.1.57264.1.19", workflowSha),
     extension("1.3.6.1.4.1.57264.1.20", overrides.trigger ?? "workflow_dispatch"),
     extension("1.3.6.1.4.1.57264.1.21", invocation),
     extension("1.3.6.1.4.1.57264.1.22", overrides.visibility ?? "public"),
@@ -52,7 +52,7 @@ function attestation(overrides: { subjectSha512?: string; environment?: string; 
     subject: [{ name: `pkg:npm/better-realtime@${expected.version}`, digest: { sha512: overrides.subjectSha512 ?? createHash("sha512").update(tarball).digest("hex") } }],
     predicateType: "https://slsa.dev/provenance/v1",
     predicate: {
-      buildDefinition: { buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1", externalParameters: { workflow: { ref, repository: repositoryUrl, path: ".github/workflows/release.yml" } }, internalParameters: { github: { event_name: overrides.trigger ?? "workflow_dispatch" } }, resolvedDependencies: [{ uri: `git+${repositoryUrl}@${ref}`, digest: { gitCommit: sourceSha } }] },
+      buildDefinition: { buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1", externalParameters: { workflow: { ref, repository: repositoryUrl, path: ".github/workflows/release.yml" } }, internalParameters: { github: { event_name: overrides.trigger ?? "workflow_dispatch" } }, resolvedDependencies: [{ uri: `git+${repositoryUrl}@${ref}`, digest: { gitCommit: workflowSha } }] },
       runDetails: { builder: { id: overrides.builder ?? "https://github.com/actions/runner/github-hosted" }, metadata: { invocationId: invocation } }
     }
   };

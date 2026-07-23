@@ -11,6 +11,7 @@ import {
   releaseAuthority,
   trustedPublisherEvidenceContract,
   assertReleaseArtifactApproval,
+  assertReleaseIntegrityIdentityBoundary,
   assertReleaseBuildAuditOrder,
   assertPublishOidcBoundary,
   assertReleaseProvenanceVerification,
@@ -190,6 +191,7 @@ permissions:
   id-token: none
 source_sha:
 workflow_sha:
+identity_workflow_sha:
 publish_workflow_sha:
 publish_run_id:
 publish_run_attempt:
@@ -227,6 +229,8 @@ jobs:
         env:
           EXPECTED_SHA256: \${{ inputs.expected_sha256 }}
           EXPECTED_SIZE: \${{ inputs.expected_size }}
+          INPUT_SOURCE_SHA: \${{ inputs.source_sha }}
+          INPUT_RELEASE_ID: \${{ inputs.release_id }}
         run: |
           set -euo pipefail
           test "$(sha256sum "$asset" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
@@ -354,7 +358,7 @@ describe("release-security contract modes", () => {
       publish.replace("scripts/release-state-machine-github.ts plan-publication", "scripts/release-state-machine-github.ts observe"),
       publish.replace("      recover_failed_publish:\n", "      removed_failed_publish:\n"),
       publish.replace("scripts/release-state-machine-github.ts recover-local-artifact-spec-failure", "scripts/release-state-machine-github.ts observe"),
-      publish.replace("    needs: [build, stage-release, recover-publication]\n", "    needs: [build, stage-release]\n"),
+      publish.replace("    needs: [build, stage-release, finalize-release, recover-publication]\n", "    needs: [build, stage-release]\n"),
       publish.replace('test "$intent_count" -le 2', 'test "$intent_count" -le 99'),
       publish.replace('test "$abort_count" -le 1', 'test "$abort_count" -le 99'),
       publish.replace(`test "$(jq -sr '[.[].name] | unique | length' publish-intents.jsonl)" = "$intent_count"`, "true"),
@@ -364,7 +368,7 @@ describe("release-security contract modes", () => {
       publish.replace('          test -f "$ARTIFACT"\n', ""),
       publish.replaceAll("if: steps.reobserve.outputs.publish == 'true'", "if: always()"),
       publish.replace('npm publish "$ARTIFACT" --tag alpha --access public --provenance', 'npm publish "$ARTIFACT" --tag alpha --access public --provenance\nnpm publish "$ARTIFACT"'),
-      publish.replace("release_id: ${{ needs.stage-release.outputs.release_id }}", "release_id: 1"),
+      publish.replace("release_id: ${{ needs.finalize-release.outputs.release_id }}", "release_id: 1"),
     ];
     for (const [index, mutation] of publishMutations.entries()) expect(() => assertReleaseRecoveryContract(mutation, verify, adapter), `workflow mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
     const verifyMutations = [
@@ -381,8 +385,8 @@ describe("release-security contract modes", () => {
       adapter.replace("listAll<GitHubRelease>(`repos/${identity.repository}/releases`)", "requestOptional<GitHubRelease>(`repos/${identity.repository}/releases/tags/${identity.tag}`)"),
       adapter.replace("`repos/${identity.repository}/releases/${candidate.id}`", "`repos/${identity.repository}/releases/latest`"),
       adapter.replaceAll("fixedReleaseId", "unboundReleaseId"),
-      adapter.replace("await observe(identity, fixedReleaseId)", "await observe(identity)"),
-      adapter.replace("await observe(identity, releaseId)", "await observe(identity)"),
+      adapter.replaceAll("await observe(identity, fixedReleaseId)", "await observe(identity)"),
+      adapter.replaceAll("await observe(identity, releaseId)", "await observe(identity)"),
       adapter.replaceAll("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED", "RT_RELEASE_PROVIDER_IGNORED_ID_CHANGE"),
       adapter.replaceAll("publish-intent/${identity.version}/", "publish-attempt/"),
       adapter.replaceAll("publish-abort/${identity.version}/", "publish-ignored/"),
@@ -419,7 +423,7 @@ describe("release-security contract modes", () => {
       mutatePublish('node-version: "24.18.0"', 'node-version: "24.x"'),
       mutatePublish('test "$(npm --version)" = 11.16.0', 'npm --version'),
       mutatePublish('test "$canonical_digest" = "$EXPECTED_IDENTITY_DIGEST"', "true"),
-      mutatePublish("i.checksum.sha256,i.checksum.size,i.packageFiles,releaseId", "i.checksum.sha256,i.checksum.size,releaseId"),
+      mutatePublish("i.publicIdentity?.name??null,i.publicIdentity?.sha256??null,i.publicIdentity?.size??null,i.packageFiles,releaseId", "i.packageFiles,releaseId"),
       mutatePublish('test "$(jq -r .immutable <<<"$release_json")" = true', "true"),
       mutatePublish('"repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID/assets?per_page=100&page=$page"', '"repos/$GITHUB_REPOSITORY/releases/latest/assets"'),
       mutatePublish('cmp "$artifact" remote-artifact.tgz', "true"),
@@ -433,10 +437,45 @@ describe("release-security contract modes", () => {
     }
   });
 
+  it("fails closed when the public identity or artifact-attestation boundary drifts", async () => {
+    const publish = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+    const verify = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release-verify.yml"), "utf8");
+    expect(() => assertReleaseIntegrityIdentityBoundary(publish, verify)).not.toThrow();
+    for (const marker of [
+      "scripts/release-state-machine-github.ts stage-github-draft",
+      "RELEASE_TAG_OBJECT: ${{ steps.stage.outputs.tag_object }}",
+      "RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}",
+      "RELEASE_EXPECTED_LATEST: ${{ inputs.expected_latest }}",
+      "scripts/adopt-public-release-identity.ts",
+      "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
+      "attestations: write",
+      "release-identity.enriched.json",
+    ]) expect(() => assertReleaseIntegrityIdentityBoundary(publish.replaceAll(marker, "removed"), verify)).toThrow("RT_RELEASE_INTEGRITY_BOUNDARY_DRIFT");
+    for (const marker of [
+      "pnpm release:identity:verify --",
+      "gh attestation verify \"$POST_PUBLISH_ROOT/release/$public_identity\"",
+      '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"',
+      '--signer-digest "$INPUT_IDENTITY_WORKFLOW_SHA"',
+      "--source-ref refs/heads/main",
+      '--source-digest "$INPUT_IDENTITY_WORKFLOW_SHA"',
+    ]) {
+      expect(() => assertReleaseIntegrityIdentityBoundary(publish, verify.replace(marker, "removed"))).toThrow("RT_RELEASE_INTEGRITY_BOUNDARY_DRIFT");
+    }
+    const attestationStep = publish.indexOf("      - name: Verify both artifact attestations before immutable finalization\n");
+    const finalizeStep = publish.indexOf("      - name: Upload the identity asset and finalize the exact immutable Release\n");
+    const reordered = publish.slice(0, attestationStep)
+      + publish.slice(finalizeStep, publish.indexOf("      - name: Verify the immutable Release and package asset\n"))
+      + publish.slice(attestationStep, finalizeStep)
+      + publish.slice(publish.indexOf("      - name: Verify the immutable Release and package asset\n"));
+    expect(() => assertReleaseIntegrityIdentityBoundary(reordered, verify)).toThrow("RT_RELEASE_INTEGRITY_BOUNDARY_DRIFT");
+  });
+
   it("fails closed when verification-only stops using the approved digest or size", () => {
     expect(() => assertReleaseVerificationArtifactApproval(verifyWorkflowContract)).not.toThrow();
     for (const marker of [
       "EXPECTED_SIZE: ${{ inputs.expected_size }}",
+      "INPUT_SOURCE_SHA: ${{ inputs.source_sha }}",
+      "INPUT_RELEASE_ID: ${{ inputs.release_id }}",
       '[[ "$expected_size" =~ ^[1-9][0-9]*$ ]]',
       'wc -c < "$POST_PUBLISH_ROOT/release/$asset"',
       'sha256sum "$registry_artifact"',

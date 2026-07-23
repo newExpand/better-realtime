@@ -250,7 +250,7 @@ async function downloadAsset(identity: ApprovedReleaseIdentity, asset: ObservedA
 async function finalizeRelease(identity: ApprovedReleaseIdentity, state: ObservedReleaseState, releaseId: number): Promise<void> {
   const release = state.releases.find(({ id }) => id === releaseId);
   if (!release) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_MISSING");
-  for (const expected of [identity.artifact, identity.checksum]) {
+  for (const expected of [identity.artifact, identity.checksum, identity.publicIdentity].filter((asset): asset is ApprovedReleaseIdentity["artifact"] => Boolean(asset))) {
     const asset = release.assets.find(({ name }) => name === expected.name);
     if (!asset) throw new Error("RT_RELEASE_PROVIDER_ASSET_ID_MISSING");
     const remote = await downloadAsset(identity, asset);
@@ -269,6 +269,7 @@ async function applyGithubTransition(identity: ApprovedReleaseIdentity, state: O
   else if (plan.action === "create_release") return await createRelease(identity);
   else if (plan.action === "upload_artifact") await uploadAsset(identity, plan.releaseId!, identity.artifact);
   else if (plan.action === "upload_checksum") await uploadAsset(identity, plan.releaseId!, identity.checksum);
+  else if (plan.action === "upload_public_identity") await uploadAsset(identity, plan.releaseId!, identity.publicIdentity!);
   else if (plan.action === "finalize_release") await finalizeRelease(identity, state, plan.releaseId!);
   else return plan.releaseId;
   return undefined;
@@ -296,7 +297,7 @@ export async function reconcileGithub(identity: ApprovedReleaseIdentity): Promis
     }
     const plan = planReleaseTransition(identity, state);
     if (plan.action === "wait_for_immutable") state = await waitForImmutable(identity, plan.releaseId!);
-    else if (["create_tag", "create_release", "upload_artifact", "upload_checksum", "finalize_release"].includes(plan.action)) {
+    else if (["create_tag", "create_release", "upload_artifact", "upload_checksum", "upload_public_identity", "finalize_release"].includes(plan.action)) {
       const createdId = await applyGithubTransition(identity, state);
       fixedReleaseId ??= createdId;
       continue;
@@ -305,6 +306,36 @@ export async function reconcileGithub(identity: ApprovedReleaseIdentity): Promis
     if (!["mark_publish_intent", "verify_only", "poll_registry", "block_ambiguous_publish", "complete"].includes(finalPlan.action)) throw new Error(`RT_RELEASE_PROVIDER_UNEXPECTED_ACTION:${finalPlan.action}`);
     if (!finalPlan.releaseId) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_MISSING");
     return { state, releaseId: finalPlan.releaseId };
+  }
+  throw new Error("RT_RELEASE_PROVIDER_TRANSITION_LIMIT");
+}
+
+export async function stageGithubDraft(identity: ApprovedReleaseIdentity): Promise<{ state: ObservedReleaseState; releaseId: number; tagObject: string; existingPublicIdentity?: ApprovedReleaseIdentity["artifact"] }> {
+  let fixedReleaseId: number | undefined;
+  for (let transition = 0; transition < 7; transition += 1) {
+    const state = await observe(identity, fixedReleaseId);
+    if (state.releases.length === 1) {
+      fixedReleaseId ??= state.releases[0]!.id;
+      if (state.releases[0]!.id !== fixedReleaseId) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");
+    }
+    const plan = planReleaseTransition(identity, state);
+    if (plan.action === "finalize_release" || ["mark_publish_intent", "verify_only", "poll_registry", "block_ambiguous_publish", "complete"].includes(plan.action)) {
+      if (!fixedReleaseId || state.tag.state !== "exact") throw new Error("RT_RELEASE_PROVIDER_DRAFT_IDENTITY_INCOMPLETE");
+      const name = `better-realtime-${identity.version}.identity.json`;
+      const observed = state.releases[0]!.assets.find((asset) => asset.name === name);
+      if (!observed) {
+        if (plan.action !== "finalize_release") throw new Error("RT_RELEASE_PROVIDER_PUBLIC_IDENTITY_MISSING");
+        return { state, releaseId: fixedReleaseId, tagObject: state.tag.objectSha };
+      }
+      if (observed.state !== "uploaded" || !/^[a-f0-9]{64}$/u.test(observed.sha256) || observed.size <= 0) throw new Error("RT_RELEASE_PROVIDER_PUBLIC_IDENTITY_MISMATCH");
+      const bytes = await downloadAsset(identity, observed);
+      if (bytes.byteLength !== observed.size || sha256(bytes) !== observed.sha256) throw new Error("RT_RELEASE_PROVIDER_PUBLIC_IDENTITY_MISMATCH");
+      await writeFile(localAssetPath(name), bytes, { flag: "wx" });
+      return { state, releaseId: fixedReleaseId, tagObject: state.tag.objectSha, existingPublicIdentity: { name, sha256: observed.sha256, size: observed.size } };
+    }
+    if (!["create_tag", "create_release", "upload_artifact", "upload_checksum"].includes(plan.action)) throw new Error(`RT_RELEASE_PROVIDER_UNEXPECTED_DRAFT_ACTION:${plan.action}`);
+    const createdId = await applyGithubTransition(identity, state);
+    fixedReleaseId ??= createdId;
   }
   throw new Error("RT_RELEASE_PROVIDER_TRANSITION_LIMIT");
 }
@@ -468,6 +499,14 @@ async function main(): Promise<void> {
     const result = await reconcileGithub(identity);
     await output("release_id", result.releaseId);
     await output("next_action", planReleaseTransition(identity, result.state).action);
+    return;
+  }
+  if (command === "stage-github-draft") {
+    assertReleaseIdentityMutable(identity);
+    const result = await stageGithubDraft(identity);
+    await output("release_id", result.releaseId);
+    await output("tag_object", result.tagObject);
+    await output("existing_identity", Boolean(result.existingPublicIdentity));
     return;
   }
   if (command === "plan-publication") {

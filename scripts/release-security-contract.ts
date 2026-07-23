@@ -44,12 +44,13 @@ export async function checkReleaseSecurity(
   const stateMachine = await readFile(stateMachinePath, "utf8");
   const runbook = await readFile(runbookPath, "utf8");
   for (const token of prohibitedWorkflowTokens) for (const [path, text] of [[publishPath, publish], [verifyPath, verify]] as const) if (text.includes(token)) throw new Error(`RT_RELEASE_BOOTSTRAP_PATH_PRESENT:${relative(root, path)}:${token}`);
-  for (const requiredText of ["id-token: write", "npm publish", "scripts/release-state-machine-github.ts observe", "scripts/release-state-machine-github.ts reconcile-github", "scripts/release-state-machine-github.ts plan-publication", "uses: ./.github/workflows/release-verify.yml", "release_id: ${{ needs.stage-release.outputs.release_id }}", "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f", "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131"]) if (!publish.includes(requiredText)) throw new Error(`RT_RELEASE_OIDC_CONTRACT_DRIFT:${relative(root, publishPath)}`);
+  for (const requiredText of ["id-token: write", "npm publish", "scripts/release-state-machine-github.ts observe", "scripts/release-state-machine-github.ts stage-github-draft", "scripts/release-state-machine-github.ts reconcile-github", "scripts/release-state-machine-github.ts plan-publication", "scripts/create-public-release-identity.ts", "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6", "uses: ./.github/workflows/release-verify.yml", "release_id: ${{ needs.finalize-release.outputs.release_id }}", "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f", "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131"]) if (!publish.includes(requiredText)) throw new Error(`RT_RELEASE_OIDC_CONTRACT_DRIFT:${relative(root, publishPath)}`);
   const buildJob = workflowJob(publish, "build");
   if (!buildJob.includes("id-token: none") || buildJob.includes("environment: npm-alpha")) throw new Error(`RT_RELEASE_BUILD_OIDC_EXPOSED:${relative(root, publishPath)}`);
   assertReleaseBuildAuditOrder(publish);
   assertReleaseArtifactApproval(publish, stateMachine);
   assertReleaseRecoveryContract(publish, verify, stateMachine);
+  assertReleaseIntegrityIdentityBoundary(publish, verify);
   assertPublishOidcBoundary(publish);
   const publishJob = workflowJob(publish, "publish");
   if (!publishJob.includes("id-token: write")) throw new Error(`RT_RELEASE_PUBLISH_BOUNDARY_DRIFT:${relative(root, publishPath)}`);
@@ -93,7 +94,7 @@ export function assertPublishOidcBoundary(workflow: string): void {
     || !publishJob.includes('node-version: "24.18.0"')
     || !publishJob.includes('test "$(node --version)" = v24.18.0')
     || !publishJob.includes('test "$(npm --version)" = 11.16.0')
-    || !publishJob.includes('const value=JSON.stringify([i.repository,i.version,i.sourceSha,i.tag,i.tagMessage,i.title,i.bodySha256,i.artifact.name,i.artifact.sha256,i.artifact.size,i.checksum.name,i.checksum.sha256,i.checksum.size,i.packageFiles,releaseId])')
+    || !publishJob.includes('i.publicIdentity?.name??null,i.publicIdentity?.sha256??null,i.publicIdentity?.size??null,i.packageFiles,releaseId')
     || !publishJob.includes('test "$canonical_digest" = "$EXPECTED_IDENTITY_DIGEST"')
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID"')
     || !publishJob.includes('test "$(jq -r .immutable <<<"$release_json")" = true')
@@ -101,6 +102,11 @@ export function assertPublishOidcBoundary(workflow: string): void {
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID/assets?per_page=100&page=$page"')
     || !publishJob.includes('cmp "$artifact" remote-artifact.tgz')
     || !publishJob.includes('cmp "$artifact.sha256" remote-artifact.tgz.sha256')
+    || !publishJob.includes('test "$(jq -r .packageSource.commit "$public_identity")" = "$INPUT_SOURCE_SHA"')
+    || !publishJob.includes('test "$(jq -r .packageSource.annotatedTagObject "$public_identity")" = "$tag_object_sha"')
+    || !publishJob.includes('test "$(jq -r .githubRelease.id "$public_identity")" = "$EXPECTED_RELEASE_ID"')
+    || !publishJob.includes('test "$(jq -r .workflow.commit release-assets/better-realtime-$INPUT_VERSION.identity.json)" = "$GITHUB_SHA"')
+    || !publishJob.includes('test "$(jq -r .workflow.commit release-assets/better-realtime-$INPUT_VERSION.identity.json)" = "$original_publish_workflow_sha"')
     || !publishJob.includes("Re-observe publication state at the OIDC boundary")
     || !publishJob.includes("Record durable publish intent at the OIDC boundary")
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/check-runs"')
@@ -108,8 +114,67 @@ export function assertPublishOidcBoundary(workflow: string): void {
   ) throw new Error("RT_RELEASE_PUBLISH_BOUNDARY_DRIFT");
 }
 
+export function assertReleaseIntegrityIdentityBoundary(publishWorkflow: string, verifyWorkflow: string): void {
+  const stage = workflowJob(publishWorkflow, "stage-release");
+  const attest = workflowJob(publishWorkflow, "attest-release-assets");
+  const finalize = workflowJob(publishWorkflow, "finalize-release");
+  const publish = workflowJob(publishWorkflow, "publish");
+  const markers = [
+    "scripts/release-state-machine-github.ts stage-github-draft",
+    "RELEASE_TAG_OBJECT: ${{ steps.stage.outputs.tag_object }}",
+    "RELEASE_ID: ${{ steps.stage.outputs.release_id }}",
+    "RELEASE_WORKFLOW_SHA: ${{ inputs.workflow_sha }}",
+    "RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}",
+    "RELEASE_EXPECTED_LATEST: ${{ inputs.expected_latest }}",
+    "scripts/create-public-release-identity.ts",
+    "scripts/adopt-public-release-identity.ts",
+    "release-identity.enriched.json",
+  ];
+  const attestBeforeFinalize = finalize.indexOf("Verify both artifact attestations before immutable finalization");
+  const finalizeMutation = finalize.indexOf("scripts/release-state-machine-github.ts reconcile-github");
+  if (
+    markers.some((marker) => !stage.includes(marker))
+    || !attest.includes("needs: [build, stage-release]")
+    || !attest.includes("if: needs.stage-release.outputs.existing_identity != 'true'")
+    || !attest.includes("attestations: write")
+    || !attest.includes("id-token: write")
+    || !attest.includes("actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6")
+    || !attest.includes("release-assets/${{ needs.build.outputs.artifact }}")
+    || !attest.includes("release-assets/better-realtime-${{ inputs.version }}.identity.json")
+    || attest.includes("actions/checkout@")
+    || /\b(?:pnpm|npm install|scripts\/)\b/u.test(attest)
+    || !finalize.includes("needs: [build, stage-release, attest-release-assets]")
+    || !finalize.includes("needs.attest-release-assets.result == 'skipped'")
+    || !finalize.includes("RELEASE_IDENTITY_FILE: release-assets/release-identity.enriched.json")
+    || !finalize.includes("scripts/release-state-machine-github.ts reconcile-github")
+    || attestBeforeFinalize < 0
+    || finalizeMutation <= attestBeforeFinalize
+    || !finalize.includes("gh attestation verify \"release-assets/$ARTIFACT\"")
+    || !finalize.includes("gh attestation verify \"release-assets/$IDENTITY\"")
+    || count(finalize, '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"') !== 2
+    || count(finalize, '--signer-digest "$INPUT_WORKFLOW_SHA"') !== 2
+    || count(finalize, "--source-ref refs/heads/main") !== 2
+    || count(finalize, '--source-digest "$INPUT_WORKFLOW_SHA"') !== 2
+    || !publish.includes("release-identity.enriched.json")
+    || !publish.includes("publicIdentity?.sha256")
+    || !verifyWorkflow.includes("better-realtime-$version.identity.json")
+    || !verifyWorkflow.includes("pnpm release:identity:verify --")
+    || !verifyWorkflow.includes("npmRegistry.distTags.latest")
+    || !verifyWorkflow.includes('npm view better-realtime dist-tags.latest')
+    || !verifyWorkflow.includes("gh attestation verify \"$POST_PUBLISH_ROOT/release/$public_identity\"")
+    || count(verifyWorkflow, '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"') !== 2
+    || count(verifyWorkflow, '--signer-digest "$INPUT_IDENTITY_WORKFLOW_SHA"') !== 2
+    || count(verifyWorkflow, "--source-ref refs/heads/main") !== 2
+    || count(verifyWorkflow, '--source-digest "$INPUT_IDENTITY_WORKFLOW_SHA"') !== 2
+    || !verifyWorkflow.includes("INPUT_IDENTITY_WORKFLOW_SHA: ${{ inputs.identity_workflow_sha }}")
+    || !verifyWorkflow.includes('[[ "$INPUT_IDENTITY_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]')
+    || !verifyWorkflow.includes('actions/runs/$identity_workflow_run/attempts/$identity_workflow_attempt')
+    || !verifyWorkflow.includes('test "$(jq -r .head_sha <<<"$identity_run")" = "$identity_workflow_commit"')
+  ) throw new Error("RT_RELEASE_INTEGRITY_BOUNDARY_DRIFT");
+}
+
 export function assertReleaseProvenanceVerification(workflow: string): void {
-  const required = ["source_sha:", "workflow_sha:", "publish_workflow_sha:", "publish_run_id:", "publish_run_attempt:", 'audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"', "npm audit signatures --json --include-attestations", "scripts/verify-npm-provenance.ts", "--audit-signatures", "--tarball", "--workflow-sha", "--publish-run-id", "--publish-run-attempt", "dist-tags.alpha", 'actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT', 'test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"', 'test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml'];
+  const required = ["source_sha:", "workflow_sha:", "identity_workflow_sha:", "publish_workflow_sha:", "publish_run_id:", "publish_run_attempt:", 'audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"', "npm audit signatures --json --include-attestations", "scripts/verify-npm-provenance.ts", "--audit-signatures", "--tarball", "--workflow-sha", "--publish-run-id", "--publish-run-attempt", "dist-tags.alpha", 'actions/runs/$PUBLISH_RUN_ID/attempts/$PUBLISH_RUN_ATTEMPT', 'test "$(jq -r .head_sha <<<"$publish_run")" = "$INPUT_PUBLISH_WORKFLOW_SHA"', 'test "$(jq -r .path <<<"$publish_run")" = .github/workflows/release.yml'];
   const parser = "scripts/verify-npm-provenance.ts";
   const audit = 'npm audit signatures --json --include-attestations > "$audit_output")';
   const compareIndex = workflow.indexOf('cmp "$asset" "$registry_artifact"');
@@ -142,6 +207,7 @@ export function assertReleaseProvenanceVerification(workflow: string): void {
 export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWorkflow: string, adapter: string): void {
   const buildJob = workflowJob(publishWorkflow, "build");
   const stageJob = workflowJob(publishWorkflow, "stage-release");
+  const finalizeJob = workflowJob(publishWorkflow, "finalize-release");
   const recoverJob = workflowJob(publishWorkflow, "recover-publication");
   const prepareJob = workflowJob(publishWorkflow, "prepare-publication");
   const publishJob = workflowJob(publishWorkflow, "publish");
@@ -212,11 +278,14 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !buildJob.includes('artifact_name=release-candidate-$INPUT_SOURCE_SHA-$INPUT_VERSION-attempt-$RUN_ATTEMPT')
     || buildJob.indexOf("name: Bind the dispatch to the approved source and workflow revisions") > buildJob.indexOf("actions/checkout@")
     || !buildJob.includes("scripts/release-state-machine-github.ts observe")
-    || !stageJob.includes("release_id: ${{ steps.reconcile.outputs.release_id }}")
+    || !stageJob.includes("release_id: ${{ steps.stage.outputs.release_id }}")
     || !stageJob.includes("ref: ${{ inputs.workflow_sha }}")
-    || !stageJob.includes("scripts/release-state-machine-github.ts reconcile-github")
+    || !stageJob.includes("scripts/release-state-machine-github.ts stage-github-draft")
+    || !finalizeJob.includes("scripts/release-state-machine-github.ts reconcile-github")
+    || !finalizeJob.includes("release_id: ${{ steps.reconcile.outputs.release_id }}")
+    || !finalizeJob.includes("release-identity.enriched.json")
     || !publishWorkflow.includes("recover_failed_publish:")
-    || !recoverJob.includes("needs: [build, stage-release]")
+    || !recoverJob.includes("needs: [build, stage-release, finalize-release]")
     || !recoverJob.includes("actions: read")
     || !recoverJob.includes("checks: write")
     || !recoverJob.includes("id-token: none")
@@ -224,13 +293,13 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !recoverJob.includes("scripts/release-state-machine-github.ts recover-local-artifact-spec-failure")
     || recoverJob.includes("id-token: write")
     || recoverJob.includes("environment: npm-alpha")
-    || !prepareJob.includes("needs: [build, stage-release, recover-publication]")
+    || !prepareJob.includes("needs: [build, stage-release, finalize-release, recover-publication]")
     || !prepareJob.includes("id-token: none")
     || !prepareJob.includes("scripts/release-state-machine-github.ts plan-publication")
     || !prepareJob.includes("ref: ${{ inputs.workflow_sha }}")
-    || !prepareJob.includes("EXPECTED_RELEASE_ID: ${{ needs.stage-release.outputs.release_id }}")
+    || !prepareJob.includes("EXPECTED_RELEASE_ID: ${{ needs.finalize-release.outputs.release_id }}")
     || prepareJob.includes("environment: npm-alpha")
-    || !publishJob.includes("needs: [build, stage-release, prepare-publication]")
+    || !publishJob.includes("needs: [build, stage-release, finalize-release, prepare-publication]")
     || !publishJob.includes("actions: read")
     || !publishJob.includes("checks: write")
     || !publishJob.includes("id-token: write")
@@ -267,8 +336,9 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || count(publishJob, "npm publish ") !== 1
     || publishJob.indexOf("Record durable publish intent at the OIDC boundary") > publishJob.indexOf("npm publish ")
     || publishJob.indexOf("Validate the approved identity without repository code") > publishJob.indexOf("Record durable publish intent at the OIDC boundary")
-    || !verifyJob.includes("release_id: ${{ needs.stage-release.outputs.release_id }}")
+    || !verifyJob.includes("release_id: ${{ needs.finalize-release.outputs.release_id }}")
     || !verifyJob.includes("workflow_sha: ${{ inputs.workflow_sha }}")
+    || !verifyJob.includes("identity_workflow_sha: ${{ inputs.workflow_sha }}")
     || !verifyJob.includes("publish_workflow_sha: ${{ needs.publish.outputs.publish_workflow_sha }}")
     || !verifyJob.includes("publish_run_id: ${{ needs.publish.outputs.publish_run_id }}")
     || !verifyJob.includes("publish_run_attempt: ${{ needs.publish.outputs.publish_run_attempt }}")
@@ -441,6 +511,8 @@ export function assertReleaseVerificationArtifactApproval(workflow: string): voi
   const compareMarkers = [
     "EXPECTED_SHA256: ${{ inputs.expected_sha256 }}",
     "EXPECTED_SIZE: ${{ inputs.expected_size }}",
+    "INPUT_SOURCE_SHA: ${{ inputs.source_sha }}",
+    "INPUT_RELEASE_ID: ${{ inputs.release_id }}",
     'test "$(sha256sum "$asset" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"',
     'test "$(wc -c < "$asset" | tr -d \' \')" = "$EXPECTED_SIZE"',
     'test "$(sha256sum "$registry_artifact" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"',

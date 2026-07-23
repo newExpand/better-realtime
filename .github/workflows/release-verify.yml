@@ -24,6 +24,9 @@ on:
       workflow_sha:
         required: true
         type: string
+      identity_workflow_sha:
+        required: true
+        type: string
       publish_workflow_sha:
         required: true
         type: string
@@ -61,6 +64,10 @@ on:
         type: string
       workflow_sha:
         description: Exact reviewed commit containing this verification workflow
+        required: true
+        type: string
+      identity_workflow_sha:
+        description: Exact workflow commit recorded by the immutable public identity asset
         required: true
         type: string
       publish_workflow_sha:
@@ -105,6 +112,7 @@ jobs:
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
           EXPECTED_SIZE: ${{ inputs.expected_size }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_IDENTITY_WORKFLOW_SHA: ${{ inputs.identity_workflow_sha }}
           GH_TOKEN: ${{ github.token }}
           POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
@@ -121,6 +129,7 @@ jobs:
           [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$INPUT_IDENTITY_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/$release_id")"
           test "$(jq -r .id <<<"$release_json")" = "$release_id"
           test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
@@ -129,6 +138,7 @@ jobs:
           test "$(jq -r .draft <<<"$release_json")" = false
           test "$(jq -r .prerelease <<<"$release_json")" = true
           test "$(jq -r .immutable <<<"$release_json")" = true
+          mkdir -p "$POST_PUBLISH_ROOT/identity" "$POST_PUBLISH_ROOT/release" "$POST_PUBLISH_ROOT/registry" "$POST_PUBLISH_ROOT/signatures"
           tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag")"
           test "$(jq -r .object.type <<<"$tag_ref")" = tag
           tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
@@ -137,23 +147,27 @@ jobs:
           test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${tag#v}"
           test "$(jq -r .object.type <<<"$tag_object")" = commit
           test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"
+          printf '%s\n' "$tag_object_sha" > "$POST_PUBLISH_ROOT/identity/tag-object-sha"
           asset="better-realtime-$version.tgz"
+          public_identity="better-realtime-$version.identity.json"
           asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
-          expected_names="$(printf '%s\n%s\n' "$asset" "$asset.sha256" | sort)"
+          expected_names="$(printf '%s\n%s\n%s\n' "$asset" "$asset.sha256" "$public_identity" | sort)"
           test "$asset_names" = "$expected_names"
           asset_json="$(jq -c --arg name "$asset" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
           test "$(jq 'length' <<<"$asset_json")" = 1
           test "$(jq -r '.[0].digest' <<<"$asset_json")" = "sha256:$expected_sha256"
           test "$(jq -r '.[0].size' <<<"$asset_json")" = "$expected_size"
-          mkdir -p "$POST_PUBLISH_ROOT/identity" "$POST_PUBLISH_ROOT/release" "$POST_PUBLISH_ROOT/registry" "$POST_PUBLISH_ROOT/signatures"
           printf '%s\n' "$release_json" > "$POST_PUBLISH_ROOT/identity/release.json"
           asset_id="$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .id' <<<"$release_json")"
           checksum_id="$(jq -r --arg name "$asset.sha256" '.assets[] | select(.name == $name) | .id' <<<"$release_json")"
+          identity_id="$(jq -r --arg name "$public_identity" '.assets[] | select(.name == $name) | .id' <<<"$release_json")"
           [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$checksum_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$identity_id" =~ ^[1-9][0-9]*$ ]]
           gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id" > "$POST_PUBLISH_ROOT/release/$asset"
           gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/$checksum_id" > "$POST_PUBLISH_ROOT/release/$asset.sha256"
-          test "$(find "$POST_PUBLISH_ROOT/release" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/$identity_id" > "$POST_PUBLISH_ROOT/release/$public_identity"
+          test "$(find "$POST_PUBLISH_ROOT/release" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
           test "$(sha256sum "$POST_PUBLISH_ROOT/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
           test "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset" | tr -d ' ')" = "$expected_size"
           printf '%s  %s\n' "$expected_sha256" "$asset" > "$POST_PUBLISH_ROOT/identity/approved.sha256"
@@ -162,6 +176,31 @@ jobs:
           test "$(jq 'length' <<<"$checksum_json")" = 1
           test "$(jq -r '.[0].digest' <<<"$checksum_json")" = "sha256:$(sha256sum "$POST_PUBLISH_ROOT/release/$asset.sha256" | cut -d' ' -f1)"
           test "$(jq -r '.[0].size' <<<"$checksum_json")" = "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset.sha256" | tr -d ' ')"
+          identity_workflow_commit="$(jq -r .workflow.commit "$POST_PUBLISH_ROOT/release/$public_identity")"
+          identity_workflow_run="$(jq -r .workflow.runId "$POST_PUBLISH_ROOT/release/$public_identity")"
+          identity_workflow_attempt="$(jq -r .workflow.runAttempt "$POST_PUBLISH_ROOT/release/$public_identity")"
+          test "$identity_workflow_commit" = "$INPUT_IDENTITY_WORKFLOW_SHA"
+          [[ "$identity_workflow_run" =~ ^[1-9][0-9]*$ ]]
+          [[ "$identity_workflow_attempt" =~ ^[1-9][0-9]*$ ]]
+          identity_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$identity_workflow_run/attempts/$identity_workflow_attempt")"
+          test "$(jq -r .id <<<"$identity_run")" = "$identity_workflow_run"
+          test "$(jq -r .run_attempt <<<"$identity_run")" = "$identity_workflow_attempt"
+          test "$(jq -r .event <<<"$identity_run")" = workflow_dispatch
+          test "$(jq -r .path <<<"$identity_run")" = .github/workflows/release.yml
+          test "$(jq -r .head_sha <<<"$identity_run")" = "$identity_workflow_commit"
+          test "$(jq -r .head_branch <<<"$identity_run")" = main
+          gh attestation verify "$POST_PUBLISH_ROOT/release/$asset" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --signer-digest "$INPUT_IDENTITY_WORKFLOW_SHA" \
+            --source-ref refs/heads/main \
+            --source-digest "$INPUT_IDENTITY_WORKFLOW_SHA"
+          gh attestation verify "$POST_PUBLISH_ROOT/release/$public_identity" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --signer-digest "$INPUT_IDENTITY_WORKFLOW_SHA" \
+            --source-ref refs/heads/main \
+            --source-digest "$INPUT_IDENTITY_WORKFLOW_SHA"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.workflow_sha }}
@@ -231,6 +270,8 @@ jobs:
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
           EXPECTED_SIZE: ${{ inputs.expected_size }}
           POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_RELEASE_ID: ${{ inputs.release_id }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
@@ -241,6 +282,18 @@ jobs:
           test "$(sha256sum "$registry_artifact" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
           test "$(wc -c < "$registry_artifact" | tr -d ' ')" = "$EXPECTED_SIZE"
           cmp "$asset" "$registry_artifact"
+          pnpm release:identity:verify -- \
+            --identity "$POST_PUBLISH_ROOT/release/better-realtime-$version.identity.json" \
+            --github-asset "$asset" \
+            --npm-tarball "$registry_artifact" \
+            --source-commit "$INPUT_SOURCE_SHA" \
+            --tag-object "$(cat "$POST_PUBLISH_ROOT/identity/tag-object-sha")" \
+            --workflow-commit "$(jq -r .workflow.commit "$POST_PUBLISH_ROOT/release/better-realtime-$version.identity.json")" \
+            --workflow-run-id "$(jq -r .workflow.runId "$POST_PUBLISH_ROOT/release/better-realtime-$version.identity.json")" \
+            --workflow-run-attempt "$(jq -r .workflow.runAttempt "$POST_PUBLISH_ROOT/release/better-realtime-$version.identity.json")" \
+            --release-id "$INPUT_RELEASE_ID"
+          expected_latest="$(jq -r .npmRegistry.distTags.latest "$POST_PUBLISH_ROOT/release/better-realtime-$version.identity.json")"
+          test "$(npm view better-realtime dist-tags.latest)" = "$expected_latest"
           BETTER_REALTIME_TARBALL="$registry_artifact" pnpm package:clean-room
       - name: Verify registry signatures, provenance, and dist-tag
         env:
