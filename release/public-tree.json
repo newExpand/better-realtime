@@ -1034,8 +1034,8 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 18941,
-      "digest": "sha256:febc9403f9ce89d40c75035f9de121d73797a45bc14ba275ac29458156474077"
+      "bytes": 19081,
+      "digest": "sha256:d4cf96f55d11200852b8e9bab787bcebf53c2d87a01d6ad6950313efdcdb85b1"
     },
     {
       "path": "tests/release-security-check.test.ts",

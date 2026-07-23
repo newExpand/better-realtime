@@ -164,6 +164,7 @@ describe("Better Realtime public release identity", () => {
         { name: "v0.1.0-alpha.1", object: "b4be67cb0d414f6e87f1aa797f86ec074d0b5f6a", target: "766a6f45d3e8100d50fcf2aa76cb6f17c440df80" },
         { name: "v0.1.0-alpha.2", object: "5c47946fa91c9a907abc602e391ffa9fa86e8669", target: "fd10345b9fa2e2fc31598987d856e0a6ed1bc51c" },
         { name: "v0.1.0-alpha.3", object: "fbeffc45ae7f2bdb8920b1a7ad32b7933e15b05b", target: "d51851a94809f6886af3f37639d7fb9b3758d94d" },
+        { name: "v0.1.0-alpha.4", object: "e03f223dda3f592605ea51581c825b6fc48e35f3", target: "6de3b93c13fad1eb44a65d5fe31ea13c22e96867" },
       ],
     });
     expect(changelog).toContain("`fast-uri 3.1.4`");
