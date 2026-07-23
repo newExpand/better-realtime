@@ -98,7 +98,7 @@ if (!postgresUrl) {
     if (!Number.isSafeInteger(mappedPort) || mappedPort < 1) throw new Error("could not resolve PostgreSQL host port");
     postgresUrl = ["postgresql://", `postgres:realtime@127.0.0.1:${mappedPort}/realtime`].join("");
     for (let attempt = 0; attempt < 40; attempt += 1) {
-      try { await execFileAsync("docker", ["exec", containerName, "pg_isready", "-U", "postgres", "-d", "realtime"]); break; }
+      try { await execFileAsync("docker", ["exec", containerName, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres", "-d", "realtime"]); break; }
       catch { if (attempt === 39) throw new Error("PostgreSQL 18.4 did not become ready"); await delay(250); }
     }
   } catch (error) {

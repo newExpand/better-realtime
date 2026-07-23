@@ -40,6 +40,24 @@ it("does not inherit ambient generic PostgreSQL credentials for the owned PG18.4
 });
 
 it.each([
+  [
+    "scripts/test-postgres-docker.sh",
+    'docker exec "$container_name" pg_isready -h 127.0.0.1 -p 5432 -U "$database_user" -d "$database_name"'
+  ],
+  [
+    "scripts/verify-consumer-journey.ts",
+    '"pg_isready", "--host", "127.0.0.1", "--port", "5432", "--username", "realtime", "--dbname", "realtime"'
+  ],
+  [
+    "packages/server-node/src/two-gateway-dev.ts",
+    '"pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres", "-d", "realtime"'
+  ]
+] as const)("waits for the final PostgreSQL TCP server instead of the bootstrap Unix socket in %s", async (path, readinessCommand) => {
+  const source = await readFile(resolve(path), "utf8");
+  expect(source).toContain(readinessCommand);
+});
+
+it.each([
   "scripts/run-two-gateway-dev.sh",
   "tests/e2e/global-teardown.ts",
   "packages/server-node/src/multi-gateway-load.ts"

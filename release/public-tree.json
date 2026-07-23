@@ -689,8 +689,8 @@
     },
     {
       "path": "packages/server-node/src/two-gateway-dev.ts",
-      "bytes": 28874,
-      "digest": "sha256:c1d5b730a90e43876f76f566918e63b1211828678f807bd85a287741f0c2af2b"
+      "bytes": 28907,
+      "digest": "sha256:575cefb5e06d434bbbde7d8fa5f3a265136becc38ee2e5cf95f3a00f3ddeb742"
     },
     {
       "path": "packages/server-node/test/application-query.test.ts",
@@ -909,8 +909,8 @@
     },
     {
       "path": "scripts/test-postgres-docker.sh",
-      "bytes": 1503,
-      "digest": "sha256:1d13e4b90511392658a7830c1b13f93f0351a605a82bb1b5d5c9df6e63e23410"
+      "bytes": 1524,
+      "digest": "sha256:9fb86f210f1c7b31c4328f080e380b37266c1f91030d20a2cf9db845a09214e9"
     },
     {
       "path": "scripts/verify-clean-room.ts",
@@ -919,8 +919,8 @@
     },
     {
       "path": "scripts/verify-consumer-journey.ts",
-      "bytes": 29874,
-      "digest": "sha256:ba6265552c4ac741f8cc6f3c43878326ae3bfe9b7eff96a4921cad6db7a782ca"
+      "bytes": 29915,
+      "digest": "sha256:d04dab8c2cffe069c899c7715d18b93b122f27e0a72bf55813a4e4c696de4ae4"
     },
     {
       "path": "scripts/verify-mixed-version.ts",
@@ -999,8 +999,8 @@
     },
     {
       "path": "tests/docker-harness-cleanup.test.ts",
-      "bytes": 2599,
-      "digest": "sha256:01a018d30d86e905af5bf75bb96bbf8e0c08292b70150d04aff8c52912f93a79"
+      "bytes": 3316,
+      "digest": "sha256:d7caa936a825d087c69abdbc7c2b5bab52d8f75aff6eac65e263a2950daff03f"
     },
     {
       "path": "tests/e2e/global-teardown.ts",

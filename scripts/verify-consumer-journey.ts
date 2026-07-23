@@ -53,7 +53,7 @@ try {
   const databasePort = Number(portResult.stdout.trim().split(":").at(-1));
   if (!Number.isSafeInteger(databasePort)) throw new Error("RT_POSTGRES_PORT_INVALID");
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    try { await docker(["exec", containerName, "pg_isready", "--username", "realtime", "--dbname", "realtime"], 2_000); break; }
+    try { await docker(["exec", containerName, "pg_isready", "--host", "127.0.0.1", "--port", "5432", "--username", "realtime", "--dbname", "realtime"], 2_000); break; }
     catch { if (attempt === 59) throw new Error("RT_POSTGRES_NOT_READY"); await delay(250); }
   }
   const proxyPort = await ephemeralPort();
