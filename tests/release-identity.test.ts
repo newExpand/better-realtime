@@ -140,7 +140,10 @@ describe("Better Realtime public release identity", () => {
     expect(stateMachine).toContain("observeTag(identity)");
     expect(stateMachine).toContain("listAll<GitHubRelease>");
     expect(stateMachine).not.toContain("releases/tags/");
+    expect(workflow).toContain("ARTIFACT: ${{ github.workspace }}/release-assets/${{ needs.build.outputs.artifact }}");
+    expect(workflow).toContain('test -f "$ARTIFACT"');
     expect(workflow).toContain("npm publish \"$ARTIFACT\" --tag alpha --access public --provenance");
+    expect(workflow).toContain("scripts/release-state-machine-github.ts recover-local-artifact-spec-failure");
     expect(workflow).toContain("scripts/release-state-machine-github.ts plan-publication");
     expect(workflow).toContain("Record durable publish intent at the OIDC boundary");
     expect(workflow).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");

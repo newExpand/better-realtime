@@ -142,6 +142,7 @@ export function assertReleaseProvenanceVerification(workflow: string): void {
 export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWorkflow: string, adapter: string): void {
   const buildJob = workflowJob(publishWorkflow, "build");
   const stageJob = workflowJob(publishWorkflow, "stage-release");
+  const recoverJob = workflowJob(publishWorkflow, "recover-publication");
   const prepareJob = workflowJob(publishWorkflow, "prepare-publication");
   const publishJob = workflowJob(publishWorkflow, "publish");
   const verifyJob = workflowJob(publishWorkflow, "verify");
@@ -166,6 +167,12 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     "await observe(identity, releaseId)",
     "RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED",
     "publish-intent/${identity.version}/",
+    "publish-abort/${identity.version}/",
+    "resolvePublishIntentLedger",
+    "assertLocalArtifactSpecFailureEvidence",
+    "actions/jobs/${publishJobs[0]!.id}/logs",
+    "expectedArtifactName: identity.artifact.name",
+    "recover-local-artifact-spec-failure",
     "releaseIdentityDigest(identity, releaseId)",
     "RT_RELEASE_STATE_AMBIGUOUS_PUBLISH_INTENT",
     "RT_RELEASE_PROVIDER_PUBLISHED_WITHOUT_INTENT",
@@ -208,7 +215,16 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !stageJob.includes("release_id: ${{ steps.reconcile.outputs.release_id }}")
     || !stageJob.includes("ref: ${{ inputs.workflow_sha }}")
     || !stageJob.includes("scripts/release-state-machine-github.ts reconcile-github")
-    || !prepareJob.includes("needs: [build, stage-release]")
+    || !publishWorkflow.includes("recover_failed_publish:")
+    || !recoverJob.includes("needs: [build, stage-release]")
+    || !recoverJob.includes("actions: read")
+    || !recoverJob.includes("checks: write")
+    || !recoverJob.includes("id-token: none")
+    || !recoverJob.includes("RECOVER_FAILED_PUBLISH: ${{ inputs.recover_failed_publish }}")
+    || !recoverJob.includes("scripts/release-state-machine-github.ts recover-local-artifact-spec-failure")
+    || recoverJob.includes("id-token: write")
+    || recoverJob.includes("environment: npm-alpha")
+    || !prepareJob.includes("needs: [build, stage-release, recover-publication]")
     || !prepareJob.includes("id-token: none")
     || !prepareJob.includes("scripts/release-state-machine-github.ts plan-publication")
     || !prepareJob.includes("ref: ${{ inputs.workflow_sha }}")
@@ -228,7 +244,13 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/commits/$INPUT_SOURCE_SHA/check-runs?filter=all&per_page=100&page=$page"')
     || publishJob.includes(".check_runs.length")
     || !publishJob.includes("jq -r '.check_runs | length'")
-    || !publishJob.includes('test "$intent_count" -le 1')
+    || !publishJob.includes('test "$intent_count" -le 2')
+    || !publishJob.includes('test "$abort_count" -le 1')
+    || !publishJob.includes(`test "$(jq -sr '[.[].name] | unique | length' publish-intents.jsonl)" = "$intent_count"`)
+    || !publishJob.includes(`test "$(jq -sr '[.[].name] | unique | length' publish-aborts.jsonl)" = "$abort_count"`)
+    || !publishJob.includes('test "$active_intent_count" -le 1')
+    || !publishJob.includes('test "$active_intent_count" = 0')
+    || !publishJob.includes('test "$active_intent_count" = 1')
     || !publishJob.includes('echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"')
     || !publishJob.includes('echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"')
     || !publishJob.includes('echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"')
@@ -240,6 +262,8 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     || !publishJob.includes("Record durable publish intent at the OIDC boundary")
     || !publishJob.includes('"repos/$GITHUB_REPOSITORY/check-runs"')
     || !publishJob.includes("EXPECTED_IDENTITY_DIGEST: ${{ needs.prepare-publication.outputs.identity_digest }}")
+    || !publishJob.includes("ARTIFACT: ${{ github.workspace }}/release-assets/${{ needs.build.outputs.artifact }}")
+    || !publishJob.includes('test -f "$ARTIFACT"')
     || count(publishJob, "npm publish ") !== 1
     || publishJob.indexOf("Record durable publish intent at the OIDC boundary") > publishJob.indexOf("npm publish ")
     || publishJob.indexOf("Validate the approved identity without repository code") > publishJob.indexOf("Record durable publish intent at the OIDC boundary")

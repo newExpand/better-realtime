@@ -23,6 +23,11 @@ on:
         description: Exact byte size of the reviewed release artifact
         required: true
         type: string
+      recover_failed_publish:
+        description: Optional exact run/attempt whose local tarball spec failure is proven safe to close
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -219,8 +224,39 @@ jobs:
           gh release verify "$TAG" --repo "$GITHUB_REPOSITORY"
           gh release verify-asset "$TAG" "release-assets/$ARTIFACT" --repo "$GITHUB_REPOSITORY"
 
-  prepare-publication:
+  recover-publication:
     needs: [build, stage-release]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      checks: write
+      id-token: none
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          package-manager-cache: false
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-assets
+      - name: Close only a proven pre-registry local artifact-spec failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_IDENTITY_FILE: release-assets/release-identity.json
+          EXPECTED_RELEASE_ID: ${{ needs.stage-release.outputs.release_id }}
+          RECOVER_FAILED_PUBLISH: ${{ inputs.recover_failed_publish }}
+        run: pnpm tsx scripts/release-state-machine-github.ts recover-local-artifact-spec-failure
+
+  prepare-publication:
+    needs: [build, stage-release, recover-publication]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -381,35 +417,61 @@ jobs:
           EXPECTED_SIZE: ${{ needs.build.outputs.size }}
         run: |
           set -euo pipefail
-          prefix="publish-intent/$INPUT_VERSION/"
+          intent_prefix="publish-intent/$INPUT_VERSION/"
+          abort_prefix="publish-abort/$INPUT_VERSION/"
           : > publish-intents.jsonl
+          : > publish-aborts.jsonl
           for page in $(seq 1 100); do
             response="$(gh api \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "repos/$GITHUB_REPOSITORY/commits/$INPUT_SOURCE_SHA/check-runs?filter=all&per_page=100&page=$page")"
-            jq -c --arg prefix "$prefix" '.check_runs[] | select(.name | startswith($prefix))' <<<"$response" >> publish-intents.jsonl
+            jq -c --arg prefix "$intent_prefix" '.check_runs[] | select(.name | startswith($prefix))' <<<"$response" >> publish-intents.jsonl
+            jq -c --arg prefix "$abort_prefix" '.check_runs[] | select(.name | startswith($prefix))' <<<"$response" >> publish-aborts.jsonl
             test "$(jq -r '.check_runs | length' <<<"$response")" -le 100
             if [ "$(jq -r '.check_runs | length' <<<"$response")" -lt 100 ]; then break; fi
             test "$page" -lt 100
           done
           intent_count="$(wc -l < publish-intents.jsonl | tr -d ' ')"
-          test "$intent_count" -le 1
+          abort_count="$(wc -l < publish-aborts.jsonl | tr -d ' ')"
+          test "$intent_count" -le 2
+          test "$abort_count" -le 1
+          test "$(jq -sr '[.[].name] | unique | length' publish-intents.jsonl)" = "$intent_count"
+          test "$(jq -sr '[.[].name] | unique | length' publish-aborts.jsonl)" = "$abort_count"
+          while IFS= read -r marker; do
+            test "$(jq -r .head_sha <<<"$marker")" = "$INPUT_SOURCE_SHA"
+            test "$(jq -r .external_id <<<"$marker")" = "$EXPECTED_IDENTITY_DIGEST"
+            marker_name="$(jq -r .name <<<"$marker")"
+            marker_suffix="${marker_name#"$intent_prefix"}"
+            [[ "$marker_suffix" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]
+          done < publish-intents.jsonl
+          aborted_suffix=""
+          while IFS= read -r marker; do
+            test "$(jq -r .head_sha <<<"$marker")" = "$INPUT_SOURCE_SHA"
+            test "$(jq -r .external_id <<<"$marker")" = "$EXPECTED_IDENTITY_DIGEST"
+            marker_name="$(jq -r .name <<<"$marker")"
+            aborted_suffix="${marker_name#"$abort_prefix"}"
+            [[ "$aborted_suffix" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]
+            jq -se --arg name "$intent_prefix$aborted_suffix" 'any(.name == $name)' publish-intents.jsonl >/dev/null
+          done < publish-aborts.jsonl
+          jq -c --arg aborted "$intent_prefix$aborted_suffix" 'select(.name != $aborted)' publish-intents.jsonl > active-intents.jsonl
+          active_intent_count="$(wc -l < active-intents.jsonl | tr -d ' ')"
+          test "$active_intent_count" -le 1
           registry_status="$(curl --silent --show-error --output registry-state.json --write-out '%{http_code}' "https://registry.npmjs.org/better-realtime/$INPUT_VERSION")"
           if [ "$registry_status" = 404 ]; then
-            test "$intent_count" = 0
+            test "$active_intent_count" = 0
             test "$PREPARED_PUBLISH" = true
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
             echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
             echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           elif [ "$registry_status" = 200 ]; then
-            test "$intent_count" = 1
-            marker="$(cat publish-intents.jsonl)"
+            test "$active_intent_count" = 1
+            marker="$(cat active-intents.jsonl)"
             test "$(jq -r .head_sha <<<"$marker")" = "$INPUT_SOURCE_SHA"
             test "$(jq -r .external_id <<<"$marker")" = "$EXPECTED_IDENTITY_DIGEST"
             marker_name="$(jq -r .name <<<"$marker")"
-            marker_suffix="${marker_name#"$prefix"}"
+            marker_suffix="${marker_name#"$intent_prefix"}"
             [[ "$marker_suffix" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]
             original_publish_run_id="${BASH_REMATCH[1]}"
             original_publish_run_attempt="${BASH_REMATCH[2]}"
@@ -469,9 +531,10 @@ jobs:
       - name: publish_once through npm Trusted Publishing
         if: steps.reobserve.outputs.publish == 'true'
         env:
-          ARTIFACT: release-assets/${{ needs.build.outputs.artifact }}
+          ARTIFACT: ${{ github.workspace }}/release-assets/${{ needs.build.outputs.artifact }}
         run: |
           set -euo pipefail
+          test -f "$ARTIFACT"
           npm publish "$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts
       - name: Export the publication identity for verification
         id: result

@@ -14,8 +14,8 @@
     },
     {
       "path": ".github/workflows/release.yml",
-      "bytes": 26515,
-      "digest": "sha256:02b6c5b6f48cfa651cf4f6f4494f487489e17899156ae369722ea8c5ade3b836"
+      "bytes": 29825,
+      "digest": "sha256:7f439c4911ad1ddbe2697d191437f28fb3199390d7f4c30dbcb2eb11b6da9c91"
     },
     {
       "path": ".gitignore",
@@ -219,8 +219,8 @@
     },
     {
       "path": "docs/public/release.md",
-      "bytes": 11982,
-      "digest": "sha256:2e5d73cea31ea9a3ccd0b9bd0d85c6fa0cf689d4bf9018ab4f5082aa5c8eb4e6"
+      "bytes": 13159,
+      "digest": "sha256:2a7eda8036f36e6db4872ffc4feef93e22dfc2e7be777ad1b55002e37adf644b"
     },
     {
       "path": "docs/public/server.md",
@@ -888,14 +888,19 @@
       "digest": "sha256:4d3cf05efc42a5718608765fdaca9a0e3756d7b74bdf2865bd7693bfcc84b765"
     },
     {
+      "path": "scripts/release-publish-recovery.ts",
+      "bytes": 5931,
+      "digest": "sha256:3a0e197e4c34240eede89e9337d67d78fab9f9283fb4da1895c99641b3f4a610"
+    },
+    {
       "path": "scripts/release-security-contract.ts",
-      "bytes": 32058,
-      "digest": "sha256:aa1af39814109c3563c2bf6dde6065008eafc8a3690e19dee394682c471c78c9"
+      "bytes": 33623,
+      "digest": "sha256:358bfb4cae0b55c6907be43952af3ab33e59827b0e47533ec7b285b6f80480b3"
     },
     {
       "path": "scripts/release-state-machine-github.ts",
-      "bytes": 20153,
-      "digest": "sha256:0ba75b3ec157b4b7987b304f46d077f4a452adec0d854ce9ac4ccd713647633d"
+      "bytes": 26000,
+      "digest": "sha256:cc371a925da347fde901e6f0d575a3693b2e8d3e8c14eb76e58f128a338abd1b"
     },
     {
       "path": "scripts/release-state-machine.ts",
@@ -1034,13 +1039,18 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 20137,
-      "digest": "sha256:f88202b10738a8970d7d84fe7c111dae7209f44378ff1735c2e2ac833875738a"
+      "bytes": 20423,
+      "digest": "sha256:ac62c87643c9ffd3dce25b9fe0d07d1799526e349af2ce45b9c259be7b008ff0"
+    },
+    {
+      "path": "tests/release-publish-recovery.test.ts",
+      "bytes": 4831,
+      "digest": "sha256:f1377d101870135b474bcbcf5a82ef8cc059081f7a81548b1f48633f5616f6dc"
     },
     {
       "path": "tests/release-security-check.test.ts",
-      "bytes": 33014,
-      "digest": "sha256:a5d147f405ffa766774b907db178b577398960b1eb5b4e2d5f3f591c1fb81834"
+      "bytes": 34605,
+      "digest": "sha256:e40c1c2f117cb2b31c234f77a8eeaa16d857466aca089ed2459a9663568e1305"
     },
     {
       "path": "tests/release-state-machine-github.test.ts",

@@ -11,6 +11,13 @@ import {
   type ObservedRelease,
   type ObservedReleaseState,
 } from "./release-state-machine.ts";
+import {
+  assertLocalArtifactSpecFailureEvidence,
+  resolvePublishIntentLedger,
+  type ActionsJobEvidence,
+  type ActionsRunEvidence,
+  type PublishCheckRun,
+} from "./release-publish-recovery.ts";
 
 const apiVersion = "2026-03-10";
 const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
@@ -40,6 +47,20 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   return await response.json() as T;
 }
 
+async function requestText(url: string): Promise<string> {
+  if (!token) throw new Error("RT_RELEASE_PROVIDER_GITHUB_TOKEN_REQUIRED");
+  const response = await fetch(url.startsWith("https://") ? url : `https://api.github.com/${url}`, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": apiVersion,
+      "User-Agent": "better-realtime-release-state-machine",
+    },
+  });
+  if (!response.ok) throw new HttpError(response.status, await response.text(), response.url);
+  return await response.text();
+}
+
 async function requestOptional<T>(path: string): Promise<T | undefined> {
   try {
     return await request<T>(path);
@@ -67,8 +88,9 @@ interface GitHubAsset { id: number; name: string; digest: string | null; size: n
 interface GitHubRelease { id: number; tag_name: string; target_commitish: string; name: string | null; body: string | null; draft: boolean; prerelease: boolean; immutable: boolean; upload_url: string }
 interface GitTagRef { object: { type: string; sha: string } }
 interface GitTagObject { tag: string; message: string; object: { type: string; sha: string } }
-interface CheckRun { id: number; name: string; external_id: string | null; head_sha: string }
-interface CheckRunsResponse { total_count: number; check_runs: CheckRun[] }
+interface CheckRunsResponse { total_count: number; check_runs: PublishCheckRun[] }
+interface ActionsJobsResponse { total_count: number; jobs: ActionsJobEvidence[] }
+interface GitHubContent { type: string; encoding: string; content: string }
 
 function assertApprovedIdentity(identity: ApprovedReleaseIdentity): void {
   planReleaseTransition(identity, {
@@ -131,23 +153,31 @@ export async function observeReleases(identity: ApprovedReleaseIdentity, fixedRe
   return await Promise.all(matches.map(async (candidate) => await materializeRelease(identity, candidate)));
 }
 
-async function observePublishIntent(identity: ApprovedReleaseIdentity, releases: ObservedRelease[]): Promise<ObservedReleaseState["publishIntent"]> {
-  const prefix = `publish-intent/${identity.version}/`;
-  const checks: CheckRun[] = [];
+async function listPublishChecks(identity: ApprovedReleaseIdentity): Promise<PublishCheckRun[]> {
+  const checks: PublishCheckRun[] = [];
   for (let page = 1; ; page += 1) {
     const response = await request<CheckRunsResponse>(`repos/${identity.repository}/commits/${identity.sourceSha}/check-runs?filter=all&per_page=100&page=${page}`);
     checks.push(...response.check_runs);
     if (response.check_runs.length < 100) break;
   }
-  const matches = checks.filter(({ name }) => name.startsWith(prefix));
-  if (matches.length === 0) return { state: "absent" };
-  if (matches.length !== 1 || releases.length !== 1) throw new Error("RT_RELEASE_STATE_AMBIGUOUS_PUBLISH_INTENT");
-  const marker = matches[0]!;
-  const segments = marker.name.slice(prefix.length).split("/");
-  if (segments.length !== 2 || !segments[0] || !segments[1] || marker.head_sha !== identity.sourceSha || marker.external_id !== releaseIdentityDigest(identity, releases[0]!.id)) {
-    throw new Error("RT_RELEASE_STATE_PUBLISH_INTENT_MISMATCH");
-  }
-  return { state: "present", runId: segments[0], runAttempt: segments[1], releaseId: releases[0]!.id, identityDigest: marker.external_id };
+  return checks;
+}
+
+async function observePublishIntent(identity: ApprovedReleaseIdentity, releases: ObservedRelease[]): Promise<ObservedReleaseState["publishIntent"]> {
+  const checks = await listPublishChecks(identity);
+  const relevant = checks.filter(({ name }) => name.startsWith(`publish-intent/${identity.version}/`) || name.startsWith(`publish-abort/${identity.version}/`));
+  if (relevant.length === 0) return { state: "absent" };
+  if (releases.length !== 1) throw new Error("RT_RELEASE_STATE_AMBIGUOUS_PUBLISH_INTENT");
+  const identityDigest = releaseIdentityDigest(identity, releases[0]!.id);
+  const ledger = resolvePublishIntentLedger(relevant, identity.version, identity.sourceSha, identityDigest);
+  if (!ledger.active) return { state: "absent" };
+  return {
+    state: "present",
+    runId: ledger.active.runId,
+    runAttempt: ledger.active.runAttempt,
+    releaseId: releases[0]!.id,
+    identityDigest,
+  };
 }
 
 async function observeNpm(identity: ApprovedReleaseIdentity, intentPresent: boolean): Promise<NpmObservation> {
@@ -340,6 +370,85 @@ async function planPublication(identity: ApprovedReleaseIdentity): Promise<Publi
   };
 }
 
+async function recoverLocalArtifactSpecFailure(identity: ApprovedReleaseIdentity): Promise<void> {
+  const requested = process.env.RECOVER_FAILED_PUBLISH?.trim() ?? "";
+  if (!requested) {
+    await output("recovered", false);
+    return;
+  }
+  const match = /^([1-9][0-9]*)\/([1-9][0-9]*)$/u.exec(requested);
+  if (!match) throw new Error("RT_RELEASE_RECOVERY_ATTEMPT_INVALID");
+  const expectedRunId = match[1]!;
+  const expectedRunAttempt = match[2]!;
+  const releases = await observeReleases(identity);
+  if (releases.length !== 1) throw new Error("RT_RELEASE_RECOVERY_RELEASE_COUNT_MISMATCH");
+  const releaseId = releases[0]!.id;
+  assertExpectedReleaseId(releaseId);
+  const identityDigest = releaseIdentityDigest(identity, releaseId);
+  const checks = await listPublishChecks(identity);
+  const relevant = checks.filter(({ name }) => name.startsWith(`publish-intent/${identity.version}/`) || name.startsWith(`publish-abort/${identity.version}/`));
+  const ledger = resolvePublishIntentLedger(relevant, identity.version, identity.sourceSha, identityDigest);
+  const expected = { runId: expectedRunId, runAttempt: expectedRunAttempt };
+  const expectedKey = `${expectedRunId}/${expectedRunAttempt}`;
+  if (ledger.aborted.some((attempt) => `${attempt.runId}/${attempt.runAttempt}` === expectedKey)) {
+    await output("recovered", true);
+    return;
+  }
+  if (!ledger.active || `${ledger.active.runId}/${ledger.active.runAttempt}` !== expectedKey || ledger.aborted.length !== 0) {
+    throw new Error("RT_RELEASE_RECOVERY_ACTIVE_INTENT_MISMATCH");
+  }
+  const registry = await fetch(`https://registry.npmjs.org/better-realtime/${encodeURIComponent(identity.version)}`, { headers: { Accept: "application/json" } });
+  if (registry.status !== 404) throw new Error(`RT_RELEASE_RECOVERY_REGISTRY_NOT_ABSENT:${registry.status}`);
+  const run = await request<ActionsRunEvidence>(`repos/${identity.repository}/actions/runs/${expectedRunId}/attempts/${expectedRunAttempt}`);
+  const jobsResponse = await request<ActionsJobsResponse>(`repos/${identity.repository}/actions/runs/${expectedRunId}/attempts/${expectedRunAttempt}/jobs?per_page=100`);
+  if (jobsResponse.total_count !== jobsResponse.jobs.length || jobsResponse.total_count > 100) throw new Error("RT_RELEASE_RECOVERY_JOB_LIST_AMBIGUOUS");
+  const publishJobs = jobsResponse.jobs.filter(({ name }) => name === "publish");
+  if (publishJobs.length !== 1 || !Number.isSafeInteger(publishJobs[0]!.id) || publishJobs[0]!.id <= 0) throw new Error("RT_RELEASE_RECOVERY_PUBLISH_JOB_AMBIGUOUS");
+  const jobLog = await requestText(`repos/${identity.repository}/actions/jobs/${publishJobs[0]!.id}/logs`);
+  const content = await request<GitHubContent>(`repos/${identity.repository}/contents/.github/workflows/release.yml?ref=${encodeURIComponent(run.head_sha)}`);
+  if (content.type !== "file" || content.encoding !== "base64") throw new Error("RT_RELEASE_RECOVERY_WORKFLOW_CONTENT_INVALID");
+  const workflowSource = Buffer.from(content.content.replaceAll("\n", ""), "base64").toString("utf8");
+  assertLocalArtifactSpecFailureEvidence({
+    expectedRunId,
+    expectedRunAttempt,
+    expectedArtifactName: identity.artifact.name,
+    run,
+    jobs: jobsResponse.jobs,
+    workflowSource,
+    jobLog,
+  });
+  const name = `publish-abort/${identity.version}/${expectedKey}`;
+  const detailsUrl = `https://github.com/${identity.repository}/actions/runs/${expectedRunId}/attempts/${expectedRunAttempt}`;
+  const marker = await request<PublishCheckRun>(`repos/${identity.repository}/check-runs`, {
+    method: "POST",
+    ...jsonBody({
+      name,
+      head_sha: identity.sourceSha,
+      status: "completed",
+      conclusion: "neutral",
+      external_id: identityDigest,
+      details_url: detailsUrl,
+      output: {
+        title: "publication attempt aborted before registry access",
+        summary: `Release ID ${releaseId}; identity ${identityDigest}; reason local_artifact_spec_rejected_before_registry`,
+      },
+    }),
+  });
+  if (marker.name !== name || marker.head_sha !== identity.sourceSha || marker.external_id !== identityDigest) {
+    throw new Error("RT_RELEASE_RECOVERY_ABORT_MARKER_MISMATCH");
+  }
+  const after = resolvePublishIntentLedger(
+    (await listPublishChecks(identity)).filter(({ name: candidate }) => candidate.startsWith(`publish-intent/${identity.version}/`) || candidate.startsWith(`publish-abort/${identity.version}/`)),
+    identity.version,
+    identity.sourceSha,
+    identityDigest,
+  );
+  if (after.active || after.aborted.length !== 1 || `${after.aborted[0]!.runId}/${after.aborted[0]!.runAttempt}` !== expectedKey) {
+    throw new Error("RT_RELEASE_RECOVERY_ABORT_MARKER_NOT_OBSERVED");
+  }
+  await output("recovered", true);
+}
+
 async function output(name: string, value: string | number | boolean): Promise<void> {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (outputPath) await appendFile(outputPath, `${name}=${String(value)}\n`);
@@ -369,6 +478,11 @@ async function main(): Promise<void> {
     await output("publish_run_id", result.publishRunId);
     await output("publish_run_attempt", result.publishRunAttempt);
     await output("identity_digest", result.identityDigest);
+    return;
+  }
+  if (command === "recover-local-artifact-spec-failure") {
+    assertReleaseIdentityMutable(identity);
+    await recoverLocalArtifactSpecFailure(identity);
     return;
   }
   if (command === "write-identity") {
