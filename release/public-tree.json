@@ -9,13 +9,13 @@
     },
     {
       "path": ".github/workflows/release-verify.yml",
-      "bytes": 10343,
-      "digest": "sha256:461c1892bc3ba6b927f2c1982dbac20f7cbd0ee6dd55e34f133e51b8e6b5c75d"
+      "bytes": 11226,
+      "digest": "sha256:2cceb3ae9468ab0af5834a0534fde2babbe1626edf21aa53fe613bb62c56e3d2"
     },
     {
       "path": ".github/workflows/release.yml",
-      "bytes": 26525,
-      "digest": "sha256:bc058e75156fba6a00ae9095fd9c04312f8c6ca16e5ae4049c5601d8e409f494"
+      "bytes": 23920,
+      "digest": "sha256:770f58d6cd0ce4382e951a75ea07c4263260a00ff6833ce99c459dbe1301bc73"
     },
     {
       "path": ".gitignore",
@@ -24,8 +24,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "bytes": 1698,
-      "digest": "sha256:282a880ca41619b23cafdc8136e8c88dd4c9969d92d32b64461ee88a20bbe6e0"
+      "bytes": 2309,
+      "digest": "sha256:cff9c9f88e33ffd3d758ba42179feda01c9a631d436b281e0c094e8de8e0cff4"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -45,7 +45,7 @@
     {
       "path": "README.md",
       "bytes": 14037,
-      "digest": "sha256:fc3f9b4ea7d57ba74e03c708414b311dd7eb5906ebbaf2a3c4974ce20d963b3c"
+      "digest": "sha256:968b6fbe9b4430e90164e886ef9a35a5e1a86c65deafbadcbb63b4694d16c9f5"
     },
     {
       "path": "ROADMAP.md",
@@ -70,7 +70,7 @@
     {
       "path": "compatibility/changes.json",
       "bytes": 10579,
-      "digest": "sha256:a3387cd9e20858cd06267c07a8f6c60c72da425d9e5abd2dfd24440472fa3745"
+      "digest": "sha256:d883ab67e7a89e765252801f3acfa3d5ea1367af8890909892db517c6c20a0d2"
     },
     {
       "path": "compatibility/consumers/alpha1-api.ts",
@@ -205,7 +205,7 @@
     {
       "path": "docs/public/quickstart.md",
       "bytes": 4341,
-      "digest": "sha256:73ada344cc9f7566822cbba7bbbb9d55b0a655bba4f65124df4d74391a6516d0"
+      "digest": "sha256:93cdbd5e584589123da001687e4d7332c147c6eaf419a6440d91847484e1f023"
     },
     {
       "path": "docs/public/react.md",
@@ -219,8 +219,8 @@
     },
     {
       "path": "docs/public/release.md",
-      "bytes": 9817,
-      "digest": "sha256:545aeedad6b36e4d77257a30023b5aafadf4e262f85dc33e90b60617d5bc441c"
+      "bytes": 10634,
+      "digest": "sha256:d3e92e28046bf5b87a8f4576f6243720ed0d00174a7c4d570d4cb47e47b79417"
     },
     {
       "path": "docs/public/server.md",
@@ -230,7 +230,7 @@
     {
       "path": "docs/public/stability.md",
       "bytes": 2082,
-      "digest": "sha256:d4e6ddc686defe936ca36c5a8c1b35c884f2d5343613a5825fbe1625bb3bbd19"
+      "digest": "sha256:0f6aa553456ecb9fce96541b465e7a099d53291f4bfcbc566b5f4e8fd37fd1c6"
     },
     {
       "path": "docs/public/support-matrix.md",
@@ -525,7 +525,7 @@
     {
       "path": "packages/runtime/package.json",
       "bytes": 2487,
-      "digest": "sha256:0f6015cfc716d54a4ab012b17914dada184ade87fbad0dc9cb86a947941284be"
+      "digest": "sha256:5138daaf8798c3a90e6c9f90fba4c5d50b471cc1113131d90baf4698e87cfaf2"
     },
     {
       "path": "packages/runtime/src/application-adapter.ts",
@@ -590,7 +590,7 @@
     {
       "path": "packages/runtime/src/release.ts",
       "bytes": 271,
-      "digest": "sha256:e18e6ba8d34ece1e58196f3c2d6b140f4c5840f3ce4a4cc4ccf326f403bfc397"
+      "digest": "sha256:e6ebe68369feecd1f5e4d3b4b383724235bcf8809387bef647ff105aeaf03424"
     },
     {
       "path": "packages/runtime/src/server.ts",
@@ -605,7 +605,7 @@
     {
       "path": "packages/runtime/test/diagnostic-tools.test.ts",
       "bytes": 12531,
-      "digest": "sha256:66fc11c4c8bc9efa259c336c88cab40a4b452505d8e0bfec00b4e1a21a14611b"
+      "digest": "sha256:a5dd0b090f21639d3722d0e4172cc022bc4b40b799a86a778796830c05fb966b"
     },
     {
       "path": "packages/runtime/test/evidence-scope.test.ts",
@@ -795,7 +795,7 @@
     {
       "path": "release/package-files.json",
       "bytes": 906,
-      "digest": "sha256:856dda47ace9cdcf1f5179c5a3ed72546b2e483138c48250d46d4c8ad6b5efec"
+      "digest": "sha256:de46f01b8899364cf2260e733b928a0358c3cd26c2d3001d0910f749b409f5ec"
     },
     {
       "path": "release/public-export.json",
@@ -804,8 +804,8 @@
     },
     {
       "path": "release/public-history.json",
-      "bytes": 478,
-      "digest": "sha256:587ed49dd26185af808623432dc8c25ef6f7d6cd0319179dbfc74d96270ac924"
+      "bytes": 642,
+      "digest": "sha256:48a88a8aeb7c1e388411c6af6cd6f4fe0da287c74d921f1c2102298bab39fd29"
     },
     {
       "path": "scripts/acquire-compatibility-fixture.ts",
@@ -815,7 +815,7 @@
     {
       "path": "scripts/check-compatibility.ts",
       "bytes": 89444,
-      "digest": "sha256:5092f197c02f182549e92623dbb862a15ad1d43384b3143c44aef33416402d91"
+      "digest": "sha256:f81f67ef8c7f896d4359322553aeaa764f3809f00edd3871181d52459b3b81e9"
     },
     {
       "path": "scripts/check-protocol.ts",
@@ -853,6 +853,11 @@
       "digest": "sha256:fcd3758e9623d45b5d700aa883f78f6dc2413cd30c33850e01395c24a22286ac"
     },
     {
+      "path": "scripts/create-release-identity.ts",
+      "bytes": 2006,
+      "digest": "sha256:76085a1ac65e98ff9b526d90b632bf369bf1a8e56ff409d12e84562dd4c93d10"
+    },
+    {
       "path": "scripts/diagnostic-overhead.ts",
       "bytes": 1828,
       "digest": "sha256:ac03fa86dbec9b291fccf2daef56237c97072472bf87e690a001bbf7975ea589"
@@ -884,8 +889,18 @@
     },
     {
       "path": "scripts/release-security-contract.ts",
-      "bytes": 29833,
-      "digest": "sha256:994010a1e63142aeb9d26be8cc41c64b990e8a521a17f7a8e19af7ea6754e9cb"
+      "bytes": 28710,
+      "digest": "sha256:7ca81ce14e1734b8be7cd05a701d16d001c74ffb6b7dc8e0bb18d45b4834cc97"
+    },
+    {
+      "path": "scripts/release-state-machine-github.ts",
+      "bytes": 19705,
+      "digest": "sha256:648a78a13ff3195db869aff498211b6a142ab04823d5b5b18b715536a4e24532"
+    },
+    {
+      "path": "scripts/release-state-machine.ts",
+      "bytes": 10226,
+      "digest": "sha256:1eafae40e90093695871e9b3ff4e8bf21c2ea6bdf8762a25b30e57a3b2fc0c4f"
     },
     {
       "path": "scripts/run-two-gateway-dev.sh",
@@ -945,7 +960,7 @@
     {
       "path": "support/README.template.md",
       "bytes": 10998,
-      "digest": "sha256:c00f878608545152a73327d361d6cc502f295d1e9698efbdda89cb744a5f0c28"
+      "digest": "sha256:457b53a6312fd744144e970efa509ea2ba68c0f7e7390b47fef49f47e6cabeea"
     },
     {
       "path": "support/alpha-0.1.json",
@@ -970,7 +985,7 @@
     {
       "path": "tests/compatibility-policy.test.ts",
       "bytes": 34340,
-      "digest": "sha256:7b1d00d88abea704fac4f958000da581d85bcd82f21a4123fd308fc06fd79deb"
+      "digest": "sha256:aa479ed7cc5a11b62eca19c139e59849008a653c3c234dabb70def5549be0b15"
     },
     {
       "path": "tests/consumer-hmr-lifecycle.test.ts",
@@ -1000,7 +1015,7 @@
     {
       "path": "tests/npm-provenance.test.ts",
       "bytes": 7108,
-      "digest": "sha256:dade22a8fca443e8d48ae218ab536e9cc4be5fd238496bdb19af6163b9e8e0fe"
+      "digest": "sha256:5e51c2a2a10964888d56ec677ddc208378f6da18b36d217082d1dcb13c075110"
     },
     {
       "path": "tests/package-content-policy.test.ts",
@@ -1019,13 +1034,18 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 19221,
-      "digest": "sha256:a15669c58e2e2306e06567f0ada10fc8fa891d38f6e7544c1c817c88703a6e68"
+      "bytes": 18941,
+      "digest": "sha256:febc9403f9ce89d40c75035f9de121d73797a45bc14ba275ac29458156474077"
     },
     {
       "path": "tests/release-security-check.test.ts",
-      "bytes": 33377,
-      "digest": "sha256:846211513480e08c4fb01260b1f555f09f58349303c9493c0c6dd43176b94a2c"
+      "bytes": 29964,
+      "digest": "sha256:08f7432d0d8c3ce7fc7434ee7f7c7e1a95eaf468387c1990a8047a82ca01bcbe"
+    },
+    {
+      "path": "tests/release-state-machine.test.ts",
+      "bytes": 16761,
+      "digest": "sha256:5d2dd6f45c70f20f22999c6d57a62ebf962075150923c527a668d7fd3f7e2f6a"
     },
     {
       "path": "tests/support-manifest.test.ts",

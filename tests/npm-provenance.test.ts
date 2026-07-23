@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { verifyNpmProvenanceAttestation } from "../scripts/verify-npm-provenance.ts";
 
-const expected = { version: "0.1.0-alpha.3", sourceSha: "a".repeat(40), publishRunId: "12345", publishRunAttempt: "2" };
-const tarball = Buffer.from("reviewed alpha.3 tarball");
+const expected = { version: "0.1.0-alpha.4", sourceSha: "a".repeat(40), publishRunId: "12345", publishRunAttempt: "2" };
+const tarball = Buffer.from("reviewed alpha.4 tarball");
 
 describe("npm provenance identity", () => {
   it("requires the exact subject, public workflow, environment, source, and publish run", () => {
-    expect(verifyNpmProvenanceAttestation(attestation(), tarball, expected)).toMatchObject({ package: "better-realtime@0.1.0-alpha.3", repository: "newExpand/better-realtime", workflow: ".github/workflows/release.yml", environment: "npm-alpha", sourceSha: expected.sourceSha, invocation: "https://github.com/newExpand/better-realtime/actions/runs/12345/attempts/2" });
+    expect(verifyNpmProvenanceAttestation(attestation(), tarball, expected)).toMatchObject({ package: "better-realtime@0.1.0-alpha.4", repository: "newExpand/better-realtime", workflow: ".github/workflows/release.yml", environment: "npm-alpha", sourceSha: expected.sourceSha, invocation: "https://github.com/newExpand/better-realtime/actions/runs/12345/attempts/2" });
     expect(() => verifyNpmProvenanceAttestation({ invalid: [], missing: [], verified: [] }, tarball, expected)).toThrow("RT_PROVENANCE_VERIFIED_PACKAGE_COUNT:0");
     expect(() => verifyNpmProvenanceAttestation({ invalid: [{ name: "better-realtime" }], missing: [], verified: [] }, tarball, expected)).toThrow("RT_PROVENANCE_AUDIT_NOT_CLEAN");
     expect(() => verifyNpmProvenanceAttestation(attestation({ subjectSha512: "b".repeat(128) }), tarball, expected)).toThrow("RT_PROVENANCE_SUBJECT_MISMATCH");

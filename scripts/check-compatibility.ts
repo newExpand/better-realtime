@@ -782,7 +782,7 @@ function assertVersionBoundaries(changes: Changes, detected: SurfaceChange[], ca
     if (declaration.classification === "intentionally_breaking" && declaration.axis === "wire" && declaration.minimumVersion !== "better-realtime.v2") throw new Error(`RT_COMPAT_PROTOCOL_MAJOR_REQUIRED:${declaration.id}`);
     if (declaration.classification === "intentionally_breaking" && declaration.axis !== "wire" && declaration.minimumVersion !== "0.2.0-alpha.1") throw new Error(`RT_COMPAT_PACKAGE_BOUNDARY_REQUIRED:${declaration.id}`);
     if (change.surface === "postgresMigration" && candidatePostgresVersion <= baseline.postgresStorageVersion) throw new Error(`RT_COMPAT_VERSIONED_POSTGRES_MIGRATION_REQUIRED:${declaration.id}`);
-    if (declaration.classification !== "intentionally_breaking" && declaration.minimumVersion !== "0.1.0-alpha.3") throw new Error(`RT_COMPAT_ALPHA3_BOUNDARY_REQUIRED:${declaration.id}`);
+    if (declaration.classification !== "intentionally_breaking" && declaration.minimumVersion !== "0.1.0-alpha.4") throw new Error(`RT_COMPAT_ALPHA4_BOUNDARY_REQUIRED:${declaration.id}`);
     assertCandidateVersion(candidateVersion, declaration.minimumVersion, declaration.id);
   }
   const wireBreaking = detected.some((change) => { const declaration = declarationFor(changes, change)!; return declaration.axis === "wire" && declaration.classification === "intentionally_breaking"; });

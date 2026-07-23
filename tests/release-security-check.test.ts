@@ -12,6 +12,7 @@ import {
   trustedPublisherEvidenceContract,
   assertReleaseArtifactApproval,
   assertReleaseBuildAuditOrder,
+  assertPublishOidcBoundary,
   assertReleaseProvenanceVerification,
   assertReleaseRecoveryContract,
   assertReleaseVerificationArtifactApproval,
@@ -258,7 +259,7 @@ describe("release-security contract modes", () => {
     await expect(checkReleaseSecurity(root)).resolves.toMatchObject({
       privateMode: false,
       contractState: "oidc-only-contract",
-      checked: [".github/workflows/release.yml", ".github/workflows/release-verify.yml", "docs/public/release.md"],
+      checked: [".github/workflows/release.yml", ".github/workflows/release-verify.yml", "scripts/release-state-machine-github.ts", "docs/public/release.md"],
     });
   });
 
@@ -295,99 +296,101 @@ describe("release-security contract modes", () => {
     expect(() => assertReleaseBuildAuditOrder(publishWorkflowContract.replace("      - run: pnpm audit --audit-level=high\n", "      - run: pnpm audit --audit-level=high\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
   });
 
-  it("fails closed when approved artifact identity inputs or the pre-upload gate drift", () => {
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract)).not.toThrow();
-    for (const marker of ["      expected_sha256:\n", "      expected_size:\n", "name: Verify the approved release artifact identity\n", "INPUT_EXPECTED_SHA256: ${{ inputs.expected_sha256 }}", "INPUT_EXPECTED_SIZE: ${{ inputs.expected_size }}", "report.files!==manifest.files.length"]) {
-      expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace(marker, "removed"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    }
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("sha256: ${{ steps.approved.outputs.sha256 }}", "sha256: ${{ steps.artifact.outputs.sha256 }}"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("size: ${{ steps.approved.outputs.size }}", "size: ${{ steps.artifact.outputs.size }}"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("      - name: Verify the exact release artifact in a clean room\n", "      - run: pnpm --silent package:pack\n      - name: Verify the exact release artifact in a clean room\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('test "$(wc -c < "$ARTIFACT" | tr -d \' \')" = "$EXPECTED_SIZE"', "removed"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('test "$(sha256sum "$ARTIFACT" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', 'sha256sum "$ARTIFACT" >/dev/null'))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    const downstreamChecks = `          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
-          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
-          test "$(cat "$ARTIFACT.sha256")" = "$EXPECTED_SHA256  $ARTIFACT"
-`;
-    const stageAfterSideEffect = publishWorkflowContract.replace(downstreamChecks, "").replace('          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags"\n', `          gh api --method POST "repos/\${GITHUB_REPOSITORY}/git/tags"
-${downstreamChecks}`);
-    expect(() => assertReleaseArtifactApproval(stageAfterSideEffect)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    const publishStart = publishWorkflowContract.indexOf("\n  publish:\n");
-    const publishPrefix = publishWorkflowContract.slice(0, publishStart);
-    const publishSuffix = publishWorkflowContract.slice(publishStart).replace(downstreamChecks, "").replace('          npm publish "$ARTIFACT"\n', `          npm publish "$ARTIFACT"
-${downstreamChecks}`);
-    expect(() => assertReleaseArtifactApproval(publishPrefix + publishSuffix)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    const stageStepStart = publishWorkflowContract.indexOf("      - name: Create exact annotated tag and asset-complete draft prerelease\n");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.slice(0, stageStepStart) + publishWorkflowContract.slice(stageStepStart).replace("          set -euo pipefail", "          set +e"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("      - name: Create exact annotated tag and asset-complete draft prerelease\n", "      - name: Create exact annotated tag and asset-complete draft prerelease\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    const movedAfterUpload = publishWorkflowContract
-      .replace(/      - name: Verify the approved release artifact identity[\s\S]*?(?=      - name: Verify the exact release artifact)/u, "")
-      .replace("      - uses: actions/upload-artifact@", `${publishWorkflowContract.match(/      - name: Verify the approved release artifact identity[\s\S]*?(?=      - name: Verify the exact release artifact)/u)?.[0] ?? ""}      - uses: actions/upload-artifact@`);
-    expect(() => assertReleaseArtifactApproval(movedAfterUpload)).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace('echo "size=$expected_size" >> "$GITHUB_OUTPUT"', 'echo "size=$expected_size" >> "$GITHUB_OUTPUT" || true'))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("        id: approved\n", "        id: approved\n        if: false\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.replace("        id: approved\n", "        id: approved\n        continue-on-error: true\n"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
-    const approvalStart = publishWorkflowContract.indexOf("      - name: Verify the approved release artifact identity\n");
-    expect(() => assertReleaseArtifactApproval(publishWorkflowContract.slice(0, approvalStart) + publishWorkflowContract.slice(approvalStart).replace("          [[", "          set +e\n          [["))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+  it("fails closed when approved artifact identity or byte checks drift", async () => {
+    const publish = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+    const adapter = await readFile(join(import.meta.dirname, "..", "scripts", "release-state-machine-github.ts"), "utf8");
+    expect(() => assertReleaseArtifactApproval(publish, adapter)).not.toThrow();
+    const mutations = [
+      publish.replace("      expected_sha256:\n", "      removed_sha256:\n"),
+      publish.replace("      expected_size:\n", "      removed_size:\n"),
+      publish.replace("name: Verify the approved release artifact identity", "name: Removed approval"),
+      publish.replace("report.files!==manifest.files.length", "true"),
+      publish.replace("RELEASE_EXPECTED_SHA256: ${{ steps.approved.outputs.sha256 }}", "RELEASE_EXPECTED_SHA256: unapproved"),
+      publish.replace("RELEASE_EXPECTED_SIZE: ${{ steps.approved.outputs.size }}", "RELEASE_EXPECTED_SIZE: unapproved"),
+      publish.replace("            release-identity.json\n", ""),
+      publish.replace('test "$(sha256sum "$artifact" | cut -d\' \' -f1)" = "$EXPECTED_SHA256"', "true"),
+      publish.replace('test "$(wc -c < "$artifact" | tr -d \' \')" = "$EXPECTED_SIZE"', "true"),
+      publish.replace('test "$(cat "$artifact.sha256")" = "$EXPECTED_SHA256  $EXPECTED_ARTIFACT"', "true"),
+    ];
+    for (const [index, mutation] of mutations.entries()) expect(() => assertReleaseArtifactApproval(mutation, adapter), `artifact mutation ${index}`).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
+    for (const marker of [
+      "bytes.byteLength !== asset.size || sha256(bytes) !== asset.sha256",
+      "sha256(remote) !== expected.sha256 || remote.byteLength !== expected.size || Buffer.compare(remote, local) !== 0",
+    ]) expect(() => assertReleaseArtifactApproval(publish, adapter.replace(marker, "false"))).toThrow("RT_RELEASE_ARTIFACT_APPROVAL_DRIFT");
   });
 
-  it("fails closed on repository-context, tag-identity, recovery, and duplicate-publish mutations", async () => {
+  it("fails closed on state-machine, numeric-ID, and duplicate-publish mutations", async () => {
     const publish = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
     const verify = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release-verify.yml"), "utf8");
-    expect(() => assertReleaseRecoveryContract(publish, verify)).not.toThrow();
-    const finalizeStart = publish.indexOf("      - name: Publish the asset-complete prerelease\n");
-    const finalizeFailFastMutation = publish.slice(0, finalizeStart) + publish.slice(finalizeStart).replace("          set -euo pipefail\n", "          set +e\n");
-    const publishJobStart = publish.indexOf("\n  publish:\n");
-    const publishExistingExitMutation = publish.slice(0, publishJobStart) + publish.slice(publishJobStart).replace('            echo "npm version already exists; use release-verify.yml and do not publish again: better-realtime@$INPUT_VERSION" >&2\n            exit 1\n', '            echo "npm version already exists; use release-verify.yml and do not publish again: better-realtime@$INPUT_VERSION" >&2\n');
-    const movedStageRerunGuard = publish
-      .replace("  stage-release:\n    needs: build\n    if: github.run_attempt == 1\n", "  stage-release:\n    needs: build\n")
-      .replace("  stage-release:\n    needs: build\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n      id-token: none\n    steps:\n      - uses:", "  stage-release:\n    needs: build\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n      id-token: none\n    steps:\n      - if: github.run_attempt == 1\n        uses:");
-    const movedFinalizeRerunGuard = publish
-      .replace("  finalize-release:\n    needs: [build, stage-release]\n    if: github.run_attempt == 1\n", "  finalize-release:\n    needs: [build, stage-release]\n")
-      .replace("      - name: Publish the asset-complete prerelease\n", "      - name: Publish the asset-complete prerelease\n        if: github.run_attempt == 1\n");
-    const movedPublishRerunGuard = publish
-      .replace("  publish:\n    needs: [build, assert-immutable-release]\n    if: github.run_attempt == 1 && needs.build.outputs.release_state != 'immutable'\n", "  publish:\n    needs: [build, assert-immutable-release]\n")
-      .replace("      - name: Publish the exact artifact through npm Trusted Publishing\n", "      - name: Publish the exact artifact through npm Trusted Publishing\n        if: github.run_attempt == 1 && needs.build.outputs.release_state != 'immutable'\n");
-    const mutations = [
-      publish.replace('--repo "$GITHUB_REPOSITORY"', ""),
+    const adapter = await readFile(join(import.meta.dirname, "..", "scripts", "release-state-machine-github.ts"), "utf8");
+    expect(() => assertReleaseRecoveryContract(publish, verify, adapter)).not.toThrow();
+    const publishMutations = [
       publish.replace("concurrency:\n  group: release-${{ inputs.version }}\n  cancel-in-progress: false\n", ""),
-      publish.replace('          test "$RUN_REF" = refs/heads/main\n', ""),
       publish.replace('          test "$WORKFLOW_SHA" = "$INPUT_SOURCE_SHA"\n', ""),
-      publish.replace('test "$(jq -r .object.type <<<"$tag_ref")" = tag', 'test "$(jq -r .object.type <<<"$tag_ref")" = commit'),
-      publish.replace('test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${TAG#v}"', "true"),
-      publish.replace("elif grep -q 'HTTP 404' \"$tag_error\"; then", "elif true; then"),
-      publish.replace('ensure_asset "$ARTIFACT" "$EXPECTED_SHA256" "$EXPECTED_SIZE"', "true"),
-      publish.replace('validate_existing_asset "$ARTIFACT" "$EXPECTED_SHA256" "$EXPECTED_SIZE"', "true"),
-      publish.replace('          validate_existing_asset "$ARTIFACT.sha256" "$checksum_sha256" "$checksum_size"\n', ""),
-      publish.replaceAll('          test "$(jq -r .name <<<"$release_json")" = "$expected_title"\n', ""),
-      publish.replaceAll('          test "$(jq -r .body <<<"$release_json")" = "$expected_body"\n', ""),
-      publish.replaceAll('            test "$(jq -r .body <<<"$release_json")" = "$expected_body"\n', ""),
-      publish.replace('            test "$(jq -r \' .[0].digest\' <<<"$checksum_json")" = "sha256:$checksum_sha256"\n'.replace("' .", "'."), ""),
-      publish.replace('          cmp "$ARTIFACT.sha256" "finalization-release-assets/$ARTIFACT.sha256"\n', ""),
-      publish.replace('          test "$(jq -r .object.sha <<<"$tag_object")" = "$INPUT_SOURCE_SHA"\n', ""),
-      publish.replace("      - name: Publish the asset-complete prerelease\n", "      - name: Publish the asset-complete prerelease\n        continue-on-error: true\n"),
-      finalizeFailFastMutation,
-      `${publish}\ngh api --method PATCH "repos/\${GITHUB_REPOSITORY}/git/refs/tags/$TAG"`,
-      publish.replace('          if npm view "better-realtime@$INPUT_VERSION" version >/dev/null 2>"$npm_error"; then\n', "").replace('          npm publish "$ARTIFACT" --tag alpha --access public --provenance', '          npm publish "$ARTIFACT" --tag alpha --access public --provenance\n          if npm view "better-realtime@$INPUT_VERSION" version >/dev/null 2>"$npm_error"; then'),
-      publishExistingExitMutation,
-      publish.replace("    if: github.run_attempt == 1 && needs.build.outputs.release_state != 'immutable'\n", ""),
-      publish.replace("  stage-release:\n    needs: build\n    if: github.run_attempt == 1\n", "  stage-release:\n    needs: build\n"),
-      publish.replace("  finalize-release:\n    needs: [build, stage-release]\n    if: github.run_attempt == 1\n", "  finalize-release:\n    needs: [build, stage-release]\n"),
-      movedStageRerunGuard,
-      movedFinalizeRerunGuard,
-      movedPublishRerunGuard,
-      publish.replace("  stage-release:\n", "  stage-release:\n    steps:\n      - uses: actions/checkout@untrusted\n"),
+      publish.replace("-attempt-$RUN_ATTEMPT", ""),
+      publish.replace("release_id: ${{ steps.reconcile.outputs.release_id }}", "release_id: guessed"),
+      publish.replace("scripts/release-state-machine-github.ts reconcile-github", "scripts/release-state-machine-github.ts observe"),
+      publish.replace("scripts/release-state-machine-github.ts plan-publication", "scripts/release-state-machine-github.ts observe"),
+      publish.replaceAll("if: steps.reobserve.outputs.publish == 'true'", "if: always()"),
+      publish.replace('npm publish "$ARTIFACT" --tag alpha --access public --provenance', 'npm publish "$ARTIFACT" --tag alpha --access public --provenance\nnpm publish "$ARTIFACT"'),
+      publish.replace("release_id: ${{ needs.stage-release.outputs.release_id }}", "release_id: 1"),
     ];
-    for (const [index, mutation] of mutations.entries()) expect(() => assertReleaseRecoveryContract(mutation, verify), `mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
-    expect(() => assertReleaseRecoveryContract(publish, verify.replace('--repo "$GITHUB_REPOSITORY"', ""))).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
-    expect(() => assertReleaseRecoveryContract(publish, verify.replace('          test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"\n', ""))).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
-    expect(() => assertReleaseRecoveryContract(publish, verify.replace("      POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish\n", ""))).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
-    expect(() => assertReleaseRecoveryContract(publish, verify.replace("          ref: ${{ inputs.source_sha }}", "          ref: ${{ inputs.tag }}"))).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
-    const movedIdentity = verify
-      .replace(/      - name: Validate remote identity and immutable assets before repository code[\s\S]*?(?=      - uses: actions\/checkout@)/u, "")
-      .replace("      - run: pnpm install --frozen-lockfile\n", `      - run: pnpm install --frozen-lockfile
-${verify.match(/      - name: Validate remote identity and immutable assets before repository code[\s\S]*?(?=      - uses: actions\/checkout@)/u)?.[0] ?? ""}`);
-    expect(() => assertReleaseRecoveryContract(publish, movedIdentity)).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
+    for (const [index, mutation] of publishMutations.entries()) expect(() => assertReleaseRecoveryContract(mutation, verify, adapter), `workflow mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
+    const verifyMutations = [
+      verify.replace('[[ "$release_id" =~ ^[1-9][0-9]*$ ]]\n', ""),
+      verify.replace('release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/$release_id")"', 'release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag")"'),
+      verify.replace('test "$(jq -r .id <<<"$release_json")" = "$release_id"\n', ""),
+      verify.replace('test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"\n', ""),
+      verify.replace("          ref: ${{ inputs.source_sha }}", "          ref: ${{ inputs.tag }}"),
+    ];
+    for (const [index, mutation] of verifyMutations.entries()) expect(() => assertReleaseRecoveryContract(publish, mutation, adapter), `verification mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
+    const adapterMutations = [
+      adapter.replace("listAll<GitHubRelease>(`repos/${identity.repository}/releases`)", "requestOptional<GitHubRelease>(`repos/${identity.repository}/releases/tags/${identity.tag}`)"),
+      adapter.replace("`repos/${identity.repository}/releases/${candidate.id}`", "`repos/${identity.repository}/releases/latest`"),
+      adapter.replaceAll("fixedReleaseId", "unboundReleaseId"),
+      adapter.replaceAll("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED", "RT_RELEASE_PROVIDER_IGNORED_ID_CHANGE"),
+      adapter.replaceAll("publish-intent/${identity.version}/", "publish-attempt/"),
+      adapter.replace("RT_RELEASE_STATE_AMBIGUOUS_PUBLISH_INTENT", "ignored duplicate intent"),
+      adapter.replace("checks.push(...response.check_runs)", "checks.push(...(response as never[]))"),
+      adapter.replaceAll("assertReleaseIdentityMutable(identity);", ""),
+      `${adapter}\nnpm publish forbidden`,
+    ];
+    for (const [index, mutation] of adapterMutations.entries()) expect(() => assertReleaseRecoveryContract(publish, verify, mutation), `adapter mutation ${index}`).toThrow("RT_RELEASE_RECOVERY_CONTRACT_DRIFT");
+  });
+
+  it("keeps repository code outside the OIDC-capable publish job", async () => {
+    const publish = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+    expect(() => assertPublishOidcBoundary(publish)).not.toThrow();
+    const prepareStart = publish.indexOf("\n  prepare-publication:");
+    const prepareEnd = publish.indexOf("\n  publish:", prepareStart);
+    const publishStart = publish.indexOf("\n  publish:");
+    const publishEnd = publish.indexOf("\n  verify:", publishStart);
+    const mutatePrepare = (marker: string, replacement: string): string =>
+      publish.slice(0, prepareStart) + publish.slice(prepareStart, prepareEnd).replace(marker, replacement) + publish.slice(prepareEnd);
+    const mutatePublish = (marker: string, replacement: string): string =>
+      publish.slice(0, publishStart) + publish.slice(publishStart, publishEnd).replace(marker, replacement) + publish.slice(publishEnd);
+    const mutations = [
+      publish.replace("  prepare-publication:\n", "  prepare-publication:\n    environment: npm-alpha\n"),
+      mutatePrepare("      id-token: none\n", "      id-token: write\n"),
+      mutatePublish("      - uses: actions/setup-node@", "      - uses: actions/checkout@deadbeef\n      - uses: actions/setup-node@"),
+      mutatePublish("      - uses: actions/setup-node@", "      - run: pnpm install --frozen-lockfile\n      - uses: actions/setup-node@"),
+      mutatePublish("      - uses: actions/setup-node@", "      - run: npm install --global npm@latest\n      - uses: actions/setup-node@"),
+      mutatePublish("      - uses: actions/setup-node@", "      - run: pnpm tsx scripts/release-state-machine-github.ts observe\n      - uses: actions/setup-node@"),
+      mutatePublish('node-version: "24.18.0"', 'node-version: "24.x"'),
+      mutatePublish('test "$(npm --version)" = 11.16.0', 'npm --version'),
+      mutatePublish('test "$canonical_digest" = "$EXPECTED_IDENTITY_DIGEST"', "true"),
+      mutatePublish("i.checksum.sha256,i.checksum.size,i.packageFiles,releaseId", "i.checksum.sha256,i.checksum.size,releaseId"),
+      mutatePublish('test "$(jq -r .immutable <<<"$release_json")" = true', "true"),
+      mutatePublish('"repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID/assets?per_page=100&page=$page"', '"repos/$GITHUB_REPOSITORY/releases/latest/assets"'),
+      mutatePublish('cmp "$artifact" remote-artifact.tgz', "true"),
+      mutatePublish("      - name: Re-observe publication state at the OIDC boundary\n", ""),
+      mutatePublish("      - name: Record durable publish intent at the OIDC boundary\n", ""),
+      mutatePublish('"repos/$GITHUB_REPOSITORY/check-runs"', '"repos/$GITHUB_REPOSITORY/statuses"'),
+      mutatePublish("--provenance --ignore-scripts", "--provenance"),
+    ];
+    for (const [index, mutation] of mutations.entries()) {
+      expect(() => assertPublishOidcBoundary(mutation), `OIDC boundary mutation ${index}`).toThrow("RT_RELEASE_PUBLISH_BOUNDARY_DRIFT");
+    }
   });
 
   it("fails closed when verification-only stops using the approved digest or size", () => {
@@ -442,6 +445,9 @@ async function fixture(options: {
     await mkdir(workflows, { recursive: true });
     await writeFile(join(workflows, "release.yml"), await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8"), "utf8");
     await writeFile(join(workflows, "release-verify.yml"), await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release-verify.yml"), "utf8"), "utf8");
+    const scripts = join(root, "scripts");
+    await mkdir(scripts, { recursive: true });
+    await writeFile(join(scripts, "release-state-machine-github.ts"), await readFile(join(import.meta.dirname, "..", "scripts", "release-state-machine-github.ts"), "utf8"), "utf8");
   }
   if (options.privateMode) {
     const privateRoot = join(root, "docs", "internal");

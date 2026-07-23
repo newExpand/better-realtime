@@ -12,6 +12,11 @@
       "name": "v0.1.0-alpha.2",
       "object": "5c47946fa91c9a907abc602e391ffa9fa86e8669",
       "target": "fd10345b9fa2e2fc31598987d856e0a6ed1bc51c"
+    },
+    {
+      "name": "v0.1.0-alpha.3",
+      "object": "fbeffc45ae7f2bdb8920b1a7ad32b7933e15b05b",
+      "target": "d51851a94809f6886af3f37639d7fb9b3758d94d"
     }
   ]
 }

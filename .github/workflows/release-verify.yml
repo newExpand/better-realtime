@@ -9,6 +9,9 @@ on:
       tag:
         required: true
         type: string
+      release_id:
+        required: true
+        type: string
       expected_sha256:
         required: true
         type: string
@@ -32,6 +35,10 @@ on:
         type: string
       tag:
         description: Exact immutable public Git tag
+        required: true
+        type: string
+      release_id:
+        description: Exact numeric immutable GitHub Release ID
         required: true
         type: string
       expected_sha256:
@@ -67,6 +74,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RELEASE_ID: ${{ inputs.release_id }}
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
           EXPECTED_SIZE: ${{ inputs.expected_size }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
@@ -76,15 +84,18 @@ jobs:
           set -euo pipefail
           version="$INPUT_VERSION"
           tag="$INPUT_TAG"
+          release_id="$INPUT_RELEASE_ID"
           expected_sha256="$EXPECTED_SHA256"
           expected_size="$EXPECTED_SIZE"
           source_sha="$INPUT_SOURCE_SHA"
           [[ "$version" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
           test "$tag" = "v$version"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag")"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/$release_id")"
+          test "$(jq -r .id <<<"$release_json")" = "$release_id"
           test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
           test "$(jq -r .name <<<"$release_json")" = "Better Realtime $version"
           test "$(jq -r .draft <<<"$release_json")" = false
@@ -108,7 +119,12 @@ jobs:
           test "$(jq -r '.[0].size' <<<"$asset_json")" = "$expected_size"
           mkdir -p "$POST_PUBLISH_ROOT/identity" "$POST_PUBLISH_ROOT/release" "$POST_PUBLISH_ROOT/registry" "$POST_PUBLISH_ROOT/signatures"
           printf '%s\n' "$release_json" > "$POST_PUBLISH_ROOT/identity/release.json"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern "$asset.sha256" --dir "$POST_PUBLISH_ROOT/release"
+          asset_id="$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .id' <<<"$release_json")"
+          checksum_id="$(jq -r --arg name "$asset.sha256" '.assets[] | select(.name == $name) | .id' <<<"$release_json")"
+          [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$checksum_id" =~ ^[1-9][0-9]*$ ]]
+          gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id" > "$POST_PUBLISH_ROOT/release/$asset"
+          gh api -H 'Accept: application/octet-stream' "repos/${GITHUB_REPOSITORY}/releases/assets/$checksum_id" > "$POST_PUBLISH_ROOT/release/$asset.sha256"
           test "$(find "$POST_PUBLISH_ROOT/release" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
           test "$(sha256sum "$POST_PUBLISH_ROOT/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
           test "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset" | tr -d ' ')" = "$expected_size"

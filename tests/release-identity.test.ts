@@ -10,7 +10,7 @@ describe("Better Realtime public release identity", () => {
     const manifest = JSON.parse(await readFile(resolve(root, "packages/runtime/package.json"), "utf8")) as Record<string, unknown>;
     expect(manifest).toMatchObject({
       name: "better-realtime",
-      version: "0.1.0-alpha.3",
+      version: "0.1.0-alpha.4",
       license: "MIT",
       bin: {
         "better-realtime": "./dist/cli-bin.js",
@@ -83,7 +83,7 @@ describe("Better Realtime public release identity", () => {
     for (const document of [template, readme, quickstart]) {
       expect(document).toContain("npm install better-realtime@alpha react pg ws");
       expect(document).not.toContain("npm install better-realtime react pg ws");
-      expect(document).toContain("`0.1.0-alpha.3`");
+      expect(document).toContain("`0.1.0-alpha.4`");
     }
     expect(template).toContain("this is stream recovery, not resume-token session restoration");
     expect(template).toContain("pnpm e2e:consumer");
@@ -120,6 +120,7 @@ describe("Better Realtime public release identity", () => {
   it("uses OIDC-only publishing with resumable bounded post-publish verification", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
     const verifyWorkflow = await readFile(resolve(root, ".github/workflows/release-verify.yml"), "utf8");
+    const stateMachine = await readFile(resolve(root, "scripts/release-state-machine-github.ts"), "utf8");
     const publicRunbook = await readFile(resolve(root, "docs/public/release.md"), "utf8");
     for (const document of [workflow, verifyWorkflow]) {
       expect(document).not.toMatch(/uses:\s+actions\/(?:checkout|setup-node)@v/u);
@@ -135,14 +136,14 @@ describe("Better Realtime public release identity", () => {
     expect(verifyWorkflow).toContain("id-token: none");
     expect(workflow).toContain("BETTER_REALTIME_RELEASE_EXPORT: \"1\"");
     expect(workflow).toContain("npm@11.18.0");
-    expect(workflow).toContain("npm view \"better-realtime@$version\"");
-    expect(workflow).toContain('gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag"');
-    expect(workflow).toContain("existing exact annotated tag; resuming");
-    expect(workflow).toContain("gh api \"repos/${GITHUB_REPOSITORY}/releases/tags/$tag\"");
+    expect(stateMachine).toContain("https://registry.npmjs.org/better-realtime/");
+    expect(stateMachine).toContain("observeTag(identity)");
+    expect(stateMachine).toContain("listAll<GitHubRelease>");
+    expect(stateMachine).not.toContain("releases/tags/");
     expect(workflow).toContain("npm publish \"$ARTIFACT\" --tag alpha --access public --provenance");
-    expect(workflow).toContain("test \"$(jq -r .immutable <<<\"$release_json\")\" = true");
-    expect(workflow).toContain("test \"$asset_names\" = \"$expected_names\"");
-    expect(workflow).toContain("immutable-release-assets/$ARTIFACT");
+    expect(workflow).toContain("scripts/release-state-machine-github.ts plan-publication");
+    expect(workflow).toContain("Record durable publish intent at the OIDC boundary");
+    expect(workflow).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");
     expect(workflow).toContain("uses: ./.github/workflows/release-verify.yml");
     expect(verifyWorkflow).toContain("for attempt in $(seq 1 20)");
     expect(verifyWorkflow).toContain("sleep 15");
@@ -152,7 +153,7 @@ describe("Better Realtime public release identity", () => {
     expect(verifyWorkflow).toContain("scripts/verify-npm-provenance.ts");
     for (const input of ["source_sha", "publish_run_id", "publish_run_attempt"]) expect(verifyWorkflow).toContain(`${input}:`);
     const changelog = await readFile(resolve(root, "CHANGELOG.md"), "utf8");
-    expect(changelog.indexOf("## 0.1.0-alpha.3")).toBeLessThan(changelog.indexOf("## 0.1.0-alpha.2"));
+    expect(changelog.indexOf("## 0.1.0-alpha.4")).toBeLessThan(changelog.indexOf("## 0.1.0-alpha.2"));
     expect(changelog).toContain("0.1.0-alpha.2 — Unpublished tag-only attempt");
     const publicHistory = JSON.parse(await readFile(resolve("release/public-history.json"), "utf8")) as { rootCommit: string; tags: Array<{ name: string; object: string; target: string }> };
     expect(publicHistory).toEqual({
@@ -162,6 +163,7 @@ describe("Better Realtime public release identity", () => {
       tags: [
         { name: "v0.1.0-alpha.1", object: "b4be67cb0d414f6e87f1aa797f86ec074d0b5f6a", target: "766a6f45d3e8100d50fcf2aa76cb6f17c440df80" },
         { name: "v0.1.0-alpha.2", object: "5c47946fa91c9a907abc602e391ffa9fa86e8669", target: "fd10345b9fa2e2fc31598987d856e0a6ed1bc51c" },
+        { name: "v0.1.0-alpha.3", object: "fbeffc45ae7f2bdb8920b1a7ad32b7933e15b05b", target: "d51851a94809f6886af3f37639d7fb9b3758d94d" },
       ],
     });
     expect(changelog).toContain("`fast-uri 3.1.4`");
@@ -177,24 +179,15 @@ describe("Better Realtime public release identity", () => {
   it("makes every GitHub release operation repository-explicit and resumes only exact immutable identity", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
     const verifyWorkflow = await readFile(resolve(root, ".github/workflows/release-verify.yml"), "utf8");
-    const releaseCommands = [...workflow.matchAll(/^\s*gh release (?:view|create|edit|download|upload).*$/gmu), ...verifyWorkflow.matchAll(/^\s*gh release (?:view|create|edit|download|upload).*$/gmu)];
-    expect(releaseCommands.length).toBeGreaterThan(0);
-    for (const [command] of releaseCommands) expect(command).toContain('--repo "$GITHUB_REPOSITORY"');
-
-    for (const marker of [
-      'test "$(jq -r .object.type <<<"$tag_ref")" = tag',
-      'test "$(jq -r .tag <<<"$tag_object")" = "$TAG"',
-      'test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${TAG#v}"',
-      'test "$(jq -r .object.type <<<"$tag_object")" = commit',
-      'test "$(jq -r .object.sha <<<"$tag_object")" = "$INPUT_SOURCE_SHA"',
-      'existing exact annotated tag; resuming',
-      'existing exact draft release; resuming',
-      'existing exact immutable release; resuming',
-    ]) expect(workflow).toContain(marker);
-
-    expect(workflow).toContain('npm version already exists; use release-verify.yml and do not publish again');
-    expect(workflow).not.toMatch(/gh api --method (?:PATCH|DELETE) .*git\/refs\/tags/u);
-    expect(workflow).not.toMatch(/git push .*:(?:refs\/tags\/)?\$TAG/u);
+    const stateMachine = await readFile(resolve(root, "scripts/release-state-machine-github.ts"), "utf8");
+    expect(`${workflow}\n${verifyWorkflow}\n${stateMachine}`).not.toContain("releases/tags/");
+    expect(stateMachine).toContain("release.id !== candidate.id");
+    expect(stateMachine).toContain("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");
+    expect(stateMachine).toContain("ref.object.type !== \"tag\"");
+    expect(stateMachine).toContain("object.message !== identity.tagMessage");
+    expect(stateMachine).toContain("object.object.sha !== identity.sourceSha");
+    expect(stateMachine).not.toMatch(/method:\s*"DELETE"/u);
+    expect(workflow.match(/npm publish /gu)).toHaveLength(1);
   });
 
   it("runs the high-severity dependency audit before creating or uploading a release artifact", async () => {
