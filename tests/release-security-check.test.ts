@@ -348,6 +348,8 @@ describe("release-security contract modes", () => {
       adapter.replace("listAll<GitHubRelease>(`repos/${identity.repository}/releases`)", "requestOptional<GitHubRelease>(`repos/${identity.repository}/releases/tags/${identity.tag}`)"),
       adapter.replace("`repos/${identity.repository}/releases/${candidate.id}`", "`repos/${identity.repository}/releases/latest`"),
       adapter.replaceAll("fixedReleaseId", "unboundReleaseId"),
+      adapter.replace("await observe(identity, fixedReleaseId)", "await observe(identity)"),
+      adapter.replace("await observe(identity, releaseId)", "await observe(identity)"),
       adapter.replaceAll("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED", "RT_RELEASE_PROVIDER_IGNORED_ID_CHANGE"),
       adapter.replaceAll("publish-intent/${identity.version}/", "publish-attempt/"),
       adapter.replace("RT_RELEASE_STATE_AMBIGUOUS_PUBLISH_INTENT", "ignored duplicate intent"),

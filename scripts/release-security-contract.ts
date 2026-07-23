@@ -145,6 +145,8 @@ export function assertReleaseRecoveryContract(publishWorkflow: string, verifyWor
     "`repos/${identity.repository}/releases/assets/${asset.id}`",
     "return release.id",
     "fixedReleaseId",
+    "await observe(identity, fixedReleaseId)",
+    "await observe(identity, releaseId)",
     "RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED",
     "publish-intent/${identity.version}/",
     "releaseIdentityDigest(identity, releaseId)",

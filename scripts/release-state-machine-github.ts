@@ -106,24 +106,29 @@ async function releaseAssets(identity: ApprovedReleaseIdentity, releaseId: numbe
   }));
 }
 
-async function observeReleases(identity: ApprovedReleaseIdentity): Promise<ObservedRelease[]> {
+async function materializeRelease(identity: ApprovedReleaseIdentity, candidate: GitHubRelease): Promise<ObservedRelease> {
+  const release = await request<GitHubRelease>(`repos/${identity.repository}/releases/${candidate.id}`);
+  if (release.id !== candidate.id) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");
+  return {
+    id: release.id,
+    tag: release.tag_name,
+    target: release.target_commitish,
+    title: release.name ?? "",
+    bodySha256: sha256(release.body ?? ""),
+    draft: release.draft,
+    prerelease: release.prerelease,
+    immutable: release.immutable,
+    assets: await releaseAssets(identity, release.id),
+  };
+}
+
+export async function observeReleases(identity: ApprovedReleaseIdentity, fixedReleaseId?: number): Promise<ObservedRelease[]> {
   const all = await listAll<GitHubRelease>(`repos/${identity.repository}/releases`);
   const matches = all.filter(({ tag_name }) => tag_name === identity.tag);
-  return await Promise.all(matches.map(async (candidate) => {
-    const release = await request<GitHubRelease>(`repos/${identity.repository}/releases/${candidate.id}`);
-    if (release.id !== candidate.id) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");
-    return {
-      id: release.id,
-      tag: release.tag_name,
-      target: release.target_commitish,
-      title: release.name ?? "",
-      bodySha256: sha256(release.body ?? ""),
-      draft: release.draft,
-      prerelease: release.prerelease,
-      immutable: release.immutable,
-      assets: await releaseAssets(identity, release.id),
-    };
-  }));
+  if (fixedReleaseId !== undefined && !matches.some(({ id }) => id === fixedReleaseId)) {
+    matches.push(await request<GitHubRelease>(`repos/${identity.repository}/releases/${fixedReleaseId}`));
+  }
+  return await Promise.all(matches.map(async (candidate) => await materializeRelease(identity, candidate)));
 }
 
 async function observePublishIntent(identity: ApprovedReleaseIdentity, releases: ObservedRelease[]): Promise<ObservedReleaseState["publishIntent"]> {
@@ -166,8 +171,8 @@ async function observeNpm(identity: ApprovedReleaseIdentity, intentPresent: bool
   }
 }
 
-async function observe(identity: ApprovedReleaseIdentity): Promise<ObservedReleaseState> {
-  const [tag, releases] = await Promise.all([observeTag(identity), observeReleases(identity)]);
+async function observe(identity: ApprovedReleaseIdentity, fixedReleaseId?: number): Promise<ObservedReleaseState> {
+  const [tag, releases] = await Promise.all([observeTag(identity), observeReleases(identity, fixedReleaseId)]);
   const publishIntent = await observePublishIntent(identity, releases);
   const npm = await observeNpm(identity, publishIntent.state === "present");
   return { tag, releases, npm, publishIntent, verification: { state: "incomplete" } };
@@ -241,7 +246,7 @@ async function applyGithubTransition(identity: ApprovedReleaseIdentity, state: O
 
 async function waitForImmutable(identity: ApprovedReleaseIdentity, releaseId: number): Promise<ObservedReleaseState> {
   for (let attempt = 1; attempt <= 12; attempt += 1) {
-    const state = await observe(identity);
+    const state = await observe(identity, releaseId);
     if (state.releases.length !== 1 || state.releases[0]!.id !== releaseId) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");
     const plan = planReleaseTransition(identity, state);
     if (plan.action !== "wait_for_immutable") return state;
@@ -251,10 +256,10 @@ async function waitForImmutable(identity: ApprovedReleaseIdentity, releaseId: nu
   throw new Error("RT_RELEASE_PROVIDER_IMMUTABLE_TIMEOUT");
 }
 
-async function reconcileGithub(identity: ApprovedReleaseIdentity): Promise<{ state: ObservedReleaseState; releaseId: number }> {
+export async function reconcileGithub(identity: ApprovedReleaseIdentity): Promise<{ state: ObservedReleaseState; releaseId: number }> {
   let fixedReleaseId: number | undefined;
   for (let transition = 0; transition < 8; transition += 1) {
-    let state = await observe(identity);
+    let state = await observe(identity, fixedReleaseId);
     if (state.releases.length === 1) {
       fixedReleaseId ??= state.releases[0]!.id;
       if (state.releases[0]!.id !== fixedReleaseId) throw new Error("RT_RELEASE_PROVIDER_RELEASE_ID_CHANGED");

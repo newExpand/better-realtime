@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   planReleaseTransition,
   reconcileReleaseState,
@@ -212,6 +212,49 @@ describe("historical failed release preservation", () => {
 });
 
 describe("release workflow state-machine structure", () => {
+  it("uses the create response ID while the authoritative Release list is eventually consistent", async () => {
+    const priorToken = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "test-token";
+    vi.resetModules();
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/releases?per_page=100&page=1")) {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/releases/42")) {
+        return new Response(JSON.stringify({
+          id: 42,
+          tag_name: identity.tag,
+          target_commitish: identity.sourceSha,
+          name: identity.title,
+          body: "release notes",
+          draft: true,
+          prerelease: true,
+          immutable: false,
+          upload_url: "https://uploads.github.com/releases/42/assets{?name,label}",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/releases/42/assets?per_page=100&page=1")) {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`TEST_UNEXPECTED_REQUEST:${url}`);
+    });
+    try {
+      const { observeReleases } = await import("../scripts/release-state-machine-github.ts");
+      await expect(observeReleases(identity, 42)).resolves.toMatchObject([
+        { id: 42, tag: identity.tag, target: identity.sourceSha, draft: true },
+      ]);
+      expect(requested).toContain("https://api.github.com/repos/newExpand/better-realtime/releases/42");
+    } finally {
+      vi.unstubAllGlobals();
+      if (priorToken === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = priorToken;
+      vi.resetModules();
+    }
+  });
+
   it("never uses the tag endpoint that omits draft Releases", async () => {
     const publish = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
     const verify = await readFile(resolve(root, ".github/workflows/release-verify.yml"), "utf8");
@@ -238,11 +281,14 @@ describe("release workflow state-machine structure", () => {
   it("passes a numeric Release ID from staging through finalization and verification", async () => {
     const publish = await readFile(resolve(root, ".github/workflows/release.yml"), "utf8");
     const verify = await readFile(resolve(root, ".github/workflows/release-verify.yml"), "utf8");
+    const adapter = await readFile(resolve(root, "scripts/release-state-machine-github.ts"), "utf8");
     expect(publish).toContain("release_id:");
     expect(publish).toMatch(/release_id:\s*\$\{\{\s*(?:steps|needs)\.[^}]+\.outputs\.release_id\s*\}\}/u);
     expect(publish).toContain("release_id: ${{ needs.stage-release.outputs.release_id }}");
     expect(verify).toMatch(/release_id:\s*\n\s+required:\s*true/u);
     expect(`${publish}\n${verify}`).toMatch(/repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$release_id/u);
+    expect(adapter).toContain("await observe(identity, fixedReleaseId)");
+    expect(adapter).toContain("await observe(identity, releaseId)");
   });
 
   it("keeps publish intent and the single npm mutation mechanically distinct", async () => {
