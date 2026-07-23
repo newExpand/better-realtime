@@ -133,13 +133,18 @@ export async function checkPublicHistory(
 }
 
 async function loadBaseline(): Promise<PublicHistoryBaseline> {
-  const manifest = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "compatibility", "fixtures", "better-realtime-0.1.0-alpha.1.json"), "utf8")) as Record<string, unknown>;
-  const rootCommit = manifest.publicRootCommit;
-  const name = manifest.publicTag;
-  const object = manifest.publicTagObject;
-  const target = manifest.publicTagTarget;
-  if (![rootCommit, object, target].every((value) => typeof value === "string" && /^[0-9a-f]{40}$/u.test(value)) || typeof name !== "string" || !publicTag.test(name)) throw new Error("RT_PUBLIC_HISTORY_BASELINE_INVALID");
-  return { rootCommit: rootCommit as string, tags: [{ name, object: object as string, target: target as string }] };
+  const manifest = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "release", "public-history.json"), "utf8")) as Record<string, unknown>;
+  const rootCommit = manifest.rootCommit;
+  const tags = manifest.tags;
+  if (manifest.schemaVersion !== "1.0" || manifest.repository !== "newExpand/better-realtime" || typeof rootCommit !== "string" || !/^[0-9a-f]{40}$/u.test(rootCommit) || !Array.isArray(tags) || tags.length === 0) throw new Error("RT_PUBLIC_HISTORY_BASELINE_INVALID");
+  const parsedTags = tags.map((entry) => {
+    if (!entry || typeof entry !== "object") throw new Error("RT_PUBLIC_HISTORY_BASELINE_INVALID");
+    const { name, object, target } = entry as Record<string, unknown>;
+    if (typeof name !== "string" || !publicTag.test(name) || typeof object !== "string" || !/^[0-9a-f]{40}$/u.test(object) || typeof target !== "string" || !/^[0-9a-f]{40}$/u.test(target)) throw new Error("RT_PUBLIC_HISTORY_BASELINE_INVALID");
+    return { name, object, target };
+  });
+  if (new Set(parsedTags.map(({ name }) => name)).size !== parsedTags.length) throw new Error("RT_PUBLIC_HISTORY_BASELINE_INVALID");
+  return { rootCommit, tags: parsedTags };
 }
 
 async function queryRemote(git: (args: string[]) => Promise<string>): Promise<PublicRemoteSnapshot> {

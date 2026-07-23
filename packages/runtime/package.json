@@ -1,6 +1,6 @@
 {
   "name": "better-realtime",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "Contract-first realtime for React and Node with recovery backed by deterministic evidence",
   "license": "MIT",
   "author": "ByteLoft",

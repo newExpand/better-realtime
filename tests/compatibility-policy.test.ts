@@ -19,8 +19,12 @@ describe("published alpha compatibility policy", () => {
   });
 
   it("accepts only the three explicit change classifications and independent version boundaries", async () => {
-    const changes = JSON.parse(await readFile(resolve(root, "compatibility/changes.json"), "utf8")) as { changes: Array<{ classification: string }> };
-    for (const change of changes.changes) expect(["compatible", "deprecated", "intentionally_breaking"]).toContain(change.classification);
+    const changes = JSON.parse(await readFile(resolve(root, "compatibility/changes.json"), "utf8")) as { changes: Array<{ id: string; classification: string; minimumVersion: string }> };
+    for (const change of changes.changes) {
+      expect(["compatible", "deprecated", "intentionally_breaking"]).toContain(change.classification);
+      expect(change.id).toMatch(/^alpha3-/u);
+      expect(change.minimumVersion).toBe("0.1.0-alpha.3");
+    }
     const stability = await readFile(resolve(root, "docs/public/stability.md"), "utf8");
     expect(stability).toContain("`0.1.0-alpha.2`");
     expect(stability).toContain("`0.2.0-alpha.1`");
@@ -45,14 +49,14 @@ describe("published alpha compatibility policy", () => {
     expect(postgresHarness).toContain("pnpm compatibility:postgres");
   });
 
-  it("fails a declared alpha.2 or 0.2 change when the actual candidate package version is too low", () => {
-    expect(compareAlphaVersions("0.1.0-alpha.2", "0.1.0-alpha.1")).toBeGreaterThan(0);
-    expect(() => assertCandidateVersion("0.1.0-alpha.1", "0.1.0-alpha.2", "compatible-change")).toThrow("RT_COMPAT_CANDIDATE_VERSION_TOO_LOW");
+  it("fails a declared alpha.3 or 0.2 change when the actual candidate package version is too low", () => {
+    expect(compareAlphaVersions("0.1.0-alpha.3", "0.1.0-alpha.1")).toBeGreaterThan(0);
+    expect(() => assertCandidateVersion("0.1.0-alpha.2", "0.1.0-alpha.3", "compatible-change")).toThrow("RT_COMPAT_CANDIDATE_VERSION_TOO_LOW");
     expect(() => assertCandidateVersion("0.1.0-alpha.2", "0.2.0-alpha.1", "breaking-change")).toThrow("RT_COMPAT_CANDIDATE_VERSION_TOO_LOW");
     expect(() => assertCandidateVersion("0.2.0-alpha.1", "0.2.0-alpha.1", "breaking-change")).not.toThrow();
     expect(() => assertCandidateVersion("0.1.0-alpha.1", "better-realtime.v2", "wire-change")).not.toThrow();
     expect(() => assertCandidateAdvanced("0.1.0-alpha.1", "0.1.0-alpha.1", 1)).toThrow("RT_COMPAT_CANDIDATE_VERSION_NOT_ADVANCED");
-    expect(() => assertCandidateAdvanced("0.1.0-alpha.2", "0.1.0-alpha.1", 1)).not.toThrow();
+    expect(() => assertCandidateAdvanced("0.1.0-alpha.3", "0.1.0-alpha.1", 1)).not.toThrow();
     expect(() => assertWireCandidateIdentity(true, { subprotocol: "better-realtime.v1", version: "1.0" })).toThrow("RT_COMPAT_WIRE_V2_IDENTITY_REQUIRED");
     expect(() => assertWireCandidateIdentity(true, { subprotocol: "better-realtime.v2", version: "2.0" })).not.toThrow();
     expect(() => assertWireConformanceHarness(true)).toThrow("RT_COMPAT_WIRE_V2_CONFORMANCE_HARNESS_REQUIRED");

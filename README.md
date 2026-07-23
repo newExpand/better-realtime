@@ -7,7 +7,7 @@ Contract-first realtime for React and Node. Recovery you can prove.
 
 Build typed live streams and commands on native WebSocket without rewriting replay, deduplication, snapshot recovery, and command reconciliation for every feature. For declared capabilities, the verified PostgreSQL profile restores React state after recoverable interruptions and emits machine-readable evidence when recovery cannot be proven.
 
-> `0.1.0-alpha.2` is an evaluation release, not a production-ready declaration. Check the [alpha support matrix](docs/public/support-matrix.md) and [stability policy](docs/public/stability.md) before production use.
+> `0.1.0-alpha.3` is an evaluation release, not a production-ready declaration. Check the [alpha support matrix](docs/public/support-matrix.md) and [stability policy](docs/public/stability.md) before production use.
 
 [Read the quickstart](docs/public/quickstart.md) · [Run the verified journey](#run-the-verified-recovery-journey) · [Check alpha support](#alpha-support-matrix) · [Review production boundaries](docs/public/production-deployment.md)
 
@@ -24,7 +24,7 @@ Better Realtime is not a cache, local database, general synchronization engine, 
 
 ## Install the alpha
 
-Alpha releases use the npm `alpha` dist-tag. Run this only after `0.1.0-alpha.2` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions). An npm `E404` means the approval-gated publication has not completed; it does not reserve the name.
+Alpha releases use the npm `alpha` dist-tag. Run this only after `0.1.0-alpha.3` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions). An npm `E404` means the approval-gated publication has not completed; it does not reserve the name.
 
 ```sh
 npm install better-realtime@alpha react pg ws

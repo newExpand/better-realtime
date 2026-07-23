@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { exportPublic } from "../scripts/export-public.ts";
+import { assertPrivateExportPolicyBoundary, exportPublic } from "../scripts/export-public.ts";
 import { verifyPublicTree } from "../scripts/verify-public-tree.ts";
 import { promisify } from "node:util";
 
@@ -60,5 +60,32 @@ describe("deterministic clean-history public export", () => {
     const parent = await mkdtemp(join(tmpdir(), "better-realtime-public-export-private-source-test-"));
     temporary.push(parent);
     await expect(exportPublic(join(parent, "tree"))).rejects.toThrow("RT_PUBLIC_EXPORT_PRIVATE_SOURCE_REFERENCE");
+  });
+
+  it("rejects private release-state wording from the public export", async () => {
+    const privatePolicy = resolve("release/.private-export-policy.json");
+    const hasPrivatePolicy = await readFile(privatePolicy, "utf8").then(() => true, (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    });
+    if (!hasPrivatePolicy) {
+      const privateMode = await readFile(resolve("AGENTS.md"), "utf8").then(() => true, (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      expect(privateMode).toBe(false);
+      return;
+    }
+    const seededReference = resolve("packages/protocol/public-export-private-release-state.txt");
+    await writeFile(seededReference, ["The existing private and ", "public alpha.2 tags are preserved.\n"].join(""), "utf8");
+    temporary.push(seededReference);
+    const parent = await mkdtemp(join(tmpdir(), "better-realtime-public-export-private-release-state-test-"));
+    temporary.push(parent);
+    await expect(exportPublic(join(parent, "tree"))).rejects.toThrow("RT_PUBLIC_EXPORT_FORBIDDEN_CONTENT");
+  });
+
+  it("requires the private overlay whenever the private repository sentinel exists", () => {
+    expect(() => assertPrivateExportPolicyBoundary(true, undefined)).toThrow("RT_PUBLIC_EXPORT_PRIVATE_POLICY_REQUIRED");
+    expect(() => assertPrivateExportPolicyBoundary(false, undefined)).not.toThrow();
   });
 });

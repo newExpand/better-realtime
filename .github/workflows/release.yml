@@ -24,6 +24,10 @@ permissions:
   contents: read
   id-token: none
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -36,7 +40,20 @@ jobs:
       tag: ${{ steps.identity.outputs.tag }}
       sha256: ${{ steps.approved.outputs.sha256 }}
       size: ${{ steps.approved.outputs.size }}
+      release_state: ${{ steps.preflight.outputs.release_state }}
     steps:
+      - name: Bind the dispatch to the approved main source
+        env:
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          RUN_REF: ${{ github.ref }}
+          RUN_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$RUN_REF" = refs/heads/main
+          test "$RUN_SHA" = "$INPUT_SOURCE_SHA"
+          test "$WORKFLOW_SHA" = "$INPUT_SOURCE_SHA"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.source_sha }}
@@ -66,16 +83,23 @@ jobs:
           echo "artifact_name=release-candidate-$source_sha-$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Fail closed when any immutable target already exists
+        id: preflight
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
+          source_sha="$INPUT_SOURCE_SHA"
           tag="v$version"
+          expected_message="Better Realtime $version"
+          expected_title="$expected_message"
+          expected_body="$(cat CHANGELOG.md)"
+          release_state=absent
           npm_error="$(mktemp)"
           if npm view "better-realtime@$version" version >/dev/null 2>"$npm_error"; then
-            echo "npm version already exists: better-realtime@$version" >&2
+            echo "npm version already exists; use release-verify.yml and do not publish again: better-realtime@$version" >&2
             exit 1
           fi
           if ! grep -Eq 'E404|404 Not Found' "$npm_error"; then
@@ -83,33 +107,45 @@ jobs:
             sed -n '1,20p' "$npm_error" >&2
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Git tag already exists: $tag" >&2
-            exit 1
-          elif [[ $? -ne 2 ]]; then
-            echo "Could not prove Git tag absence: $tag" >&2
+          tag_state=absent
+          tag_error="$(mktemp)"
+          if tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag" 2>"$tag_error")"; then
+            test "$(jq -r .object.type <<<"$tag_ref")" = tag
+            tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha")"
+            test "$(jq -r .tag <<<"$tag_object")" = "$tag"
+            test "$(jq -r .message <<<"$tag_object")" = "$expected_message"
+            test "$(jq -r .object.type <<<"$tag_object")" = commit
+            test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"
+            tag_state=exact
+            echo "existing exact annotated tag; resuming"
+          elif ! grep -q 'HTTP 404' "$tag_error"; then
+            echo "Could not resolve Git tag state: $tag" >&2
+            sed -n '1,20p' "$tag_error" >&2
             exit 1
           fi
           release_error="$(mktemp)"
-          if gh release view "$tag" >/dev/null 2>"$release_error"; then
-            echo "GitHub Release already exists: $tag" >&2
-            exit 1
-          fi
-          if ! grep -Eq 'HTTP 404|release not found' "$release_error"; then
-            echo "Could not prove GitHub Release absence: $tag" >&2
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" 2>"$release_error")"; then
+            test "$tag_state" = exact
+            test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
+            test "$(jq -r .name <<<"$release_json")" = "$expected_title"
+            test "$(jq -r .body <<<"$release_json")" = "$expected_body"
+            test "$(jq -r .prerelease <<<"$release_json")" = true
+            if [[ "$(jq -r .draft <<<"$release_json")" = false ]]; then
+              test "$(jq -r .immutable <<<"$release_json")" = true
+              release_state=immutable
+              echo "existing exact immutable release; resuming"
+            else
+              test "$(jq -r .immutable <<<"$release_json")" = false
+              release_state=draft
+              echo "existing exact draft release; resuming"
+            fi
+          elif ! grep -q 'HTTP 404' "$release_error"; then
+            echo "Could not resolve GitHub Release state: $tag" >&2
             sed -n '1,20p' "$release_error" >&2
             exit 1
           fi
-          api_error="$(mktemp)"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" >/dev/null 2>"$api_error"; then
-            echo "GitHub Release assets already exist: $tag" >&2
-            exit 1
-          fi
-          if ! grep -q 'HTTP 404' "$api_error"; then
-            echo "Could not prove GitHub Release asset absence: $tag" >&2
-            sed -n '1,20p' "$api_error" >&2
-            exit 1
-          fi
+          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level=high
       - run: pnpm check
@@ -168,6 +204,7 @@ jobs:
 
   stage-release:
     needs: build
+    if: github.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -188,23 +225,170 @@ jobs:
           set -euo pipefail
           test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
           test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
-          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
-          tag_object="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" -f tag="$TAG" -f message="Better Realtime ${TAG#v}" -f object="$INPUT_SOURCE_SHA" -f type=commit --jq .sha)"
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag_object" >/dev/null
-          gh release create "$TAG" "$ARTIFACT" "$ARTIFACT.sha256" --verify-tag --draft --prerelease --title "Better Realtime ${TAG#v}" --notes-file CHANGELOG.md
+          test "$(cat "$ARTIFACT.sha256")" = "$EXPECTED_SHA256  $ARTIFACT"
+          expected_title="Better Realtime ${TAG#v}"
+          expected_body="$(cat CHANGELOG.md)"
+          validate_tag() {
+            local tag_ref="$1" tag_object_sha tag_object
+            test "$(jq -r .object.type <<<"$tag_ref")" = tag
+            tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha")"
+            test "$(jq -r .tag <<<"$tag_object")" = "$TAG"
+            test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${TAG#v}"
+            test "$(jq -r .object.type <<<"$tag_object")" = commit
+            test "$(jq -r .object.sha <<<"$tag_object")" = "$INPUT_SOURCE_SHA"
+          }
+          tag_error="$(mktemp)"
+          if tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" 2>"$tag_error")"; then
+            validate_tag "$tag_ref"
+            echo "existing exact annotated tag; resuming"
+          elif grep -q 'HTTP 404' "$tag_error"; then
+            tag_object_sha="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" -f tag="$TAG" -f message="$expected_title" -f object="$INPUT_SOURCE_SHA" -f type=commit --jq .sha)"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag_object_sha" >/dev/null
+            validate_tag "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG")"
+          else
+            sed -n '1,20p' "$tag_error" >&2
+            exit 1
+          fi
+
+          release_error="$(mktemp)"
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" 2>"$release_error")"; then
+            test "$(jq -r .tag_name <<<"$release_json")" = "$TAG"
+            test "$(jq -r .name <<<"$release_json")" = "$expected_title"
+            test "$(jq -r .body <<<"$release_json")" = "$expected_body"
+            test "$(jq -r .prerelease <<<"$release_json")" = true
+            if [[ "$(jq -r .draft <<<"$release_json")" = true ]]; then
+              test "$(jq -r .immutable <<<"$release_json")" = false
+              echo "existing exact draft release; resuming"
+            else
+              test "$(jq -r .immutable <<<"$release_json")" = true
+              echo "existing exact immutable release; resuming"
+            fi
+          elif grep -q 'HTTP 404' "$release_error"; then
+            gh release create "$TAG" "$ARTIFACT" "$ARTIFACT.sha256" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --title "$expected_title" --notes-file CHANGELOG.md
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+          else
+            sed -n '1,20p' "$release_error" >&2
+            exit 1
+          fi
+
+          validate_existing_asset() {
+            local name="$1" expected_digest="$2" expected_asset_size="$3" matches count
+            matches="$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+            count="$(jq 'length' <<<"$matches")"
+            test "$count" -le 1
+            if [[ "$count" = 1 ]]; then
+              test "$(jq -r '.[0].digest' <<<"$matches")" = "sha256:$expected_digest"
+              test "$(jq -r '.[0].size' <<<"$matches")" = "$expected_asset_size"
+            fi
+          }
+          ensure_asset() {
+            local name="$1" expected_digest="$2" expected_asset_size="$3" count
+            count="$(jq --arg name "$name" '[.assets[] | select(.name == $name)] | length' <<<"$release_json")"
+            if [[ "$count" = 0 ]]; then
+              test "$(jq -r .draft <<<"$release_json")" = true
+              gh release upload "$TAG" "$name" --repo "$GITHUB_REPOSITORY"
+              release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+            fi
+            local matches
+            matches="$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+            count="$(jq 'length' <<<"$matches")"
+            test "$count" = 1
+            test "$(jq -r '.[0].digest' <<<"$matches")" = "sha256:$expected_digest"
+            test "$(jq -r '.[0].size' <<<"$matches")" = "$expected_asset_size"
+          }
+          checksum_sha256="$(sha256sum "$ARTIFACT.sha256" | cut -d' ' -f1)"
+          checksum_size="$(wc -c < "$ARTIFACT.sha256" | tr -d ' ')"
+          existing_asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
+          unexpected_assets="$(comm -23 <(printf '%s\n' "$existing_asset_names") <(printf '%s\n%s\n' "$ARTIFACT" "$ARTIFACT.sha256" | sort))"
+          test -z "$unexpected_assets"
+          validate_existing_asset "$ARTIFACT" "$EXPECTED_SHA256" "$EXPECTED_SIZE"
+          validate_existing_asset "$ARTIFACT.sha256" "$checksum_sha256" "$checksum_size"
+          ensure_asset "$ARTIFACT" "$EXPECTED_SHA256" "$EXPECTED_SIZE"
+          ensure_asset "$ARTIFACT.sha256" "$checksum_sha256" "$checksum_size"
+          asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
+          expected_names="$(printf '%s\n%s\n' "$ARTIFACT" "$ARTIFACT.sha256" | sort)"
+          test "$asset_names" = "$expected_names"
+          mkdir staged-release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARTIFACT" --pattern "$ARTIFACT.sha256" --dir staged-release-assets
+          cmp "$ARTIFACT" "staged-release-assets/$ARTIFACT"
+          cmp "$ARTIFACT.sha256" "staged-release-assets/$ARTIFACT.sha256"
 
   finalize-release:
     needs: [build, stage-release]
+    if: github.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: none
     steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
       - name: Publish the asset-complete prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.build.outputs.tag }}
-        run: gh release edit "$TAG" --draft=false --prerelease
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+          EXPECTED_SIZE: ${{ needs.build.outputs.size }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cat "$ARTIFACT.sha256")" = "$EXPECTED_SHA256  $ARTIFACT"
+          checksum_sha256="$(sha256sum "$ARTIFACT.sha256" | cut -d' ' -f1)"
+          checksum_size="$(wc -c < "$ARTIFACT.sha256" | tr -d ' ')"
+          expected_title="Better Realtime ${TAG#v}"
+          expected_body="$(cat CHANGELOG.md)"
+          validate_tag() {
+            local tag_ref tag_object_sha tag_object
+            tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG")"
+            test "$(jq -r .object.type <<<"$tag_ref")" = tag
+            tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha")"
+            test "$(jq -r .tag <<<"$tag_object")" = "$TAG"
+            test "$(jq -r .message <<<"$tag_object")" = "$expected_title"
+            test "$(jq -r .object.type <<<"$tag_object")" = commit
+            test "$(jq -r .object.sha <<<"$tag_object")" = "$INPUT_SOURCE_SHA"
+          }
+          validate_release() {
+            local release_json="$1" asset_names expected_names asset_json checksum_json
+            test "$(jq -r .tag_name <<<"$release_json")" = "$TAG"
+            test "$(jq -r .name <<<"$release_json")" = "$expected_title"
+            test "$(jq -r .body <<<"$release_json")" = "$expected_body"
+            test "$(jq -r .prerelease <<<"$release_json")" = true
+            asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
+            expected_names="$(printf '%s\n%s\n' "$ARTIFACT" "$ARTIFACT.sha256" | sort)"
+            test "$asset_names" = "$expected_names"
+            asset_json="$(jq -c --arg name "$ARTIFACT" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+            checksum_json="$(jq -c --arg name "$ARTIFACT.sha256" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+            test "$(jq 'length' <<<"$asset_json")" = 1
+            test "$(jq -r '.[0].digest' <<<"$asset_json")" = "sha256:$EXPECTED_SHA256"
+            test "$(jq -r '.[0].size' <<<"$asset_json")" = "$EXPECTED_SIZE"
+            test "$(jq 'length' <<<"$checksum_json")" = 1
+            test "$(jq -r '.[0].digest' <<<"$checksum_json")" = "sha256:$checksum_sha256"
+            test "$(jq -r '.[0].size' <<<"$checksum_json")" = "$checksum_size"
+          }
+          validate_tag
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+          validate_release "$release_json"
+          mkdir finalization-release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARTIFACT" --pattern "$ARTIFACT.sha256" --dir finalization-release-assets
+          test "$(find finalization-release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          cmp "$ARTIFACT" "finalization-release-assets/$ARTIFACT"
+          cmp "$ARTIFACT.sha256" "finalization-release-assets/$ARTIFACT.sha256"
+          validate_tag
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+          validate_release "$release_json"
+          if [[ "$(jq -r .draft <<<"$release_json")" = true ]]; then
+            test "$(jq -r .immutable <<<"$release_json")" = false
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
+          else
+            test "$(jq -r .immutable <<<"$release_json")" = true
+            echo "existing exact immutable release; resuming"
+          fi
 
   assert-immutable-release:
     needs: [build, finalize-release]
@@ -213,6 +397,9 @@ jobs:
       contents: read
       id-token: none
     steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
       - name: Require the published GitHub release to be immutable before npm publication
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,25 +410,56 @@ jobs:
           EXPECTED_SIZE: ${{ needs.build.outputs.size }}
         run: |
           set -euo pipefail
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          test "$(cat "$ARTIFACT.sha256")" = "$EXPECTED_SHA256  $ARTIFACT"
+          for attempt in $(seq 1 12); do
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")"
+            if [[ "$(jq -r .immutable <<<"$release_json")" = true ]]; then
+              break
+            fi
+            if [[ "$attempt" = 12 ]]; then
+              echo "GitHub release did not become immutable within 60 seconds" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           test "$(jq -r .tag_name <<<"$release_json")" = "$TAG"
+          test "$(jq -r .name <<<"$release_json")" = "Better Realtime ${TAG#v}"
+          test "$(jq -r .body <<<"$release_json")" = "$(cat CHANGELOG.md)"
           test "$(jq -r .draft <<<"$release_json")" = false
           test "$(jq -r .prerelease <<<"$release_json")" = true
           test "$(jq -r .immutable <<<"$release_json")" = true
           asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
           expected_names="$(printf '%s\n%s\n' "$ARTIFACT" "$ARTIFACT.sha256" | sort)"
           test "$asset_names" = "$expected_names"
-          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq .object.sha)"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha" --jq .object.sha)" = "$INPUT_SOURCE_SHA"
+          checksum_sha256="$(sha256sum "$ARTIFACT.sha256" | cut -d' ' -f1)"
+          checksum_size="$(wc -c < "$ARTIFACT.sha256" | tr -d ' ')"
+          asset_json="$(jq -c --arg name "$ARTIFACT" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+          checksum_json="$(jq -c --arg name "$ARTIFACT.sha256" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+          test "$(jq 'length' <<<"$asset_json")" = 1
+          test "$(jq -r '.[0].digest' <<<"$asset_json")" = "sha256:$EXPECTED_SHA256"
+          test "$(jq -r '.[0].size' <<<"$asset_json")" = "$EXPECTED_SIZE"
+          test "$(jq 'length' <<<"$checksum_json")" = 1
+          test "$(jq -r '.[0].digest' <<<"$checksum_json")" = "sha256:$checksum_sha256"
+          test "$(jq -r '.[0].size' <<<"$checksum_json")" = "$checksum_size"
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG")"
+          test "$(jq -r .object.type <<<"$tag_ref")" = tag
+          tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
+          tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha")"
+          test "$(jq -r .tag <<<"$tag_object")" = "$TAG"
+          test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${TAG#v}"
+          test "$(jq -r .object.type <<<"$tag_object")" = commit
+          test "$(jq -r .object.sha <<<"$tag_object")" = "$INPUT_SOURCE_SHA"
           mkdir immutable-release-assets
-          gh release download "$TAG" --pattern "$ARTIFACT" --pattern "$ARTIFACT.sha256" --dir immutable-release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARTIFACT" --pattern "$ARTIFACT.sha256" --dir immutable-release-assets
           test "$(find immutable-release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
-          test "$(sha256sum "immutable-release-assets/$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
-          test "$(wc -c < "immutable-release-assets/$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
-          test "$(cut -d' ' -f1 "immutable-release-assets/$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          cmp "$ARTIFACT" "immutable-release-assets/$ARTIFACT"
+          cmp "$ARTIFACT.sha256" "immutable-release-assets/$ARTIFACT.sha256"
 
   publish:
     needs: [build, assert-immutable-release]
+    if: github.run_attempt == 1 && needs.build.outputs.release_state != 'immutable'
     runs-on: ubuntu-latest
     environment: npm-alpha
     permissions:
@@ -259,6 +477,7 @@ jobs:
           name: ${{ needs.build.outputs.artifact_name }}
       - name: Publish the exact artifact through npm Trusted Publishing
         env:
+          INPUT_VERSION: ${{ inputs.version }}
           ARTIFACT: ${{ needs.build.outputs.artifact }}
           EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
           EXPECTED_SIZE: ${{ needs.build.outputs.size }}
@@ -266,11 +485,40 @@ jobs:
           set -euo pipefail
           test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
           test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
-          test "$(cut -d' ' -f1 "$ARTIFACT.sha256")" = "$EXPECTED_SHA256"
+          test "$(cat "$ARTIFACT.sha256")" = "$EXPECTED_SHA256  $ARTIFACT"
+          npm_error="$(mktemp)"
+          if npm view "better-realtime@$INPUT_VERSION" version >/dev/null 2>"$npm_error"; then
+            echo "npm version already exists; use release-verify.yml and do not publish again: better-realtime@$INPUT_VERSION" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'E404|404 Not Found' "$npm_error"; then
+            echo "Could not prove npm version absence immediately before publication" >&2
+            sed -n '1,20p' "$npm_error" >&2
+            exit 1
+          fi
           npm publish "$ARTIFACT" --tag alpha --access public --provenance
 
-  verify:
+  require-publish-completion:
     needs: [build, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Reject publication replay or an ambiguous publish result
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_STATE: ${{ needs.build.outputs.release_state }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: |
+          set -euo pipefail
+          test "$RUN_ATTEMPT" = 1
+          test "$RELEASE_STATE" != immutable
+          test "$PUBLISH_RESULT" = success
+
+  verify:
+    needs: [build, require-publish-completion]
     permissions:
       contents: read
       id-token: none

@@ -4,7 +4,7 @@
 
 ## Version boundaries
 
-- Bug fixes, additive APIs, and improvements compatible with the public contract may ship as `0.1.0-alpha.2`.
+- Bug fixes, additive APIs, and improvements compatible with the public contract may ship on the `0.1.x-alpha` line. The tag-only `0.1.0-alpha.2` attempt was not published to npm; its unchanged compatible payload is carried forward by `0.1.0-alpha.3`.
 - Fundamentally incompatible public API, configuration, or semantic changes require `0.2.0-alpha.1` and a migration guide.
 - An incompatible wire change requires a new WebSocket subprotocol, beginning with `better-realtime.v2`.
 - PostgreSQL schema changes occur only through a versioned deployment migration. Runtime startup remains read-only and never applies DDL or a destructive in-place rewrite.

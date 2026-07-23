@@ -121,7 +121,7 @@ it("rejects non-canonical remotes, push URLs, refs, and private or lightweight t
   await expect(checkPublicHistory(hiddenBlob.directory, author, hiddenBlob.root, undefined, { baseline: baseline(hiddenBlob.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_REF_INVALID");
 
   const privateTag = await repository();
-  const privateTagName = ["source", "export/v0.1.0-alpha.2"].join("-");
+  const privateTagName = ["source", "export/v0.1.0-alpha.3"].join("-");
   await exec("git", ["tag", "--annotate", privateTagName, "--message", "Private tag fixture"], { cwd: privateTag.directory });
   const privateTagObject = (await exec("git", ["rev-parse", `refs/tags/${privateTagName}`], { cwd: privateTag.directory })).stdout.trim();
   await expect(checkPublicHistory(privateTag.directory, author, privateTag.root, undefined, { baseline: baseline(privateTag.root, [{ name: privateTagName, object: privateTagObject, target: privateTag.root }]) })).rejects.toThrow("RT_PUBLIC_HISTORY_TAG_INVALID");

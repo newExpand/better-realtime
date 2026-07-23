@@ -21,6 +21,10 @@ interface PrivateExportPolicy {
   forbiddenContentFragments: string[][];
 }
 
+export function assertPrivateExportPolicyBoundary(privateMode: boolean, privatePolicy: PrivateExportPolicy | undefined): void {
+  if (privateMode && !privatePolicy) throw new Error("RT_PUBLIC_EXPORT_PRIVATE_POLICY_REQUIRED");
+}
+
 export interface PublicExportReport {
   schemaVersion: "1.0";
   repository: string;
@@ -47,6 +51,8 @@ export async function exportPublic(outputDirectory = defaultOutput): Promise<Pub
   const privatePolicy = await readFile(privatePolicyPath, "utf8")
     .then((source) => JSON.parse(source) as PrivateExportPolicy)
     .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+  const privateMode = await lstat(join(root, "AGENTS.md")).then((entry) => entry.isFile(), (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+  assertPrivateExportPolicyBoundary(privateMode, privatePolicy);
   if (privatePolicy && privatePolicy.schemaVersion !== "1.0") throw new Error("RT_PUBLIC_EXPORT_PRIVATE_POLICY_INVALID");
   const forbiddenContent = [...policy.forbiddenContentFragments, ...(privatePolicy?.forbiddenContentFragments ?? [])].map((fragments) => fragments.join(""));
   if (forbiddenContent.some((value) => !value || value.length < 8)) throw new Error("RT_PUBLIC_EXPORT_POLICY_INVALID");

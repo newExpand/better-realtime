@@ -1,12 +1,12 @@
 # Quickstart
 
-Better Realtime `0.1.0-alpha.2` supports React Web clients and Node.js servers using PostgreSQL.
+Better Realtime `0.1.0-alpha.3` supports React Web clients and Node.js servers using PostgreSQL.
 
 ```sh
 npm install better-realtime@alpha react pg ws
 ```
 
-Alpha releases use the npm `alpha` dist-tag. Run the command only after `0.1.0-alpha.2` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions); an `E404` means the approval-gated publication has not completed.
+Alpha releases use the npm `alpha` dist-tag. Run the command only after `0.1.0-alpha.3` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions); an `E404` means the approval-gated publication has not completed.
 
 Define one shared contract with explicit Draft 2020-12 payload identities in `contract.ts`. This example is complete; every identifier used by the reducer is declared here:
 

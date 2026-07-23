@@ -63,19 +63,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.tag }}
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22.x"
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - run: corepack enable
-      - run: npm install --global npm@11.18.0
-      - run: pnpm install --frozen-lockfile
-      - name: Validate verification-only identity and immutable assets
+      - name: Validate remote identity and immutable assets before repository code
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_TAG: ${{ inputs.tag }}
@@ -83,6 +71,7 @@ jobs:
           EXPECTED_SIZE: ${{ inputs.expected_size }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
@@ -95,37 +84,88 @@ jobs:
           [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$expected_size" =~ ^[1-9][0-9]*$ ]]
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
-          test "$(node -p "require('./packages/runtime/package.json').version")" = "$version"
-          test "$(git rev-parse HEAD)" = "$source_sha"
-          test "$(git rev-list -n 1 "$tag")" = "$source_sha"
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag")"
           test "$(jq -r .tag_name <<<"$release_json")" = "$tag"
+          test "$(jq -r .name <<<"$release_json")" = "Better Realtime $version"
           test "$(jq -r .draft <<<"$release_json")" = false
           test "$(jq -r .prerelease <<<"$release_json")" = true
           test "$(jq -r .immutable <<<"$release_json")" = true
           tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag")"
           test "$(jq -r .object.type <<<"$tag_ref")" = tag
           tag_object_sha="$(jq -r .object.sha <<<"$tag_ref")"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha" --jq .object.sha)" = "$(git rev-parse HEAD)"
+          tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object_sha")"
+          test "$(jq -r .tag <<<"$tag_object")" = "$tag"
+          test "$(jq -r .message <<<"$tag_object")" = "Better Realtime ${tag#v}"
+          test "$(jq -r .object.type <<<"$tag_object")" = commit
+          test "$(jq -r .object.sha <<<"$tag_object")" = "$source_sha"
           asset="better-realtime-$version.tgz"
-          mkdir -p post-publish/release post-publish/registry post-publish/signatures
           asset_names="$(jq -r '.assets[].name' <<<"$release_json" | sort)"
           expected_names="$(printf '%s\n%s\n' "$asset" "$asset.sha256" | sort)"
           test "$asset_names" = "$expected_names"
-          gh release download "$tag" --pattern "$asset" --pattern "$asset.sha256" --dir post-publish/release
-          test "$(find post-publish/release -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
-          test "$(sha256sum "post-publish/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
-          test "$(wc -c < "post-publish/release/$asset" | tr -d ' ')" = "$expected_size"
-          test "$(cut -d' ' -f1 "post-publish/release/$asset.sha256")" = "$expected_sha256"
-      - name: Wait for bounded npm registry convergence
+          asset_json="$(jq -c --arg name "$asset" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+          test "$(jq 'length' <<<"$asset_json")" = 1
+          test "$(jq -r '.[0].digest' <<<"$asset_json")" = "sha256:$expected_sha256"
+          test "$(jq -r '.[0].size' <<<"$asset_json")" = "$expected_size"
+          mkdir -p "$POST_PUBLISH_ROOT/identity" "$POST_PUBLISH_ROOT/release" "$POST_PUBLISH_ROOT/registry" "$POST_PUBLISH_ROOT/signatures"
+          printf '%s\n' "$release_json" > "$POST_PUBLISH_ROOT/identity/release.json"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern "$asset.sha256" --dir "$POST_PUBLISH_ROOT/release"
+          test "$(find "$POST_PUBLISH_ROOT/release" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          test "$(sha256sum "$POST_PUBLISH_ROOT/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset" | tr -d ' ')" = "$expected_size"
+          printf '%s  %s\n' "$expected_sha256" "$asset" > "$POST_PUBLISH_ROOT/identity/approved.sha256"
+          cmp "$POST_PUBLISH_ROOT/identity/approved.sha256" "$POST_PUBLISH_ROOT/release/$asset.sha256"
+          checksum_json="$(jq -c --arg name "$asset.sha256" '[.assets[] | select(.name == $name)]' <<<"$release_json")"
+          test "$(jq 'length' <<<"$checksum_json")" = 1
+          test "$(jq -r '.[0].digest' <<<"$checksum_json")" = "sha256:$(sha256sum "$POST_PUBLISH_ROOT/release/$asset.sha256" | cut -d' ' -f1)"
+          test "$(jq -r '.[0].size' <<<"$checksum_json")" = "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset.sha256" | tr -d ' ')"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the checked-out package and release notes
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$INPUT_SOURCE_SHA"
+          test "$(node -p "require('./packages/runtime/package.json').version")" = "$INPUT_VERSION"
+          test "$(jq -r .body "$POST_PUBLISH_ROOT/identity/release.json")" = "$(cat CHANGELOG.md)"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: corepack enable
+      - run: npm install --global npm@11.18.0
+      - run: pnpm install --frozen-lockfile
+      - name: Recheck approved immutable assets without publication authority
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.expected_size }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
-          registry_artifact="post-publish/registry/better-realtime-$version.tgz"
+          expected_sha256="$EXPECTED_SHA256"
+          expected_size="$EXPECTED_SIZE"
+          asset="better-realtime-$version.tgz"
+          test "$(sha256sum "$POST_PUBLISH_ROOT/release/$asset" | cut -d' ' -f1)" = "$expected_sha256"
+          test "$(wc -c < "$POST_PUBLISH_ROOT/release/$asset" | tr -d ' ')" = "$expected_size"
+          cmp "$POST_PUBLISH_ROOT/identity/approved.sha256" "$POST_PUBLISH_ROOT/release/$asset.sha256"
+      - name: Wait for bounded npm registry convergence
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          registry_artifact="$POST_PUBLISH_ROOT/registry/better-realtime-$version.tgz"
           for attempt in $(seq 1 20); do
-            if npm pack "better-realtime@$version" --pack-destination post-publish/registry >/dev/null 2>&1; then
+            if npm pack "better-realtime@$version" --pack-destination "$POST_PUBLISH_ROOT/registry" >/dev/null 2>&1; then
               test -f "$registry_artifact"
               exit 0
             fi
@@ -140,11 +180,12 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
           EXPECTED_SIZE: ${{ inputs.expected_size }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
-          asset="post-publish/release/better-realtime-$version.tgz"
-          registry_artifact="post-publish/registry/better-realtime-$version.tgz"
+          asset="$POST_PUBLISH_ROOT/release/better-realtime-$version.tgz"
+          registry_artifact="$POST_PUBLISH_ROOT/registry/better-realtime-$version.tgz"
           test "$(sha256sum "$asset" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
           test "$(wc -c < "$asset" | tr -d ' ')" = "$EXPECTED_SIZE"
           test "$(sha256sum "$registry_artifact" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
@@ -157,14 +198,15 @@ jobs:
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           PUBLISH_RUN_ID: ${{ inputs.publish_run_id }}
           PUBLISH_RUN_ATTEMPT: ${{ inputs.publish_run_attempt }}
+          POST_PUBLISH_ROOT: ${{ runner.temp }}/better-realtime-post-publish
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
-          audit_output="post-publish/signatures/audit-signatures.json"
-          (cd post-publish/signatures && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$version" && npm audit signatures --json --include-attestations > "$GITHUB_WORKSPACE/$audit_output")
+          audit_output="$POST_PUBLISH_ROOT/signatures/audit-signatures.json"
+          (cd "$POST_PUBLISH_ROOT/signatures" && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$version" && npm audit signatures --json --include-attestations > "$audit_output")
           pnpm tsx scripts/verify-npm-provenance.ts \
             --audit-signatures "$audit_output" \
-            --tarball "post-publish/registry/better-realtime-$version.tgz" \
+            --tarball "$POST_PUBLISH_ROOT/registry/better-realtime-$version.tgz" \
             --version "$version" \
             --source-sha "$INPUT_SOURCE_SHA" \
             --publish-run-id "$PUBLISH_RUN_ID" \

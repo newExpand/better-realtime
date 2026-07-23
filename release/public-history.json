@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "repository": "newExpand/better-realtime",
+  "rootCommit": "766a6f45d3e8100d50fcf2aa76cb6f17c440df80",
+  "tags": [
+    {
+      "name": "v0.1.0-alpha.1",
+      "object": "b4be67cb0d414f6e87f1aa797f86ec074d0b5f6a",
+      "target": "766a6f45d3e8100d50fcf2aa76cb6f17c440df80"
+    },
+    {
+      "name": "v0.1.0-alpha.2",
+      "object": "5c47946fa91c9a907abc602e391ffa9fa86e8669",
+      "target": "fd10345b9fa2e2fc31598987d856e0a6ed1bc51c"
+    }
+  ]
+}

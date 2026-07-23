@@ -166,6 +166,10 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   await expect(page.getByTestId("connection-status")).toHaveText(/Reconnecting/, { timeout: 10_000 });
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 20_000 });
   await expect.poll(() => sequence(page)).toBe(beforeDatabaseOutage);
+  await expect.poll(
+    () => page.evaluate(async () => JSON.stringify(await (await fetch("/api/evidence")).json())),
+    { timeout: 5_000, intervals: [100, 250, 500] }
+  ).toContain("session.operation_rejected");
   const outageEvidenceText = await page.evaluate(async () => JSON.stringify(await (await fetch("/api/evidence")).json()));
   expect(outageEvidenceText).toContain("capability.health_changed");
   expect(outageEvidenceText).toContain("database.operation_failed");
