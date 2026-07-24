@@ -284,7 +284,7 @@ describe("Better Realtime public release identity", () => {
     const postgresStart = workflow.indexOf("\n  postgres:\n");
     const postgresJob = workflow.slice(postgresStart);
     const installDependencies = postgresJob.indexOf("pnpm install --frozen-lockfile");
-    const installBrowser = postgresJob.indexOf("pnpm exec playwright install --with-deps chromium");
+    const installBrowser = postgresJob.indexOf("pnpm exec playwright install --with-deps chromium firefox webkit");
     const postgres = postgresJob.indexOf("pnpm test:postgres:docker");
     const matrix = postgresJob.indexOf("pnpm compatibility:matrix");
     expect(installDependencies).toBeGreaterThan(-1);

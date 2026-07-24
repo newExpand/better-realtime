@@ -849,8 +849,8 @@
     },
     {
       "path": "packages/server-node/package.json",
-      "bytes": 544,
-      "digest": "sha256:c61d7c02b2bea5d2b8fb047ae6af7eef24bc55da1811ca644a36fc6ac0a10a8d"
+      "bytes": 545,
+      "digest": "sha256:e83078b2832a09461973e12a9df44243cbd86bbcc1bf003245564ded24c3bf4b"
     },
     {
       "path": "packages/server-node/src/demo-auth.ts",
@@ -1224,8 +1224,8 @@
     },
     {
       "path": "scripts/run-two-gateway-dev.sh",
-      "bytes": 1380,
-      "digest": "sha256:e1c6db70b05c2381bd3f96e39aca69e6d84f186949be3fd9b23e9dbe9078cc5b"
+      "bytes": 4647,
+      "digest": "sha256:de7a01979a6c2566003cca4c6c9b9b30ded17dc6e856c5bf0c3cca32dd95f9a9"
     },
     {
       "path": "scripts/test-postgres-docker.sh",
@@ -1319,8 +1319,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 1251,
-      "digest": "sha256:b2aed38fbe2cfa76a640bfb3828d78b86b56eb522bbd24132552496ce73d8af5"
+      "bytes": 2749,
+      "digest": "sha256:9de444a7bea3a5a0ff35cdc5f78ccdefec899a39e336bb93a4a218981148b59b"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1354,8 +1354,8 @@
     },
     {
       "path": "tests/docker-harness-cleanup.test.ts",
-      "bytes": 3316,
-      "digest": "sha256:d7caa936a825d087c69abdbc7c2b5bab52d8f75aff6eac65e263a2950daff03f"
+      "bytes": 17231,
+      "digest": "sha256:5c95ce81bb47ea729c0f64d32544279f1f24ef1c329323f345bd056daa1fc70f"
     },
     {
       "path": "tests/e2e/global-teardown.ts",
@@ -1364,8 +1364,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 16181,
-      "digest": "sha256:d46fad92f725640cab18137c659d0d90d9dffc9a14df07f696e6d2beea002b48"
+      "bytes": 16617,
+      "digest": "sha256:d802dbb5ead1a4a172e9073b823eb6a8c2e27943dbddfa854abfcc36635e42f5"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",
@@ -1429,8 +1429,8 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 22432,
-      "digest": "sha256:5664159156f53a62b5510b6b4a10afd13e4b827839f4607cd33e34f39a6f6575"
+      "bytes": 22447,
+      "digest": "sha256:c9fa838b1c8a73a730c60e4c3d6be5db3782e07026da47cdf4991274aa3a23d2"
     },
     {
       "path": "tests/release-integrity.test.ts",

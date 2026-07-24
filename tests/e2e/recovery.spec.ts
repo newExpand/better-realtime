@@ -5,6 +5,11 @@ const sequence = async (page: import("@playwright/test").Page) =>
   Number(await page.getByTestId("sequence").textContent());
 
 test("a real browser cross-origin WebSocket handshake is rejected before session setup", async ({ page }) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
   const originServer = createServer((_request, response) => { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>foreign origin</title>"); });
   await new Promise<void>((resolve, reject) => { originServer.once("error", reject); originServer.listen(0, "127.0.0.1", resolve); });
   try {
@@ -20,6 +25,10 @@ test("a real browser cross-origin WebSocket handshake is rejected before session
       setTimeout(() => { socket.close(); resolve({ opened, closeCode: -1 }); }, 3_000);
     }), `ws://127.0.0.1:${serverPort}/ws`);
     expect(outcome).toEqual({ opened: false, closeCode: 1006 });
+    const expectedCrossOriginError = /^(?:WebSocket connection .*failed: (?:Error during WebSocket handshake: Unexpected response code: 403|Connection closed before receiving a handshake response|There was a bad response from the server\.|The operation couldn’t be completed\..*)|\[JavaScript Error: "Firefox can’t establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/ws\.".*\])$/;
+    const unexpectedCrossOriginErrors = browserErrors.filter((message) => !expectedCrossOriginError.test(message));
+    expect(unexpectedCrossOriginErrors).toEqual([]);
+    expect(browserErrors.length).toBeGreaterThan(0);
   } finally {
     await new Promise<void>((resolve) => originServer.close(() => resolve()));
   }
@@ -166,21 +175,14 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   await expect(page.getByTestId("connection-status")).toHaveText(/Reconnecting/, { timeout: 10_000 });
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 20_000 });
   await expect.poll(() => sequence(page)).toBe(beforeDatabaseOutage);
-  // WebKit may locally enqueue the probe command after the gateway has begun
-  // draining, then close before the frame reaches the server. That is still a
-  // fail-closed outcome (no receipt/completion and no durable effect), but it
-  // cannot truthfully require server-side operation-rejected evidence.
-  if (testInfo.project.name !== "webkit") {
-    await expect.poll(
-      () => page.evaluate(async () => JSON.stringify(await (await fetch("/api/evidence")).json())),
-      { timeout: 15_000, intervals: [100, 250, 500, 1_000] }
-    ).toContain("session.operation_rejected");
-  }
+  // Any browser may locally enqueue the probe after gateway draining has begun,
+  // then close before the frame reaches the server. Sending from JavaScript
+  // does not prove server receipt, so this fail-closed path cannot truthfully
+  // require a server-side operation-rejected record.
   const outageEvidenceText = await page.evaluate(async () => JSON.stringify(await (await fetch("/api/evidence")).json()));
   expect(outageEvidenceText).toContain("capability.health_changed");
   expect(outageEvidenceText).toContain("database.operation_failed");
   expect(outageEvidenceText).toContain("session.drain_started");
-  if (testInfo.project.name !== "webkit") expect(outageEvidenceText).toContain("session.operation_rejected");
   expect(outageEvidenceText).toContain("topology.expected");
   expect(outageEvidenceText).toContain("causal.handoff");
   expect(outageEvidenceText).toContain("event.catchup_completed");

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts" },
-  "scripts": { "dev": "zsh ../../scripts/run-two-gateway-dev.sh", "dev:memory": "tsx watch src/dev.ts", "benchmark:multi-gateway": "tsx src/multi-gateway-load.ts" },
+  "scripts": { "dev": "bash ../../scripts/run-two-gateway-dev.sh", "dev:memory": "tsx watch src/dev.ts", "benchmark:multi-gateway": "tsx src/multi-gateway-load.ts" },
   "dependencies": {
     "@realtime/diagnostics": "workspace:*",
     "@realtime/protocol": "workspace:*",
