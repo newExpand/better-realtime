@@ -904,8 +904,8 @@
     },
     {
       "path": "packages/server-node/src/two-gateway-dev.ts",
-      "bytes": 28907,
-      "digest": "sha256:575cefb5e06d434bbbde7d8fa5f3a265136becc38ee2e5cf95f3a00f3ddeb742"
+      "bytes": 28908,
+      "digest": "sha256:6e1c0f24bad09ff2d04a87cc8c245648b28f83dedaa3adf25b262a2cbbcd2d5f"
     },
     {
       "path": "packages/server-node/test/application-query.test.ts",
@@ -1319,8 +1319,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 2749,
-      "digest": "sha256:9de444a7bea3a5a0ff35cdc5f78ccdefec899a39e336bb93a4a218981148b59b"
+      "bytes": 3074,
+      "digest": "sha256:595cc11bdd5cc737eff114021a544f0954f0a5d4148b2949e30390e6516fd087"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1364,8 +1364,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 16617,
-      "digest": "sha256:d802dbb5ead1a4a172e9073b823eb6a8c2e27943dbddfa854abfcc36635e42f5"
+      "bytes": 16669,
+      "digest": "sha256:2686971e1fea473e22b0a005d917bbe1f1aa7d0941578032d05a9ebe5c89da4a"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",

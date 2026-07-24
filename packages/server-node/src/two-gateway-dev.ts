@@ -297,7 +297,7 @@ async function chaos(action: string): Promise<void> {
     preferred = otherId;
     await post(gateways.get(otherId)!, "/internal/chaos/interleave-replay");
     routeEnabled = true;
-    void startGateway(stoppedId);
+    await startGateway(stoppedId);
     return;
   }
   if (action === "sigkill") {

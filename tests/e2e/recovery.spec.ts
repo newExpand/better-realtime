@@ -25,7 +25,7 @@ test("a real browser cross-origin WebSocket handshake is rejected before session
       setTimeout(() => { socket.close(); resolve({ opened, closeCode: -1 }); }, 3_000);
     }), `ws://127.0.0.1:${serverPort}/ws`);
     expect(outcome).toEqual({ opened: false, closeCode: 1006 });
-    const expectedCrossOriginError = /^(?:WebSocket connection .*failed: (?:Error during WebSocket handshake: Unexpected response code: 403|Connection closed before receiving a handshake response|There was a bad response from the server\.|The operation couldn’t be completed\..*)|\[JavaScript Error: "Firefox can’t establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/ws\.".*\])$/;
+    const expectedCrossOriginError = /^(?:WebSocket connection .*failed: (?:Error during WebSocket handshake: Unexpected response code: 403|Connection closed before receiving a handshake response|There was a bad response from the server\.|The server did not accept the WebSocket handshake\.|The operation couldn’t be completed\..*)|\[JavaScript Error: "Firefox can’t establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/ws\.".*\])$/;
     const unexpectedCrossOriginErrors = browserErrors.filter((message) => !expectedCrossOriginError.test(message));
     expect(unexpectedCrossOriginErrors).toEqual([]);
     expect(browserErrors.length).toBeGreaterThan(0);

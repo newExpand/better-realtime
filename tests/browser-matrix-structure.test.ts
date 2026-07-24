@@ -40,6 +40,7 @@ describe("browser acceptance isolation", () => {
 
   it("checks unexpected console and page errors in every browser journey", async () => {
     const source = await readFile(resolve(root, "tests/e2e/recovery.spec.ts"), "utf8");
+    const gateway = await readFile(resolve(root, "packages/server-node/src/two-gateway-dev.ts"), "utf8");
     const crossOriginStart = source.indexOf('test("a real browser cross-origin WebSocket handshake');
     const recoveryStart = source.indexOf('test("a real browser converges');
     const crossOrigin = source.slice(crossOriginStart, recoveryStart);
@@ -47,5 +48,8 @@ describe("browser acceptance isolation", () => {
     expect(crossOrigin).toContain('page.on("pageerror"');
     expect(crossOrigin).toContain("unexpectedCrossOriginErrors");
     expect(crossOrigin).toContain("expect(unexpectedCrossOriginErrors).toEqual([])");
+    expect(crossOrigin).toContain("The server did not accept the WebSocket handshake");
+    expect(gateway).toContain("await startGateway(stoppedId)");
+    expect(gateway).not.toContain("void startGateway(stoppedId)");
   });
 });
