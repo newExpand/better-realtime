@@ -1324,8 +1324,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 6139,
-      "digest": "sha256:0b168e9b71b173f44bbccbc80c24c722c7f06517ee11db7ae76eb4819445948c"
+      "bytes": 6224,
+      "digest": "sha256:925bf47f9c6bf299d93b4c9d4b1cead789a8ff49dc1e6837cbb1981c98d095b2"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1369,8 +1369,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 18124,
-      "digest": "sha256:27d835647d03967d4c93bd0f2e85f87b4e1494cc915c8550d4d5f5f013eabbaa"
+      "bytes": 18228,
+      "digest": "sha256:62e519411fc0e7f97d330f87c32762f58a214bfcae4820ec7c79e169449728a4"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",

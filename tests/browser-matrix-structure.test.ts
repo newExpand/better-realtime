@@ -51,6 +51,7 @@ describe("browser acceptance isolation", () => {
     expect(crossOrigin).toContain("unexpectedCrossOriginErrors");
     expect(crossOrigin).toContain("expect(unexpectedCrossOriginErrors).toEqual([])");
     expect(crossOrigin).toContain("The server did not accept the WebSocket handshake");
+    expect(source).toContain("Received invalid WebSocket response from the server");
     expect(gateway).toContain("await startGateway(stoppedId)");
     expect(gateway).not.toContain("void startGateway(stoppedId)");
     const sigkillStart = gateway.indexOf('if (action === "sigkill")');

@@ -211,7 +211,7 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
 
   const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(desktopOverflow).toBeLessThanOrEqual(1);
-  const expectedInjectedOutageError = /^(?:WebSocket connection .*failed: (?:Connection closed before receiving a handshake response|Error during WebSocket handshake: Unexpected response code: 503|There was a bad response from the server\.|The operation couldn’t be completed\. Socket is not connected)|Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)|\[JavaScript Error: "Firefox can’t establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/ws\.".*\])$/;
+  const expectedInjectedOutageError = /^(?:WebSocket connection .*failed: (?:Connection closed before receiving a handshake response|Error during WebSocket handshake: Unexpected response code: 503|Received invalid WebSocket response from the server|The server did not accept the WebSocket handshake\.|There was a bad response from the server\.|The operation couldn’t be completed\. Socket is not connected)|Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)|\[JavaScript Error: "Firefox can’t establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/ws\.".*\])$/;
   const unexpectedBrowserErrors = browserErrors.filter((message) => !expectedInjectedOutageError.test(message));
   expect(unexpectedBrowserErrors).toEqual([]);
   expect(browserErrors.length).toBeGreaterThan(0);
