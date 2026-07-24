@@ -9,6 +9,7 @@ import { doctor, type EvidenceRecord, type ProducerInstance } from "@realtime/di
 import { Pool } from "pg";
 import { signDemoCredential, type AuthenticatedPrincipal } from "./demo-auth.ts";
 import { classifyProducerTermination, type ProducerTermination, waitForProcessExit } from "./process-termination.ts";
+import { waitForRecoveryReadiness } from "./recovery-readiness.ts";
 
 const execFileAsync = promisify(execFile);
 const host = "127.0.0.1";
@@ -235,8 +236,12 @@ async function handleHttp(incoming: IncomingMessage, response: ServerResponse): 
     const action = incoming.url.slice("/api/chaos/".length);
     const operation = chaosQueue.then(() => chaos(action));
     chaosQueue = operation.catch(() => undefined);
-    await operation;
-    json(response, 200, { ok: true, action, activeGateway: lastActive });
+    try {
+      await operation;
+      json(response, 200, { ok: true, action, activeGateway: lastActive });
+    } catch (error) {
+      json(response, 503, { ok: false, action, error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
   json(response, 404, { error: "not found" });
@@ -281,7 +286,8 @@ function toInstance(record: EvidenceRecord): ProducerInstance { return { produce
 function producerInstanceKey(value: EvidenceRecord | ProducerInstance): string { return `${value.producerRole}:${value.runtimeId}:${value.runtimeBootId}`; }
 
 async function chaos(action: string): Promise<void> {
-  const active = gateways.get(lastActive) ?? selectGateway();
+  const previousActive = gateways.get(lastActive);
+  const active = previousActive ?? selectGateway();
   if (action === "stop") {
     routeEnabled = false;
     if (active) await stopGateway(active, true);
@@ -301,11 +307,24 @@ async function chaos(action: string): Promise<void> {
     return;
   }
   if (action === "sigkill") {
-    if (active) await sigkillGateway(active);
+    const sigkillTarget = previousActive && previousActive.child.exitCode === null && previousActive.child.signalCode === null ? previousActive : selectGateway();
+    if (!sigkillTarget) throw new Error("RT_RECOVERY_GATEWAY_UNAVAILABLE");
+    routeEnabled = false;
+    await sigkillGateway(sigkillTarget);
+    const otherId = sigkillTarget.id === "gateway-a" ? "gateway-b" : "gateway-a";
+    const recoveryGateway = await startGateway(otherId);
+    await waitForRecoveryReadiness({
+      id: recoveryGateway.id,
+      isExited: () => recoveryGateway.child.exitCode !== null || recoveryGateway.child.signalCode !== null,
+      probe: async (signal) => {
+        const response = await fetch(`http://${host}:${recoveryGateway.port}/health`, { signal });
+        if (!response.ok) return false;
+        return (await response.json() as { status?: unknown }).status === "ready";
+      }
+    });
     await appendRoomMessage("System", "Recovered after abrupt gateway SIGKILL.");
-    const otherId = active?.id === "gateway-a" ? "gateway-b" : "gateway-a";
-    if (!gateways.get(otherId) || gateways.get(otherId)!.child.exitCode !== null || gateways.get(otherId)!.child.signalCode !== null) await startGateway(otherId);
     preferred = otherId;
+    lastActive = otherId;
     routeEnabled = true;
     return;
   }
@@ -427,6 +446,7 @@ async function getJson(gateway: GatewayProcess, path: string): Promise<Record<st
   if (!response.ok) throw new Error(`${gateway.id} ${path} failed: ${response.status}`);
   return await response.json() as Record<string, unknown>;
 }
+
 
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.statusCode = status;

@@ -893,6 +893,11 @@
       "digest": "sha256:e8b4ff2ea4ae23a68d4063b3a68db5bb2dd04dbce334a77a4073b4d94a987925"
     },
     {
+      "path": "packages/server-node/src/recovery-readiness.ts",
+      "bytes": 1767,
+      "digest": "sha256:599340251c821a0035593480bbaa6e56405895555ad6324b1e32f9601eaa8b39"
+    },
+    {
       "path": "packages/server-node/src/server.ts",
       "bytes": 27577,
       "digest": "sha256:99b5c65413568c4751ff04890157ba06d1ca6a5d73f02a634fa8fbc53d748509"
@@ -904,8 +909,8 @@
     },
     {
       "path": "packages/server-node/src/two-gateway-dev.ts",
-      "bytes": 28908,
-      "digest": "sha256:6e1c0f24bad09ff2d04a87cc8c245648b28f83dedaa3adf25b262a2cbbcd2d5f"
+      "bytes": 29805,
+      "digest": "sha256:5e4d4a1314f6c32e98a44af3b099defd7516abcfb87d4d2a9b758e3243b43c03"
     },
     {
       "path": "packages/server-node/test/application-query.test.ts",
@@ -1319,8 +1324,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 4024,
-      "digest": "sha256:fcf5f098531474306c85d2e679163c9d3c6fe5ac967c99d548dde23a2cd048c0"
+      "bytes": 5574,
+      "digest": "sha256:a4a030044a36c29dc01d9615b43c5ab78e2786090f11db58bc68bf1c2021bd72"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1364,8 +1369,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 17090,
-      "digest": "sha256:6e7ac775687d217d0502a3f5d3607eeaa5f7f9d60b6bf3ce43776d679f84d5aa"
+      "bytes": 17993,
+      "digest": "sha256:3a762bf5b8dd4391ef01e9f596cb1b99263101c97ff3ccdd5ee4c193e23013d4"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",
@@ -1376,6 +1381,11 @@
       "path": "tests/fixtures/release-identity/public-valid.json",
       "bytes": 2273,
       "digest": "sha256:10357eb2569724024084a993808f6251045f356353c78192a0c8160dbcc2b98e"
+    },
+    {
+      "path": "tests/gateway-recovery-readiness.test.ts",
+      "bytes": 1463,
+      "digest": "sha256:26609d2958cd6e19830e7ccd294d1d9c9a43ac5d7a1dee1288f7e722dd3bb024"
     },
     {
       "path": "tests/mcp-bootstrap-artifact.test.ts",

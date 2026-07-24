@@ -41,6 +41,7 @@ describe("browser acceptance isolation", () => {
   it("checks unexpected console and page errors in every browser journey", async () => {
     const source = await readFile(resolve(root, "tests/e2e/recovery.spec.ts"), "utf8");
     const gateway = await readFile(resolve(root, "packages/server-node/src/two-gateway-dev.ts"), "utf8");
+    const readiness = await readFile(resolve(root, "packages/server-node/src/recovery-readiness.ts"), "utf8");
     const application = await readFile(resolve(root, "examples/recovery-demo/src/App.tsx"), "utf8");
     const crossOriginStart = source.indexOf('test("a real browser cross-origin WebSocket handshake');
     const recoveryStart = source.indexOf('test("a real browser converges');
@@ -52,6 +53,21 @@ describe("browser acceptance isolation", () => {
     expect(crossOrigin).toContain("The server did not accept the WebSocket handshake");
     expect(gateway).toContain("await startGateway(stoppedId)");
     expect(gateway).not.toContain("void startGateway(stoppedId)");
+    const sigkillStart = gateway.indexOf('if (action === "sigkill")');
+    const sigkillEnd = gateway.indexOf('\n  if (action === "miss-notify")', sigkillStart);
+    const sigkill = gateway.slice(sigkillStart, sigkillEnd);
+    expect(sigkill).toContain("const sigkillTarget = previousActive");
+    expect(sigkill).toContain('if (!sigkillTarget) throw new Error("RT_RECOVERY_GATEWAY_UNAVAILABLE")');
+    expect(sigkill.indexOf("routeEnabled = false")).toBeLessThan(sigkill.indexOf("await sigkillGateway(sigkillTarget)"));
+    expect(sigkill.indexOf("await waitForRecoveryReadiness")).toBeLessThan(sigkill.indexOf('await appendRoomMessage("System", "Recovered after abrupt gateway SIGKILL.")'));
+    expect(sigkill.indexOf('await appendRoomMessage("System", "Recovered after abrupt gateway SIGKILL.")')).toBeLessThan(sigkill.indexOf("lastActive = otherId"));
+    expect(sigkill.indexOf("lastActive = otherId")).toBeLessThan(sigkill.lastIndexOf("routeEnabled = true"));
+    expect(readiness).toContain("RT_RECOVERY_GATEWAY_NOT_READY");
+    expect(readiness).toContain("controller.abort()");
+    expect(gateway).toContain("json(response, 503, { ok: false, action");
+    expect(source).toContain('fetch("/api/chaos/sigkill", { method: "POST" })');
+    expect(source).toContain("expect(secondRecoveryGateway).not.toBe(firstRecoveryGateway)");
+    expect(source).toContain('getByText("Recovered after abrupt gateway SIGKILL.")).toHaveCount(2)');
     const chaosStart = application.indexOf("async function chaos");
     const chaosEnd = application.indexOf("\n  function submit", chaosStart);
     const chaos = application.slice(chaosStart, chaosEnd);

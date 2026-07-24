@@ -129,6 +129,18 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   await expect(page.getByText("Recovered after abrupt gateway SIGKILL.")).toBeVisible();
   await expect(page.locator(".fact").filter({ hasText: "Doctor completeness" })).toContainText("partial");
 
+  const firstRecoveryGateway = await page.evaluate(async () => String((await (await fetch("/api/inspect")).json() as { activeGateway?: unknown }).activeGateway));
+  const beforeSecondSigkill = await sequence(page);
+  const secondRecoveryGateway = await page.evaluate(async () => {
+    const response = await fetch("/api/chaos/sigkill", { method: "POST" });
+    if (!response.ok) throw new Error(`second SIGKILL failed:${response.status}`);
+    return String((await (await fetch("/api/inspect")).json() as { activeGateway?: unknown }).activeGateway);
+  });
+  expect(secondRecoveryGateway).not.toBe(firstRecoveryGateway);
+  await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
+  await expect.poll(() => sequence(page)).toBe(beforeSecondSigkill + 1);
+  await expect(page.getByTestId("timeline").getByText("Recovered after abrupt gateway SIGKILL.")).toHaveCount(2);
+
   const beforeDatabaseOutage = await sequence(page);
   await page.evaluate(async () => {
     const auth = await (await fetch("/api/credential/team")).json() as Record<string, unknown>;
