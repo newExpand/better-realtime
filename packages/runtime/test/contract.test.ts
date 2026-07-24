@@ -11,6 +11,7 @@ import {
   type WebSocketConstructor
 } from "../src/index.ts";
 import { createRealtimeReact } from "../src/react.ts";
+import { BoundedLocalEvidenceSink, pseudonymizeIdentifier } from "../../diagnostics/src/index.ts";
 
 const roomInput = jsonSchema("example.chat.room.input@1", {
   type: "object",
@@ -319,6 +320,50 @@ describe("contract-first public runtime", () => {
     expect(true).toBe(true);
   });
 
+  it("accepts a framework-neutral transport and rejects ambiguous transport ownership", async () => {
+    const transport = {
+      connect: async () => ({
+        bufferedAmount: 0,
+        send: () => undefined,
+        close: () => undefined,
+        onMessage: () => () => undefined,
+        onClose: () => () => undefined
+      })
+    };
+    const client = createRealtimeClient(contract, { transport, auth: () => ({}) });
+    expect(client.identity).toEqual(contract.identity);
+    await client.dispose();
+    expect(() => createRealtimeClient(contract, {
+      transport,
+      url: "ws://ambiguous.invalid",
+      auth: () => ({})
+    } as never)).toThrow("RT_CONTRACT_INVALID");
+  });
+
+  it("automatically exports redacted client evidence and closes an exact producer checkpoint", async () => {
+    const sink = new BoundedLocalEvidenceSink();
+    const pseudonymizationKey = "client-evidence-pseudonymization-key";
+    const client = createRealtimeClient(contract, {
+      url: "ws://example.invalid/realtime",
+      auth: () => ({}),
+      webSocket: FakeWebSocket as unknown as WebSocketConstructor,
+      diagnostics: {
+        sink,
+        tenantId: "tenant-client-secret",
+        pseudonymizationKey
+      }
+    });
+    await client.connect();
+    await client.flushEvidence();
+    expect(client.evidenceSnapshot()).toMatchObject({ acceptedRecords: expect.any(Number), exportFailedRecords: 0, closed: false });
+    expect(client.evidenceSnapshot().acceptedRecords).toBeGreaterThan(0);
+    expect(sink.records().every((entry) => entry.tenantId === pseudonymizeIdentifier("tenant-client-secret", pseudonymizationKey))).toBe(true);
+    expect(JSON.stringify(sink.records())).not.toContain("tenant-client-secret");
+    await client.dispose();
+    expect(client.evidenceSnapshot()).toMatchObject({ exportFailedRecords: 0, closed: true });
+    expect(sink.coverage.snapshot()).toMatchObject({ status: "complete", openProducerInstances: [], missingRanges: [] });
+  });
+
   it("validates command results without replacing the stable command attempt identity", async () => {
     FakeWebSocket.sentCommandIds = [];
     FakeWebSocket.result = { messageId: "evt_valid", sequence: 1 };
@@ -351,6 +396,35 @@ describe("contract-first public runtime", () => {
     expect(wrongSchema.state).toBe("rejected");
     expect(wrongSchemaClient.runtimeSnapshot().pendingCount).toBe(0);
     await wrongSchemaClient.dispose();
+  });
+
+  it("publishes bounded command-scoped activity without merging user intent", async () => {
+    FakeWebSocket.result = { messageId: "evt_activity", sequence: 1 };
+    FakeWebSocket.resultSchema = "example.chat.send-message.result@1";
+    FakeWebSocket.sentCommandIds = [];
+    const client = createRealtimeClient(contract, { url: "ws://example.invalid/realtime", auth: () => ({}), webSocket: FakeWebSocket as unknown as WebSocketConstructor });
+    const snapshots: ReturnType<typeof client.commandSnapshot>[] = [];
+    const release = client.subscribeCommand("sendMessage", () => snapshots.push(client.commandSnapshot("sendMessage")));
+    const first = client.execute("sendMessage", { roomId: "42", text: "first" });
+    const second = client.execute("sendMessage", { roomId: "42", text: "second" });
+    expect(first.commandId).not.toBe(second.commandId);
+    expect(client.commandSnapshot("sendMessage")).toMatchObject({
+      completionPendingCount: 2,
+      observationPendingCount: 2,
+      lastAttempt: { commandId: second.commandId, completionSettled: false, observationSettled: false },
+      lastError: null
+    });
+    await Promise.all([first.completed, second.completed, first.observed, second.observed]);
+    expect(client.commandSnapshot("sendMessage")).toMatchObject({
+      completionPendingCount: 0,
+      observationPendingCount: 0,
+      lastAttempt: { commandId: second.commandId, state: "observed", completionSettled: true, observationSettled: true },
+      lastError: null
+    });
+    expect(new Set(FakeWebSocket.sentCommandIds)).toEqual(new Set([first.commandId, second.commandId]));
+    expect(snapshots.length).toBeGreaterThan(0);
+    release();
+    await client.dispose();
   });
 
   it("fails a stream explicitly when the snapshot schema name drifts", async () => {

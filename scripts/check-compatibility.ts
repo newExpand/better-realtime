@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import Ajv2020 from "ajv/dist/2020.js";
 import { acquireCompatibilityFixture } from "./acquire-compatibility-fixture.ts";
 import { compareRuntimeSemantics } from "./compare-runtime-semantics.ts";
+import { packMcp } from "./pack-mcp.ts";
 import { packRuntime } from "./pack-runtime.ts";
 
 const exec = promisify(execFile);
@@ -54,7 +55,7 @@ interface Changes { schemaVersion: "1.0"; baseline: string; candidateLine: strin
 interface PostgresMigrations {
   schemaVersion: "1.0";
   storage: string;
-  fixtures: Array<{ storageVersion: number; packagePath: string; packageSha256: string; modulePath: string; moduleSha256: string }>;
+  fixtures: Array<{ storageVersion: number; publishedBaseline: string; packagePath: string; packageSha256: string; modulePath: string; moduleSha256: string }>;
   migrations: Array<{ version: number; fromVersions: number[]; deploymentTimeOnly: boolean; runtimeDdl: boolean; destructiveInPlace: boolean; sourcePath: string; sourceSha256: string }>;
 }
 
@@ -84,8 +85,10 @@ const sourceSurfaces = {
 } as const;
 
 const installManifestFields = ["main", "types", "sideEffects", "engines", "bin", "dependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"] as const;
+let undeclaredStaticChanges: SurfaceChange[] = [];
 
 export async function checkCompatibility(): Promise<Record<string, unknown>> {
+  undeclaredStaticChanges = [];
   const baseline = JSON.parse(await readFile(baselinePath, "utf8")) as Baseline;
   const changes = JSON.parse(await readFile(changesPath, "utf8")) as Changes;
   const postgresMigrations = JSON.parse(await readFile(postgresMigrationsPath, "utf8")) as PostgresMigrations;
@@ -95,6 +98,7 @@ export async function checkCompatibility(): Promise<Record<string, unknown>> {
   const work = await mkdtemp(join(tmpdir(), "better-realtime-compat-"));
   const candidateArtifacts = join(work, "candidate-artifact");
   const candidate = await packRuntime(candidateArtifacts);
+  const candidateMcp = await packMcp(candidateArtifacts);
   const baselineDirectory = join(work, "baseline");
   const candidateDirectory = join(work, "candidate");
   try {
@@ -129,11 +133,25 @@ export async function checkCompatibility(): Promise<Record<string, unknown>> {
     const semanticChanges = runtimeSemantics.change ? [runtimeSemantics.change] : [];
     for (const change of semanticChanges) requireDeclaredChange(changes, change);
     const baseDetectedChanges = [...manifestChanges, ...exportChanges, ...declarationChanges, ...runtimeJavaScriptChanges, ...sourceChanges, ...semanticChanges];
+    if (undeclaredStaticChanges.length) {
+      if (process.argv.includes("--write-ledger")) {
+        const retained = changes.changes.filter((declared) =>
+          !baseDetectedChanges.some((detected) => detected.surface === declared.surface && detected.path === declared.path)
+        );
+        const next = [
+          ...baseDetectedChanges.map((detected, index) => declarationFor(changes, detected) ?? classifyDetectedChange(detected, index)),
+          ...retained
+        ];
+        await writeFile(changesPath, `${JSON.stringify({ ...changes, changes: next }, null, 2)}\n`, "utf8");
+        throw new Error(`RT_COMPAT_LEDGER_UPDATED:${next.length}`);
+      }
+      throw new Error(`RT_COMPAT_UNDECLARED_CHANGES:${JSON.stringify(undeclaredStaticChanges)}`);
+    }
     const candidateProtocol = await candidateProtocolIdentity(candidatePackage);
 
     const [baselineInstall, candidateInstall] = await Promise.all([
       compileConsumer(fixture.path, join(work, "consumer-baseline")),
-      compileConsumer(candidate.tarball, join(work, "consumer-candidate"))
+      compileConsumer(candidate.tarball, join(work, "consumer-candidate"), candidateMcp.tarball)
     ]);
     assertConsumerResult("baseline", baselineInstall.results, false, changes);
     assertConsumerResult("candidate", candidateInstall.results, true, changes);
@@ -145,6 +163,7 @@ export async function checkCompatibility(): Promise<Record<string, unknown>> {
     const dynamicChanges = [diagnosticResults.change, mcpResults.change].filter((change): change is SurfaceChange => Boolean(change));
     for (const change of dynamicChanges) requireDeclaredChange(changes, change);
     const detectedChanges = [...baseDetectedChanges, ...declarationApiChanges, ...dynamicChanges];
+    if (undeclaredStaticChanges.length) throw new Error(`RT_COMPAT_UNDECLARED_CHANGES:${JSON.stringify(undeclaredStaticChanges)}`);
     assertVersionBoundaries(changes, detectedChanges, candidateManifest.version, baseline, candidatePostgresVersion, candidateProtocol);
     const undeclared = changes.changes.filter((change) => !detectedChanges.some((detected) => sameChange(detected, change)));
     if (undeclared.length) throw new Error(`RT_COMPAT_STALE_CHANGE_DECLARATION:${undeclared.map((change) => change.id).join(",")}`);
@@ -191,7 +210,7 @@ interface SurfaceChange { surface: string; path: string; baselineSha256: string;
 
 function assertControlFiles(baseline: Baseline, changes: Changes): void {
   if (baseline.schemaVersion !== "1.0" || baseline.package !== "better-realtime@0.1.0-alpha.1" || baseline.webSocketSubprotocol !== "better-realtime.v1" || baseline.protocolVersion !== "1.0" || baseline.diagnosticSchemaVersion !== "1.0" || baseline.postgresStorageVersion !== 1 || baseline.postgresMigrations.length !== 1 || baseline.postgresFixtures.length !== 1) throw new Error("RT_COMPAT_BASELINE_INVALID");
-  if (changes.schemaVersion !== "1.0" || changes.baseline !== baseline.package || changes.candidateLine !== "0.1.x-alpha" || !Array.isArray(changes.changes)) throw new Error("RT_COMPAT_CHANGE_LEDGER_INVALID");
+  if (changes.schemaVersion !== "1.0" || changes.baseline !== baseline.package || !["0.1.x-alpha", "0.2.x-alpha"].includes(changes.candidateLine) || !Array.isArray(changes.changes)) throw new Error("RT_COMPAT_CHANGE_LEDGER_INVALID");
   const ids = new Set<string>();
   assertUniqueChangeDeclarations(changes.changes);
   for (const change of changes.changes) {
@@ -729,7 +748,10 @@ async function compareRuntimeJavaScript(baselinePackage: string, candidatePackag
 
 function requireDeclaredChange(changes: Changes, detected: SurfaceChange): void {
   const declaration = declarationFor(changes, detected);
-  if (!declaration) throw new Error(`RT_COMPAT_UNDECLARED_CHANGE:${detected.surface}:${detected.path}:${detected.baselineSha256}:${detected.candidateSha256}`);
+  if (!declaration) {
+    undeclaredStaticChanges.push(detected);
+    return;
+  }
   if (!allowedAxes(detected).includes(declaration.axis)) throw new Error(`RT_COMPAT_CHANGE_AXIS_INVALID:${declaration.id}:${detected.surface}:${declaration.axis}`);
   if (detected.requiredClassification && declaration.classification !== detected.requiredClassification) throw new Error(`RT_COMPAT_CHANGE_CLASSIFICATION_TOO_WEAK:${declaration.id}:${detected.requiredClassification}`);
 }
@@ -755,6 +777,43 @@ function allowedAxes(change: SurfaceChange): DeclaredChange["axis"][] {
   if (["coreClient", "referenceServer"].includes(change.surface)) return ["package", "wire"];
   if (change.surface === "postgresGateway") return ["package", "wire", "postgres"];
   return ["package", "wire", "postgres", "diagnostics"];
+}
+
+function classifyDetectedChange(change: SurfaceChange, index: number): DeclaredChange {
+  const postgresBreaking = ["postgresGateway", "postgresMigration", "postgresMigrationExecutor"].includes(change.surface);
+  const removedMcpSurface = /^dist\/mcp(?:-stdio)?\.(?:d\.ts|js)$/u.test(change.path);
+  const packageIdentityBreak = change.surface === "packageManifest" && change.path === "bin";
+  const classification: Classification = change.requiredClassification || postgresBreaking || removedMcpSurface || packageIdentityBreak
+    ? "intentionally_breaking"
+    : "compatible";
+  const axis = allowedAxes(change)[0] ?? "package";
+  const id = `candidate-${String(index + 1).padStart(2, "0")}-${change.surface.replaceAll(/[^a-z0-9]+/giu, "-").toLowerCase()}-${change.path.replaceAll(/[^a-z0-9]+/giu, "-").replace(/^-|-$/gu, "").toLowerCase()}`;
+  return {
+    id,
+    surface: change.surface,
+    path: change.path,
+    classification,
+    axis,
+    baselineSha256: change.baselineSha256,
+    candidateSha256: change.candidateSha256,
+    minimumVersion: classification === "intentionally_breaking" ? "0.2.0-alpha.1" : "0.1.0-alpha.4",
+    rationale: compatibilityRationale(change, classification),
+    ...(classification === "intentionally_breaking" ? { migrationGuide: "docs/public/migration-0.2.md" } : {})
+  };
+}
+
+function compatibilityRationale(change: SurfaceChange, classification: Classification): string {
+  if (change.surface === "packageExports" && change.path === "./mcp") return "Moves the Node-only MCP surface to the independently installable better-realtime-mcp companion package.";
+  if (change.surface === "packageManifest" && change.path === "bin") return "Moves the better-realtime-mcp executable out of the browser-capable base package.";
+  if (change.surface === "packageManifest" && change.path === "engines") return "Removes the package-wide Node engine so browser-only consumers are not rejected by an irrelevant server constraint.";
+  if (change.surface === "packageManifest") return "Separates browser and Node dependency ownership while preserving explicit server peer installation.";
+  if (/mcp/u.test(change.path) && classification === "intentionally_breaking") return "Removes the legacy base-package MCP artifact in favor of the versioned companion package.";
+  if (["postgresGateway", "postgresMigration", "postgresMigrationExecutor"].includes(change.surface)) return "Introduces deployment-only PostgreSQL storage v2 for atomic zero-to-many event command causality while preserving v1 data.";
+  if (change.surface === "runtimeReact") return "Adds selector equality and command-scoped completion or observation state without weakening lifecycle cleanup.";
+  if (change.surface === "runtimeServer") return "Adds the target-declared framework-owned transaction API while retaining the legacy prepare adapter.";
+  if (change.surface === "runtimeClient" || change.surface === "coreClient") return "Adds state-stream snapshot metadata and bounded command activity without changing wire-v1 recovery semantics.";
+  if (change.surface === "typescriptDeclarations") return "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate.";
+  return "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes.";
 }
 
 async function candidateProtocolIdentity(candidatePackage: string): Promise<{ subprotocol: string; version: string }> {
@@ -796,15 +855,31 @@ async function assertPostgresMigrations(manifest: PostgresMigrations, baseline: 
   if (new Set(versions).size !== versions.length || versions.some((version, index) => version !== index + 1)) throw new Error("RT_COMPAT_POSTGRES_MIGRATION_SEQUENCE_INVALID");
   if (new Set(manifest.migrations.map((migration) => migration.sourcePath)).size !== manifest.migrations.length) throw new Error("RT_COMPAT_POSTGRES_MIGRATION_SOURCE_REUSED");
   const fixtureVersions = manifest.fixtures.map((fixture) => fixture.storageVersion);
-  if (new Set(fixtureVersions).size !== fixtureVersions.length) throw new Error("RT_COMPAT_POSTGRES_FIXTURE_VERSION_REUSED");
+  const fixtureBaselines = manifest.fixtures.map((fixture) => fixture.publishedBaseline);
+  const fixturePackages = manifest.fixtures.map((fixture) => fixture.packagePath);
+  if (
+    new Set(fixtureBaselines).size !== fixtureBaselines.length
+    || new Set(fixturePackages).size !== fixturePackages.length
+    || manifest.fixtures.some((fixture) => !/^better-realtime@\d+\.\d+\.\d+-alpha\.\d+$/u.test(fixture.publishedBaseline))
+  ) throw new Error("RT_COMPAT_POSTGRES_FIXTURE_IDENTITY_REUSED");
   const requiredFixtures = new Set([baseline.postgresStorageVersion, ...manifest.migrations.flatMap((migration) => migration.fromVersions)]);
   for (const version of requiredFixtures) if (!fixtureVersions.includes(version)) throw new Error(`RT_COMPAT_POSTGRES_EDGE_FIXTURE_MISSING:${version}`);
+  for (const requiredBaseline of [baseline.package, "better-realtime@0.1.0-alpha.4"]) if (!fixtureBaselines.includes(requiredBaseline)) throw new Error(`RT_COMPAT_POSTGRES_RELEASE_FIXTURE_MISSING:${requiredBaseline}`);
   for (const fixture of manifest.fixtures) {
     if (!/^[a-f0-9]{64}$/u.test(fixture.packageSha256) || !/^[a-f0-9]{64}$/u.test(fixture.moduleSha256) || await hashFile(join(root, fixture.packagePath)) !== fixture.packageSha256 || await hashFile(join(root, fixture.modulePath)) !== fixture.moduleSha256) throw new Error(`RT_COMPAT_POSTGRES_FIXTURE_DRIFT:${fixture.storageVersion}`);
   }
   for (const published of baseline.postgresFixtures) {
-    const current = manifest.fixtures.find((fixture) => fixture.storageVersion === published.storageVersion);
-    if (!current || canonical(current) !== canonical(published)) throw new Error(`RT_COMPAT_PUBLISHED_POSTGRES_FIXTURE_MUTATED:${published.storageVersion}`);
+    const current = manifest.fixtures.find((fixture) =>
+      fixture.storageVersion === published.storageVersion
+      && canonical({
+        storageVersion: fixture.storageVersion,
+        packagePath: fixture.packagePath,
+        packageSha256: fixture.packageSha256,
+        modulePath: fixture.modulePath,
+        moduleSha256: fixture.moduleSha256
+      }) === canonical(published)
+    );
+    if (!current) throw new Error(`RT_COMPAT_PUBLISHED_POSTGRES_FIXTURE_MUTATED:${published.storageVersion}`);
   }
   for (const published of baseline.postgresMigrations) {
     const current = manifest.migrations.find((migration) => migration.version === published.version);
@@ -822,7 +897,7 @@ async function assertPostgresMigrations(manifest: PostgresMigrations, baseline: 
 }
 
 interface ConsumerStages { install: "passed"; typecheck: "passed" | { status: "failed"; diagnostics: string[] }; cliBin: "passed"; mcpBin: "passed" }
-async function compileConsumer(tarball: string, directory: string): Promise<{ results: Record<string, ConsumerStages>; room: string; packageDirectory: string }> {
+async function compileConsumer(tarball: string, directory: string, mcpTarball?: string): Promise<{ results: Record<string, ConsumerStages>; room: string; packageDirectory: string }> {
   const matrix = [
     { id: "react18", packages: ["react@18.3.1", "react-dom@18.3.1", "@types/react@18.3.31", "@types/react-dom@18.3.7"] },
     { id: "react19", packages: ["react@19.2.7", "react-dom@19.2.7", "@types/react@19.2.17", "@types/react-dom@19.2.3"] }
@@ -834,7 +909,7 @@ async function compileConsumer(tarball: string, directory: string): Promise<{ re
     await cp(apiConsumerPath, join(room, "alpha1-api.ts"));
     await writeFile(join(room, "package.json"), `${JSON.stringify({ private: true, type: "module" })}\n`, "utf8");
     await writeFile(join(room, "tsconfig.json"), `${JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: "ES2023", module: "NodeNext", moduleResolution: "NodeNext", skipLibCheck: false }, files: ["alpha1-api.ts"] })}\n`, "utf8");
-    await exec("npm", ["install", "--ignore-scripts", tarball, "pg@8.22.0", "ws@8.21.1", ...entry.packages], { cwd: room, maxBuffer: 20 * 1024 * 1024 }).catch((error) => { throw new Error(`RT_COMPAT_CONSUMER_INSTALL_FAILED:${entry.id}:${boundedError(error)}`); });
+    await exec("npm", ["install", "--ignore-scripts", tarball, ...(mcpTarball ? [mcpTarball] : []), "pg@8.22.0", "ws@8.21.1", ...entry.packages], { cwd: room, maxBuffer: 20 * 1024 * 1024 }).catch((error) => { throw new Error(`RT_COMPAT_CONSUMER_INSTALL_FAILED:${entry.id}:${boundedError(error)}`); });
     let typecheck: ConsumerStages["typecheck"] = "passed";
     try { await exec(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json", "--pretty", "false"], { cwd: room, maxBuffer: 20 * 1024 * 1024 }); }
     catch (error) { const diagnostics = typescriptDiagnostics(error); if (!diagnostics.length) throw new Error(`RT_COMPAT_CONSUMER_TYPECHECK_UNCLASSIFIED:${entry.id}:${boundedError(error)}`); typecheck = { status: "failed", diagnostics }; }

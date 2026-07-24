@@ -12,6 +12,7 @@ import { createServer as createNetServer } from "node:net";
 import WebSocket from "ws";
 import { startConsumerTestProxy, type WireTranscriptEntry } from "./consumer-test-proxy.ts";
 import { assertIdempotencyRetry, canonicalCapabilityProfile } from "./compatibility-wire-assertions.ts";
+import { packMcp } from "./pack-mcp.ts";
 import { packRuntime } from "./pack-runtime.ts";
 
 const exec = promisify(execFile);
@@ -20,9 +21,12 @@ const artifactDirectory = resolve(process.env.BETTER_REALTIME_CONSUMER_OUTPUT ??
 const packageArtifactDirectory = await mkdtemp(join(tmpdir(), "realtime-consumer-artifact-"));
 const suppliedClientTarball = process.env.BETTER_REALTIME_CLIENT_TARBALL?.trim();
 const suppliedServerTarball = process.env.BETTER_REALTIME_SERVER_TARBALL?.trim();
+const suppliedMcpTarball = process.env.BETTER_REALTIME_MCP_TARBALL?.trim();
 const generatedTarball = suppliedClientTarball && suppliedServerTarball ? undefined : (await packRuntime(packageArtifactDirectory)).tarball;
+const generatedMcpTarball = generatedTarball && !suppliedMcpTarball ? (await packMcp(packageArtifactDirectory)).tarball : undefined;
 const clientTarball = resolve(suppliedClientTarball || generatedTarball!);
 const serverTarball = resolve(suppliedServerTarball || generatedTarball!);
+const mcpTarball = suppliedMcpTarball ? resolve(suppliedMcpTarball) : generatedMcpTarball;
 const clientRoom = await mkdtemp(join(tmpdir(), "realtime-browser-client-"));
 const serverRoom = await mkdtemp(join(tmpdir(), "realtime-browser-server-"));
 const containerName = `realtime-consumer-pg-${process.pid}`;
@@ -40,7 +44,7 @@ try {
   ]);
   await Promise.all([
     exec("npm", ["install", "--ignore-scripts", clientTarball], { cwd: clientRoom, maxBuffer: 20 * 1024 * 1024 }),
-    exec("npm", ["install", "--ignore-scripts", serverTarball], { cwd: serverRoom, maxBuffer: 20 * 1024 * 1024 })
+    exec("npm", ["install", "--ignore-scripts", serverTarball, ...(mcpTarball ? [mcpTarball] : [])], { cwd: serverRoom, maxBuffer: 20 * 1024 * 1024 })
   ]);
   await exec("npm", ["run", "build"], { cwd: clientRoom, maxBuffer: 20 * 1024 * 1024 });
   progress("clean-room-built");

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "package": "better-realtime",
+  "version": "0.1.0-alpha.4",
+  "registryUrl": "https://registry.npmjs.org/better-realtime/-/better-realtime-0.1.0-alpha.4.tgz",
+  "releaseAssetUrl": "https://github.com/newExpand/better-realtime/releases/download/v0.1.0-alpha.4/better-realtime-0.1.0-alpha.4.tgz",
+  "bytes": 127291,
+  "unpackedBytes": 549541,
+  "files": 32,
+  "sha256": "803487cf32eca359ac85755b138119bf37c9e9afa476e55684971ed24057a6c2",
+  "integrity": "sha512-SMQLKsdjz6rXKoLhfGiWe8ldpR9zlqlFl8+IQ2oDnjmgrMWv/739a9SsM3v6pc/3oY+sW1/vcfgx3/KAk3c0iw==",
+  "checksumPinned": true,
+  "preservationBaseline": true,
+  "githubReleaseImmutable": true
+}

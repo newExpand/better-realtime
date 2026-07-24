@@ -10,13 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocketClient from "ws";
-import { PostgresGatewayServer, type PostgresGatewayDatabase } from "../../server-node/src/postgres-gateway.ts";
-import { doctor, LocalDiagnosticQuery } from "../../diagnostics/src/index.ts";
+import { PostgresGatewayServer } from "../../server-node/src/postgres-gateway.ts";
+import { doctor, LocalDiagnosticQuery, pseudonymizeIdentifier } from "../../diagnostics/src/index.ts";
 import type { JsonValue } from "../../protocol/src/index.ts";
-import { command, defineRealtimeContract, jsonSchema, stream } from "../../runtime/src/index.ts";
-import { createRealtimeServer, migratePostgres, postgres } from "../../runtime/src/server.ts";
+import { command, defineRealtimeContract, jsonSchema, stateStream, stream } from "../../runtime/src/index.ts";
+import { createRealtimeServer, migratePostgres, postgres, type RealtimePostgresDatabase } from "../../runtime/src/server.ts";
 import { selectTenantEvidenceRecords } from "../../runtime/src/evidence-scope.ts";
-import { canonicalCommandIntent, PostgresEventLog } from "../src/index.ts";
+import { canonicalCommandIntent, PostgresEventLog, structuredTransactionLockKey, type CanonicalIntent, type CommandTransactionExecution, type ExecuteCommandTransactionOptions } from "../src/index.ts";
+import { frameworkMigrationSql as frameworkMigrationV1Sql, postgresStorageNames as postgresStorageV1Names, quoteIdentifier } from "../src/migrations.ts";
 
 const databaseUrl = process.env.POSTGRES_URL;
 const suite = databaseUrl ? describe : describe.skip;
@@ -60,8 +61,170 @@ suite("Postgres event log and transactional outbox", () => {
       await expect(isolated.migrate(different)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
     }
     const metadata = await pool.query(`SELECT storage_version, storage_namespace, contract_id, manifest_version, manifest_digest FROM "${schema}".realtime_schema_metadata`);
-    expect(metadata.rows).toEqual([{ storage_version: 1, storage_namespace: `schema:${schema}`, contract_id: "contract.alpha", manifest_version: "1.0.0", manifest_digest: binding.manifestDigest }]);
+    expect(metadata.rows).toEqual([{ storage_version: 2, storage_namespace: `schema:${schema}`, contract_id: "contract.alpha", manifest_version: "1.0.0", manifest_digest: binding.manifestDigest }]);
     expect(isolated.storage.channel).not.toBe(log.storage.channel);
+  });
+
+  it("upgrades storage v1 to v2 without runtime DDL and preserves legacy command data", async () => {
+    const schema = "better_realtime_v1_upgrade_test";
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: "contract.upgrade", manifestVersion: "1.0.0", manifestDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" } as const;
+    const namespaceId = "00000000-0000-4000-8000-000000000001";
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      const v1 = postgresStorageV1Names(schema);
+      await pool.query("BEGIN");
+      await pool.query(frameworkMigrationV1Sql(v1));
+      await pool.query(`INSERT INTO ${v1.metadata} (storage_version, storage_namespace, contract_id, manifest_version, manifest_digest) VALUES (1,$1,$2,$3,$4)`, [v1.namespace, binding.contractId, binding.manifestVersion, binding.manifestDigest]);
+      await pool.query(`INSERT INTO "${schema}".realtime_principal_namespaces (tenant_id, principal_namespace_id) VALUES ('tenant-upgrade', $1)`, [namespaceId]);
+      await pool.query(`INSERT INTO "${schema}".realtime_events (tenant_id, stream, sequence, event_id, event_type, schema_name, data, command_principal_namespace_id, command_id) VALUES ('tenant-upgrade','room:upgrade',1,'evt_upgrade','messageAdded','MessageAdded@1','{"text":"preserved"}'::jsonb,$1,'cmd-upgrade')`, [namespaceId]);
+      await pool.query(`INSERT INTO "${schema}".realtime_commands (tenant_id, principal_namespace_id, command_id, state, intent_hash_version, intent_hash, result, result_schema, event_id, result_expires_at, idempotency_expires_at) VALUES ('tenant-upgrade',$1,'cmd-upgrade','completed',1,$2,'{"ok":true}'::jsonb,'Result@1','evt_upgrade',clock_timestamp() + interval '1 hour',clock_timestamp() + interval '2 hours')`, [namespaceId, `sha256:${"a".repeat(64)}`]);
+      await pool.query(`INSERT INTO "${schema}".realtime_outbox (tenant_id, event_id, publish_attempts) VALUES ('tenant-upgrade','evt_upgrade',2)`);
+      await pool.query(`INSERT INTO "${schema}".realtime_stream_retention (tenant_id, stream, minimum_sequence) VALUES ('tenant-upgrade','room:upgrade',1)`);
+      await pool.query(`CREATE TABLE "${schema}".application_projection (tenant_id TEXT PRIMARY KEY, value JSONB NOT NULL)`);
+      await pool.query(`INSERT INTO "${schema}".application_projection VALUES ('tenant-upgrade','{"preserved":true}'::jsonb)`);
+      await pool.query("COMMIT");
+
+      await expect(isolated.assertReady(binding)).rejects.toThrow("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await isolated.migrate(binding);
+      await isolated.assertReady(binding);
+      await isolated.migrate(binding);
+
+      const metadata = await pool.query(`SELECT storage_version FROM "${schema}".realtime_schema_metadata`);
+      expect(metadata.rows).toEqual([{ storage_version: 2 }]);
+      const relation = await pool.query(`SELECT ordinal, event_id FROM "${schema}".realtime_command_events WHERE tenant_id = 'tenant-upgrade' AND principal_namespace_id = $1 AND command_id = 'cmd-upgrade'`, [namespaceId]);
+      expect(relation.rows).toEqual([{ ordinal: 0, event_id: "evt_upgrade" }]);
+      const preserved = await pool.query(`SELECT result, event_id FROM "${schema}".realtime_commands WHERE tenant_id = 'tenant-upgrade' AND principal_namespace_id = $1 AND command_id = 'cmd-upgrade'`, [namespaceId]);
+      expect(preserved.rows).toEqual([{ result: { ok: true }, event_id: "evt_upgrade" }]);
+      const nullable = await pool.query(`SELECT is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'realtime_commands' AND column_name = 'event_id'`, [schema]);
+      expect(nullable.rows).toEqual([{ is_nullable: "YES" }]);
+      expect((await pool.query(`SELECT tenant_id, event_id, publish_attempts FROM "${schema}".realtime_outbox`)).rows).toEqual([{ tenant_id: "tenant-upgrade", event_id: "evt_upgrade", publish_attempts: 2 }]);
+      expect((await pool.query(`SELECT tenant_id, stream, minimum_sequence::int FROM "${schema}".realtime_stream_retention`)).rows).toEqual([{ tenant_id: "tenant-upgrade", stream: "room:upgrade", minimum_sequence: 1 }]);
+      expect((await pool.query(`SELECT tenant_id, value FROM "${schema}".application_projection`)).rows).toEqual([{ tenant_id: "tenant-upgrade", value: { preserved: true } }]);
+
+      const eventFree = await isolated.executeCommandTransaction({
+        tenantId: "tenant-upgrade", principalNamespaceId: namespaceId, commandId: "cmd-event-free-upgrade",
+        commandType: "markRead", commandSchema: "markRead@1", commandInput: { id: "7" }, resultSchema: "markReadResult@1",
+        targets: [], commandResultRetentionMs: 60_000, idempotencyRetentionMs: 120_000,
+        execute: async () => ({ marked: true })
+      });
+      const multi = await isolated.executeCommandTransaction({
+        tenantId: "tenant-upgrade", principalNamespaceId: namespaceId, commandId: "cmd-multi-upgrade",
+        commandType: "move", commandSchema: "move@1", commandInput: { id: "7" }, resultSchema: "moveResult@1",
+        targets: ["room:upgrade", "room:upgrade-secondary"], commandResultRetentionMs: 60_000, idempotencyRetentionMs: 120_000,
+        execute: async (_client, transaction) => {
+          transaction.emit("room:upgrade", "removed", "removed@1", { id: "7" });
+          transaction.emit("room:upgrade-secondary", "added", "added@1", { id: "7" });
+          return { moved: true };
+        }
+      });
+      expect(eventFree).toMatchObject({ status: "completed", events: [] });
+      expect(multi.status).toBe("completed");
+      if (multi.status !== "completed") throw new Error("expected migrated multi-event command");
+      expect(multi.events).toHaveLength(2);
+      expect((await pool.query(`SELECT command_id, ordinal, event_id FROM "${schema}".realtime_command_events ORDER BY command_id, ordinal`)).rows).toEqual([
+        { command_id: "cmd-multi-upgrade", ordinal: 0, event_id: multi.events[0]!.eventId },
+        { command_id: "cmd-multi-upgrade", ordinal: 1, event_id: multi.events[1]!.eventId },
+        { command_id: "cmd-upgrade", ordinal: 0, event_id: "evt_upgrade" }
+      ]);
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
+  });
+
+  it("rejects a storage-v2 metadata claim when the command-event relation is only partially installed", async () => {
+    const schema = "better_realtime_partial_v2_test";
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: "contract.partial", manifestVersion: "1.0.0", manifestDigest: "sha256:abababababababababababababababababababababababababababababababab" } as const;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await isolated.migrate(binding);
+      await pool.query(`DROP TABLE "${schema}".realtime_command_events`);
+      await pool.query(`CREATE TABLE "${schema}".realtime_command_events (tenant_id TEXT)`);
+      await pool.query(`ALTER TABLE "${schema}".realtime_commands ALTER COLUMN event_id SET NOT NULL`);
+      await expect(isolated.assertReady(binding)).rejects.toThrow("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await expect(isolated.migrate(binding)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
+  });
+
+  it("rejects an unvalidated storage-v2 constraint", async () => {
+    const schema = "better_realtime_unvalidated_v2_test";
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: "contract.unvalidated", manifestVersion: "1.0.0", manifestDigest: "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc" } as const;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await isolated.migrate(binding);
+      const check = await pool.query<{ conname: string }>("SELECT conname FROM pg_constraint WHERE conrelid = to_regclass($1) AND contype = 'c'", [isolated.storage.commandEvents]);
+      const constraintName = check.rows[0]?.conname;
+      if (!constraintName) throw new Error("expected ordinal constraint");
+      await pool.query(`ALTER TABLE ${isolated.storage.commandEvents} DROP CONSTRAINT ${quoteIdentifier(constraintName)}`);
+      await pool.query(`ALTER TABLE ${isolated.storage.commandEvents} ADD CONSTRAINT ${quoteIdentifier(constraintName)} CHECK (ordinal >= 0 AND ordinal < 100) NOT VALID`);
+      await expect(isolated.assertReady(binding)).rejects.toThrow("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await expect(isolated.migrate(binding)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
+  });
+
+  it.each(["partial", "expression"] as const)("rejects a %s replacement for the required storage-v2 event index", async (variant) => {
+    const schema = `better_realtime_${variant}_index_test`;
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: `contract.${variant}`, manifestVersion: "1.0.0", manifestDigest: `sha256:${variant === "partial" ? "ce".repeat(32) : "df".repeat(32)}` as const };
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await isolated.migrate(binding);
+      await pool.query(`DROP INDEX ${quoteIdentifier(schema)}.${quoteIdentifier("realtime_command_events_event_idx")}`);
+      await pool.query(variant === "partial"
+        ? `CREATE INDEX realtime_command_events_event_idx ON ${isolated.storage.commandEvents} (tenant_id, event_id) WHERE ordinal >= 0`
+        : `CREATE INDEX realtime_command_events_event_idx ON ${isolated.storage.commandEvents} (tenant_id, event_id, (ordinal + 0))`);
+      await expect(isolated.assertReady(binding)).rejects.toThrow("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await expect(isolated.migrate(binding)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
+  });
+
+  it("rolls back a failed v1-to-v2 migration and succeeds after the blocking partial object is removed", async () => {
+    const schema = "better_realtime_v2_retry_test";
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: "contract.retry", manifestVersion: "1.0.0", manifestDigest: "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd" } as const;
+    const v1 = postgresStorageV1Names(schema);
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await pool.query("BEGIN");
+      await pool.query(frameworkMigrationV1Sql(v1));
+      await pool.query(`INSERT INTO ${v1.metadata} (storage_version, storage_namespace, contract_id, manifest_version, manifest_digest) VALUES (1,$1,$2,$3,$4)`, [v1.namespace, binding.contractId, binding.manifestVersion, binding.manifestDigest]);
+      await pool.query(`CREATE TABLE "${schema}".realtime_command_events (blocking_marker TEXT)`);
+      await pool.query("COMMIT");
+
+      await expect(isolated.migrate(binding)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
+      expect((await pool.query(`SELECT storage_version FROM ${v1.metadata}`)).rows).toEqual([{ storage_version: 1 }]);
+      expect((await pool.query(`SELECT is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'realtime_commands' AND column_name = 'event_id'`, [schema])).rows).toEqual([{ is_nullable: "NO" }]);
+
+      await pool.query(`DROP TABLE "${schema}".realtime_command_events`);
+      await isolated.migrate(binding);
+      await isolated.assertReady(binding);
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
+  });
+
+  it("fails closed on an unsupported future storage version without rewriting its identity", async () => {
+    const schema = "better_realtime_future_v3_test";
+    const isolated = new PostgresEventLog(pool, undefined, {}, { schema });
+    const binding = { contractId: "contract.future", manifestVersion: "1.0.0", manifestDigest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef" } as const;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await isolated.migrate(binding);
+      await pool.query(`UPDATE "${schema}".realtime_schema_metadata SET storage_version = 3 WHERE singleton = TRUE`);
+      await expect(isolated.assertReady(binding)).rejects.toThrow("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await expect(isolated.migrate(binding)).rejects.toMatchObject({ code: "RT_TRANSACTION_ROLLED_BACK" });
+      expect((await pool.query(`SELECT storage_version FROM "${schema}".realtime_schema_metadata`)).rows).toEqual([{ storage_version: 3 }]);
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    }
   });
 
   it("rejects an unbound populated schema without adopting or rewriting it", async () => {
@@ -285,6 +448,125 @@ suite("Postgres event log and transactional outbox", () => {
     expect(log.recorder.records().some((record) => record.boundary === "outbox.appended" && record.commandId === "cmd-stable")).toBe(true);
   });
 
+  it("commits event-free and multi-stream commands with stable duplicate results", async () => {
+    let eventFreeEffects = 0;
+    const eventFree = () => log.executeCommandTransaction({
+      tenantId: "tenant-a",
+      principalNamespaceId,
+      commandId: "cmd-event-free",
+      commandType: "markRead",
+      commandSchema: "markRead@1",
+      commandInput: { notificationId: "7" },
+      resultSchema: "markReadResult@1",
+      targets: [],
+      commandResultRetentionMs: 60_000,
+      idempotencyRetentionMs: 120_000,
+      execute: async () => {
+        eventFreeEffects += 1;
+        return { marked: true };
+      }
+    });
+    const firstEventFree = await eventFree();
+    const duplicateEventFree = await eventFree();
+    expect(firstEventFree).toMatchObject({ status: "completed", duplicate: false, events: [] });
+    expect(duplicateEventFree).toMatchObject({ status: "completed", duplicate: true, events: [] });
+    expect(eventFreeEffects).toBe(1);
+    expect(await log.commandStatus("tenant-a", principalNamespaceId, "cmd-event-free")).toMatchObject({ state: "completed", result: { marked: true }, events: [] });
+
+    let multiEffects = 0;
+    const multi = () => log.executeCommandTransaction({
+      tenantId: "tenant-a",
+      principalNamespaceId,
+      commandId: "cmd-multi-stream",
+      commandType: "moveItem",
+      commandSchema: "moveItem@1",
+      commandInput: { itemId: "7", from: "a", to: "b" },
+      resultSchema: "moveItemResult@1",
+      targets: ["room:a", "room:b"],
+      commandResultRetentionMs: 60_000,
+      idempotencyRetentionMs: 120_000,
+      execute: async (client, transaction) => {
+        multiEffects += 1;
+        const generated = await client.query<{ id: string }>("SELECT 'db-generated-7'::text AS id");
+        const id = generated.rows[0]!.id;
+        const removed = transaction.emit("room:a", "itemRemoved", "itemRemoved@1", { id });
+        const added = transaction.emit("room:b", "itemAdded", "itemAdded@1", { id });
+        return { removedEventId: removed.eventId, addedEventId: added.eventId };
+      }
+    });
+    const firstMulti = await multi();
+    const duplicateMulti = await multi();
+    expect(firstMulti.status).toBe("completed");
+    expect(duplicateMulti.status).toBe("completed");
+    if (firstMulti.status !== "completed" || duplicateMulti.status !== "completed") throw new Error("expected completed commands");
+    expect(firstMulti.events).toHaveLength(2);
+    expect(firstMulti.events.map((event) => event.stream)).toEqual(["room:a", "room:b"]);
+    expect(firstMulti.events.map((event) => event.data)).toEqual([{ id: "db-generated-7" }, { id: "db-generated-7" }]);
+    expect(duplicateMulti.events).toEqual(firstMulti.events);
+    expect(multiEffects).toBe(1);
+    const multiStatus = await log.commandStatus("tenant-a", principalNamespaceId, "cmd-multi-stream");
+    expect(multiStatus).toMatchObject({ state: "completed", events: firstMulti.events });
+  });
+
+  it("derives v2 canonical intent internally even when JavaScript supplies a forged extra argument", async () => {
+    let effects = 0;
+    const options = (value: string): ExecuteCommandTransactionOptions => ({
+      tenantId: "tenant-a",
+      principalNamespaceId,
+      commandId: "cmd-forged-public-intent",
+      commandType: "changeValue",
+      commandSchema: "changeValue@1",
+      commandInput: { value },
+      resultSchema: "changeValueResult@1",
+      targets: [],
+      commandResultRetentionMs: 60_000,
+      idempotencyRetentionMs: 120_000,
+      execute: async () => {
+        effects += 1;
+        return { value };
+      }
+    });
+    const forged: CanonicalIntent = {
+      intentHashVersion: 2,
+      intentHash: `sha256:${"f".repeat(64)}`,
+      canonical: "{\"forged\":true}"
+    };
+    const invokeWithLegacyShape = log.executeCommandTransaction.bind(log) as unknown as (
+      value: ExecuteCommandTransactionOptions,
+      externalIntent: CanonicalIntent
+    ) => Promise<CommandTransactionExecution>;
+
+    await expect(invokeWithLegacyShape(options("first"), forged)).resolves.toMatchObject({
+      status: "completed",
+      duplicate: false,
+      result: { value: "first" }
+    });
+    await expect(invokeWithLegacyShape(options("different"), forged)).rejects.toThrow("RT_COMMAND_INTENT_CONFLICT");
+    expect(effects).toBe(1);
+  });
+
+  it("rejects undeclared targets and rolls back every staged command event", async () => {
+    await expect(log.executeCommandTransaction({
+      tenantId: "tenant-a",
+      principalNamespaceId,
+      commandId: "cmd-undeclared-target",
+      commandType: "unsafe",
+      commandSchema: "unsafe@1",
+      commandInput: {},
+      resultSchema: "unsafeResult@1",
+      targets: ["room:declared"],
+      commandResultRetentionMs: 60_000,
+      idempotencyRetentionMs: 120_000,
+      execute: async (_client, transaction) => {
+        transaction.emit("room:declared", "changed", "changed@1", { ok: true });
+        transaction.emit("room:undeclared", "changed", "changed@1", { ok: false });
+        return { ok: true };
+      }
+    })).rejects.toThrow("RT_COMMAND_TARGET_UNDECLARED");
+    expect((await pool.query("SELECT 1 FROM realtime_commands WHERE tenant_id = 'tenant-a' AND principal_namespace_id = $1 AND command_id = 'cmd-undeclared-target'", [principalNamespaceId])).rowCount).toBe(0);
+    expect((await pool.query("SELECT 1 FROM realtime_events WHERE tenant_id = 'tenant-a' AND command_id = 'cmd-undeclared-target'")).rowCount).toBe(0);
+  });
+
   it("rolls back every durable boundary when the domain mutation fails", async () => {
     await expect(log.executeCommand({ tenantId: "tenant-a", principalNamespaceId, commandId: "cmd-fail", commandType: "sendMessage", commandSchema: "sendMessage@1", commandInput: { roomId: "42", text: "fail" }, stream: "room:42", eventType: "messageAdded", schema: "MessageAdded@1", data: { text: "no commit" }, commandResultRetentionMs: 60_000, idempotencyRetentionMs: 120_000, mutate: async () => { throw new Error("injected transaction failure"); } })).rejects.toThrow("injected transaction failure");
     expect((await pool.query("SELECT 1 FROM realtime_commands WHERE tenant_id = 'tenant-a' AND principal_namespace_id = $1 AND command_id = 'cmd-fail'", [principalNamespaceId])).rowCount).toBe(0);
@@ -434,6 +716,40 @@ suite("Postgres event log and transactional outbox", () => {
       (socket as (WebSocketClient & { _socket?: { resume(): void } }) | undefined)?._socket?.resume();
       socket?.terminate();
       await gateway.dispose();
+    }
+  });
+
+  it("bounds dispose for a non-cooperating WebSocket with the configured drain deadline", async () => {
+    const gateway = new PostgresGatewayServer({
+      pool,
+      port: 0,
+      originPolicy: nodeOriginPolicy,
+      runtimeId: "bounded-dispose-deadline",
+      contract: storageContract,
+      identityKeys: keys,
+      drainTimeoutMs: 25,
+      authenticate: () => ({ tenantId: "tenant-bounded-dispose", authenticationRealm: "test", issuer: "issuer", subject: "subject", permissions: [] })
+    });
+    let socket: WebSocketClient | undefined;
+    let disposal: Promise<void> | undefined;
+    try {
+      await gateway.start();
+      socket = new WebSocketClient(gateway.webSocketUrl, "better-realtime.v1");
+      await new Promise<void>((resolve, reject) => { socket!.once("open", resolve); socket!.once("error", reject); });
+      const messages: Array<Record<string, unknown>> = [];
+      socket.on("message", (data) => messages.push(JSON.parse(String(data)) as Record<string, unknown>));
+      socket.send(JSON.stringify({ protocol: "1.0", kind: "session.open", messageId: "msg_bounded_dispose", sentAt: new Date().toISOString(), connectionAttemptId: "attempt_bounded_dispose", contract: storageContract, auth: {} }));
+      await waitForWireMessage(messages, (message) => message.kind === "session.ready");
+      (socket as WebSocketClient & { _socket: { pause(): void } })._socket.pause();
+      disposal = gateway.dispose();
+      await expect(Promise.race([
+        disposal.then(() => "disposed"),
+        new Promise<"deadline_exceeded">((resolve) => setTimeout(() => resolve("deadline_exceeded"), 500))
+      ])).resolves.toBe("disposed");
+    } finally {
+      (socket as (WebSocketClient & { _socket?: { resume(): void } }) | undefined)?._socket?.resume();
+      socket?.terminate();
+      await (disposal ?? gateway.dispose());
     }
   });
 
@@ -706,17 +1022,41 @@ suite("Postgres event log and transactional outbox", () => {
     const tenantId = "tenant-wake-cleanup-retry";
     const principal = await log.resolvePrincipalNamespace({ tenantId, authenticationRealm: "test", issuer: "issuer", subject: "subject", keys });
     let commandEffects = 0;
+    let transactionEffects = 0;
     const command = () => log.executeCommand({ tenantId, principalNamespaceId: principal, commandId: "cmd-after-wake-cleanup", commandType: "sendMessage", commandSchema: "sendMessage@1", commandInput: { text: "once" }, stream: "room:wake-cleanup", eventType: "messageAdded", schema: "MessageAdded@1", data: { text: "once" }, commandResultRetentionMs: 60_000, idempotencyRetentionMs: 120_000, mutate: async () => { commandEffects += 1; return { ok: true }; } });
+    const transactionCommand = () => log.executeCommandTransaction({
+      tenantId,
+      principalNamespaceId: principal,
+      commandId: "cmd-transaction-after-wake-cleanup",
+      commandType: "sendMany",
+      commandSchema: "sendMany@1",
+      commandInput: { text: "once" },
+      resultSchema: "sendManyResult@1",
+      targets: ["room:wake-cleanup", "room:wake-cleanup-secondary"],
+      commandResultRetentionMs: 60_000,
+      idempotencyRetentionMs: 120_000,
+      execute: async (_database, transaction) => {
+        transactionEffects += 1;
+        transaction.emit("room:wake-cleanup", "messageAdded", "MessageAdded@1", { text: "transaction once" });
+        transaction.emit("room:wake-cleanup-secondary", "messageAdded", "MessageAdded@1", { text: "transaction once" });
+        return { ok: true };
+      }
+    });
     const firstCommand = await command();
+    const firstTransaction = await transactionCommand();
     const firstAppend = await log.appendEvent({ appendId: "append-after-wake-cleanup", tenantId, stream: "room:wake-cleanup", eventType: "messageAdded", schema: "MessageAdded@1", data: { text: "append once" }, effectSchema: "none@1", effect: null });
     await log.publishOutbox({ limit: 1_000 });
     await pool.query("UPDATE realtime_outbox SET notify_committed_at = clock_timestamp() - interval '10 seconds' WHERE tenant_id = $1", [tenantId]);
-    expect(await log.cleanupPublishedOutbox(1_000)).toBeGreaterThanOrEqual(2);
+    expect(await log.cleanupPublishedOutbox(1_000)).toBeGreaterThanOrEqual(4);
     const duplicateCommand = await command();
+    const duplicateTransaction = await transactionCommand();
     const duplicateAppend = await log.appendEvent({ appendId: "append-after-wake-cleanup", tenantId, stream: "room:wake-cleanup", eventType: "messageAdded", schema: "MessageAdded@1", data: { text: "append once" }, effectSchema: "none@1", effect: null });
     expect(duplicateCommand).toMatchObject({ status: "completed", duplicate: true });
+    expect(duplicateTransaction).toMatchObject({ status: "completed", duplicate: true });
     expect(commandEffects).toBe(1);
+    expect(transactionEffects).toBe(1);
     expect(firstCommand.status === "completed" && duplicateCommand.status === "completed" ? duplicateCommand.event.eventId : "").toBe(firstCommand.status === "completed" ? firstCommand.event.eventId : "");
+    expect(firstTransaction.status === "completed" && duplicateTransaction.status === "completed" ? duplicateTransaction.events : []).toEqual(firstTransaction.status === "completed" ? firstTransaction.events : []);
     expect(duplicateAppend.eventId).toBe(firstAppend.eventId);
   });
 
@@ -915,7 +1255,7 @@ suite("Postgres event log and transactional outbox", () => {
         if (context.operation === "command" && !blocked) {
           blocked = true;
           await blocker!.query("BEGIN");
-          await blocker!.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`schema:better_realtime:command:tenant-a:${principalNamespaceId}:${commandId}`]);
+          await blocker!.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [structuredTransactionLockKey(ambiguous.storage.namespace, "command", ["tenant-a", principalNamespaceId, commandId])]);
           throw new Error("Connection terminated unexpectedly");
         }
       } });
@@ -1227,9 +1567,15 @@ suite("Postgres event log and transactional outbox", () => {
     const records = ambiguous.recorder.records();
     const discarded = records.find((record) => record.boundary === "database.transaction_outcome_indeterminate" && record.details?.operation === "snapshot_read");
     expect(discarded).toBeDefined();
-    expect(records.some((record) => record.boundary === "database.transaction_reconciled" && record.transactionId === discarded?.transactionId && record.details?.resolution === "no_durable_effect" && record.details.proofSource === "repeatable_read_read_only_discard_and_retry")).toBe(true);
+    if (!discarded?.transactionId) throw new Error("snapshot indeterminate transaction identity missing");
+    const reconciled = records.find((record) => record.boundary === "database.transaction_reconciled" && record.transactionId === discarded?.transactionId && record.details?.resolution === "no_durable_effect" && record.details.proofSource === "repeatable_read_read_only_discard_and_retry" && record.details.serialization === "fresh_repeatable_read_read_only_attempt");
+    expect(reconciled).toBeDefined();
     expect(records.some((record) => record.boundary === "db.rolled_back" && record.transactionId === discarded?.transactionId)).toBe(false);
     expect(records.some((record) => record.boundary === "snapshot.created" && record.outcome === "success")).toBe(true);
+    const report = doctor({ records, expectedBoundaries: [{ producerRole: "database", boundary: "database.transaction_reconciled" }], expectedProducers: ["database"], scope: { transactionId: discarded.transactionId }, expectedOutcome: "snapshot attempt safely discarded" });
+    expect(report.verdict).toBe("proven");
+    expect(report.evidenceClosure.some((entry) => entry.purpose === "transaction_indeterminate" && entry.recordId === discarded?.recordId)).toBe(true);
+    expect(report.evidenceClosure.some((entry) => entry.recordId === reconciled?.recordId && entry.proofSource === "repeatable_read_read_only_discard_and_retry" && entry.resolution === "no_durable_effect")).toBe(true);
   });
 
   it("runs a generic gateway application through the atomic snapshot and command transaction ports", async () => {
@@ -1303,6 +1649,78 @@ suite("Postgres event log and transactional outbox", () => {
     } finally {
       socket?.close();
       await gateway.dispose();
+    }
+  });
+
+  it("encodes stateStream domain snapshots with the framework-owned fenced sequence", async () => {
+    const schema = "better_realtime_state_stream_server_test";
+    const stateContract = defineRealtimeContract({
+      contractId: "test.state-stream.server",
+      manifestVersion: "1.0.0",
+      streams: {
+        counter: stateStream({
+          input: jsonSchema("test.state-stream.server.input@1", { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false }),
+          state: jsonSchema("test.state-stream.server.state@1", { type: "object", required: ["count"], properties: { count: { type: "integer" } }, additionalProperties: false }),
+          key: ({ id }) => `counter:${id}`,
+          initial: () => ({ count: 0 }),
+          events: {
+            incremented: {
+              data: jsonSchema("test.state-stream.server.incremented@1", { type: "object", required: ["amount"], properties: { amount: { type: "integer" } }, additionalProperties: false }),
+              reduce: (state, event) => ({ count: state.count + event.amount })
+            }
+          }
+        })
+      },
+      commands: {
+        increment: command({
+          input: jsonSchema("test.state-stream.server.command.input@1", { type: "object", required: ["id", "amount"], properties: { id: { type: "string" }, amount: { type: "integer" } }, additionalProperties: false }),
+          result: jsonSchema("test.state-stream.server.command.result@1", { type: "object", required: ["accepted"], properties: { accepted: { type: "boolean" } }, additionalProperties: false })
+        })
+      }
+    });
+    const stateProfile = postgres({ pool, schema, identityKeys: [{ version: 1, key: "state-stream-server-identity-key" }] });
+    const server = createRealtimeServer(stateContract, {
+      profile: stateProfile,
+      runtimeId: "state-stream-server-test",
+      port: 0,
+      originPolicy: nodeOriginPolicy,
+      authenticate: () => ({ tenantId: "tenant-state-stream", authenticationRealm: "test", issuer: "issuer", subject: "subject", permissions: [] }),
+      streams: { counter: { authorize: () => true, snapshot: () => ({ count: 0 }) } },
+      commands: {
+        increment: {
+          authorize: () => true,
+          targets: (input) => [{ stream: "counter", input: { id: input.id } }],
+          execute: async (_context, input, transaction) => {
+            const generated = await transaction.db.query<{ amount: number }>("SELECT $1::integer AS amount", [input.amount]);
+            transaction.emit({ stream: "counter", input: { id: input.id }, event: "incremented", data: { amount: generated.rows[0]!.amount } });
+            return { accepted: true };
+          }
+        }
+      }
+    });
+    let socket: WebSocket | undefined;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    try {
+      await migratePostgres(stateContract, stateProfile);
+      await server.start();
+      socket = new WebSocket(server.webSocketUrl, "better-realtime.v1");
+      await new Promise<void>((resolve, reject) => { socket!.addEventListener("open", () => resolve(), { once: true }); socket!.addEventListener("error", () => reject(new Error("websocket open failed")), { once: true }); });
+      const messages: Array<Record<string, unknown>> = [];
+      socket.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data)) as Record<string, unknown>));
+      socket.send(JSON.stringify({ protocol: "1.0", kind: "session.open", messageId: "msg_state_stream_open", sentAt: new Date().toISOString(), connectionAttemptId: "attempt_state_stream", contract: stateContract.identity, auth: {} }));
+      const ready = await waitForWireMessage(messages, (message) => message.kind === "session.ready");
+      socket.send(JSON.stringify({ protocol: "1.0", kind: "stream.subscribe", messageId: "msg_state_stream_subscribe", sentAt: new Date().toISOString(), requestId: "req_state_stream_subscribe", sessionGeneration: ready.sessionGeneration, stream: "counter:7", input: { id: "7" } }));
+      const snapshot = await waitForWireMessage(messages, (message) => message.kind === "stream.snapshot" && message.stream === "counter:7");
+      expect(snapshot).toMatchObject({ schema: stateContract.manifest.streams.counter!.snapshotSchema, state: { state: { count: 0 }, includedSequence: 0 } });
+      socket.send(JSON.stringify({ protocol: "1.0", kind: "command", messageId: "msg_state_stream_command", sentAt: new Date().toISOString(), commandAttemptId: "attempt_state_stream_command", sessionGeneration: ready.sessionGeneration, commandId: "cmd-state-stream-increment", type: "increment", schema: stateContract.manifest.commands.increment!.schema, input: { id: "7", amount: 2 }, createdAt: new Date().toISOString() }));
+      const completed = await waitForWireMessage(messages, (message) => message.kind === "command.completed" && message.commandId === "cmd-state-stream-increment");
+      expect(completed).toMatchObject({ result: { accepted: true }, causalEvents: [{ stream: "counter:7", sequence: 1 }] });
+      const event = await waitForWireMessage(messages, (message) => message.kind === "event" && message.stream === "counter:7");
+      expect(event).toMatchObject({ type: "incremented", data: { amount: 2 }, sequence: 1 });
+    } finally {
+      socket?.close();
+      await server.dispose();
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     }
   });
 
@@ -1489,8 +1907,8 @@ suite("Postgres event log and transactional outbox", () => {
       await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { commandId?: string } | undefined)?.commandId === commandId);
       const bundle = server.evidenceBundle(tenantId);
       expect(bundle.expectedProducerInstances).toEqual([
-        expect.objectContaining({ producerRole: "server", runtimeId: "public-rollback-test" }),
-        expect.objectContaining({ producerRole: "database", runtimeId: "public-rollback-test:postgres" })
+        expect.objectContaining({ producerRole: "server", runtimeId: pseudonymizeIdentifier("public-rollback-test", bundle.pseudonymizationKey) }),
+        expect.objectContaining({ producerRole: "database", runtimeId: pseudonymizeIdentifier("public-rollback-test:postgres", bundle.pseudonymizationKey) })
       ]);
       expect(new Set(bundle.expectedProducerInstances.map((producer) => producer.producerRole))).toEqual(new Set(["server", "database"]));
       for (const missingRole of ["server", "database"] as const) {
@@ -1507,7 +1925,7 @@ suite("Postgres event log and transactional outbox", () => {
       }
       const rollback = bundle.records.find(({ record }) => record.boundary === "db.rolled_back");
       const observer = bundle.records.find(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed");
-      expect(rollback?.record).toMatchObject({ outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", details: { tenantId, proofSource: "postgres_error_response", sqlstate: "23503" } });
+      expect(rollback?.record).toMatchObject({ outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", details: { tenantId: pseudonymizeIdentifier(tenantId, bundle.pseudonymizationKey), proofSource: "postgres_error_response", sqlstate: "23503" } });
       expect(observer?.record.transactionId).toBe(rollback?.record.transactionId);
       expect(bundle.records.some(({ record }) => record.reasonCode === "RT_DATABASE_UNAVAILABLE")).toBe(false);
       expect(server.evidenceBundle("tenant-other").records.some(({ record }) => record.transactionId === rollback?.record.transactionId)).toBe(false);
@@ -1522,8 +1940,9 @@ suite("Postgres event log and transactional outbox", () => {
       const collisionFailure = await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { commandId?: string } | undefined)?.commandId === collisionCommandId);
       expect(collisionFailure.error).toMatchObject({ code: "RT_OPERATION_UNAVAILABLE", scope: "command", disposition: "fail_operation", retryable: false, commandId: collisionCommandId });
       const collisionBundle = server.evidenceBundle(tenantId);
-      expect(collisionBundle.records.some(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed" && record.commandId === collisionCommandId && record.details?.sqlstate === "P0001" && record.details.failureProvenance === "authoritative_abort")).toBe(true);
-      expect(collisionBundle.records.some(({ record }) => record.commandId === collisionCommandId && record.boundary === "application.operation_failed")).toBe(false);
+      const collisionCommandPseudonym = pseudonymizeIdentifier(collisionCommandId, collisionBundle.pseudonymizationKey);
+      expect(collisionBundle.records.some(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed" && record.commandId === collisionCommandPseudonym && record.details?.sqlstate === "P0001" && record.details.failureProvenance === "authoritative_abort")).toBe(true);
+      expect(collisionBundle.records.some(({ record }) => record.commandId === collisionCommandPseudonym && record.boundary === "application.operation_failed")).toBe(false);
       expect(collisionBundle.records.some(({ record }) => record.reasonCode === "RT_DATABASE_UNAVAILABLE")).toBe(false);
       expect(server.ready).toBe(true);
       expect(await fetch(`${server.httpUrl}/health`).then((response) => response.status)).toBe(200);
@@ -1550,7 +1969,7 @@ suite("Postgres event log and transactional outbox", () => {
     const commandId = `cmd-db-failure-${caseId}`;
     const profile = postgres({ pool, schema: `better_realtime_db_failure_${operation}`, identityKeys: [{ version: 1, key: "public-db-failure-identity-key-32-bytes" }], operationTimeoutMs: 5_000 });
     await migratePostgres(contract, profile);
-    const terminateCurrentApplicationConnection = async (database: PostgresGatewayDatabase): Promise<never> => {
+    const terminateCurrentApplicationConnection = async (database: RealtimePostgresDatabase): Promise<never> => {
       const pid = Number((await database.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
       termination.targetPid = pid;
       const completion = await pool.query<{ manager_pid: number; terminated: boolean }>("SELECT pg_backend_pid() AS manager_pid, pg_terminate_backend($1, $2::bigint) AS terminated", [pid, 2_000]);
@@ -1606,7 +2025,7 @@ suite("Postgres event log and transactional outbox", () => {
       expect(health.status).toBe(503);
       expect(await health.json()).toEqual({ status: "unready" });
       const bundle = server.evidenceBundle(tenantId);
-      expect(bundle.records.some(({ record }) => record.boundary === "database.operation_failed" && record.details?.tenantId === tenantId && record.reasonCode === "RT_DATABASE_UNAVAILABLE")).toBe(true);
+      expect(bundle.records.some(({ record }) => record.boundary === "database.operation_failed" && record.details?.tenantId === pseudonymizeIdentifier(tenantId, bundle.pseudonymizationKey) && record.reasonCode === "RT_DATABASE_UNAVAILABLE")).toBe(true);
       expect(bundle.records.some(({ record }) => record.boundary === "application.operation_failed")).toBe(false);
       expect(bundle.records.some(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed")).toBe(false);
       expect(bundle.records.some(({ record }) => record.boundary === "db.rolled_back" && record.details?.proofSource === "commit_not_invoked")).toBe(true);
@@ -1619,12 +2038,12 @@ suite("Postgres event log and transactional outbox", () => {
       contractId: "test",
       manifestVersion: "1.0.0",
       streams: { room: stream({ input: jsonSchema("test.public-db-port.room.input@1", { type: "object", required: ["id"], properties: { id: { type: "string" } }, additionalProperties: false }), snapshot: jsonSchema("test.public-db-port.room.snapshot@1", { type: "object", required: ["sequence"], properties: { sequence: { type: "integer" } }, additionalProperties: false }), events: { changed: jsonSchema("test.public-db-port.room.changed@1", { type: "object", required: ["mode"], properties: { mode: { type: "string" } }, additionalProperties: false }) }, key: ({ id }) => `db-port:${id}`, initial: () => ({ sequence: 0 }), applyEvent: (_current, event) => ({ sequence: event.sequence }), snapshotSequence: (current) => current.sequence }) },
-      commands: { change: command({ input: jsonSchema("test.public-db-port.change.input@1", { type: "object", required: ["id", "mode"], properties: { id: { type: "string" }, mode: { enum: ["pending", "timeout", "lateDml", "unobservedReject", "unobservedThen", "unobservedFinally", "invalid", "unsafeCommit", "unsafeMulti", "unsafeSession", "capture", "spoof"] } }, additionalProperties: false }), result: jsonSchema("test.public-db-port.change.result@1", { type: "object", required: ["sequence"], properties: { sequence: { type: "integer" } }, additionalProperties: false }) }) }
+      commands: { change: command({ input: jsonSchema("test.public-db-port.change.input@1", { type: "object", required: ["id", "mode"], properties: { id: { type: "string" }, mode: { enum: ["pending", "timeout", "lateDml", "unobservedReject", "unobservedThen", "unobservedFinally", "invalid", "unsafeCommit", "unsafeMulti", "unsafeSession", "unsafeFramework", "capture", "spoof"] } }, additionalProperties: false }), result: jsonSchema("test.public-db-port.change.result@1", { type: "object", required: ["sequence"], properties: { sequence: { type: "integer" } }, additionalProperties: false }) }) }
     });
     const tenantId = "tenant-public-db-port";
     const profile = postgres({ pool, schema: "better_realtime_public_db_port", identityKeys: [{ version: 1, key: "public-db-port-identity-key-32-bytes" }], operationTimeoutMs: 25 });
     await migratePostgres(contract, profile);
-    let capturedDatabase: PostgresGatewayDatabase | undefined;
+    let capturedDatabase: RealtimePostgresDatabase | undefined;
     const server = createRealtimeServer(contract, {
       profile, runtimeId: "public-db-port", port: 0, originPolicy: { allowedOrigins: [], allowMissingOrigin: true },
       authenticate: () => ({ tenantId, authenticationRealm: "test", issuer: "issuer", subject: "subject", permissions: [] }),
@@ -1649,6 +2068,7 @@ suite("Postgres event log and transactional outbox", () => {
         if (input.mode === "unsafeCommit") { await context.db.query("COMMIT"); return { sequence: context.sequence }; }
         if (input.mode === "unsafeMulti") { await context.db.query("SELECT 1; COMMIT"); return { sequence: context.sequence }; }
         if (input.mode === "unsafeSession") { await context.db.query("LISTEN leaked_channel"); return { sequence: context.sequence }; }
+        if (input.mode === "unsafeFramework") { await context.db.query(`WITH removed AS (DELETE FROM "better_realtime_public_db_port"."realtime_commands" RETURNING command_id) SELECT command_id FROM removed`); return { sequence: context.sequence }; }
         if (input.mode === "capture") { capturedDatabase = context.db; return { sequence: context.sequence }; }
         try { await context.db.query("SELECT * FROM realtime_deliberately_missing_table"); }
         catch (error) {
@@ -1674,7 +2094,7 @@ suite("Postgres event log and transactional outbox", () => {
         await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { stream?: string } | undefined)?.stream === streamKey);
         expect(server.ready).toBe(true);
       }
-      const send = (mode: "pending" | "timeout" | "lateDml" | "unobservedReject" | "unobservedThen" | "unobservedFinally" | "invalid" | "unsafeCommit" | "unsafeMulti" | "unsafeSession" | "capture" | "spoof") => socket!.send(JSON.stringify({ protocol: "1.0", kind: "command", messageId: `msg_db_port_${mode}`, sentAt: new Date().toISOString(), commandAttemptId: `attempt_db_port_${mode}`, sessionGeneration: ready.sessionGeneration, commandId: `cmd-db-port-${mode}`, type: "change", schema: "test.public-db-port.change.input@1", input: { id: mode, mode }, createdAt: new Date().toISOString() }));
+      const send = (mode: "pending" | "timeout" | "lateDml" | "unobservedReject" | "unobservedThen" | "unobservedFinally" | "invalid" | "unsafeCommit" | "unsafeMulti" | "unsafeSession" | "unsafeFramework" | "capture" | "spoof") => socket!.send(JSON.stringify({ protocol: "1.0", kind: "command", messageId: `msg_db_port_${mode}`, sentAt: new Date().toISOString(), commandAttemptId: `attempt_db_port_${mode}`, sessionGeneration: ready.sessionGeneration, commandId: `cmd-db-port-${mode}`, type: "change", schema: "test.public-db-port.change.input@1", input: { id: mode, mode }, createdAt: new Date().toISOString() }));
       send("pending");
       await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { commandId?: string } | undefined)?.commandId === "cmd-db-port-pending");
       expect(server.ready).toBe(true);
@@ -1702,14 +2122,20 @@ suite("Postgres event log and transactional outbox", () => {
       send("capture");
       await waitForWireMessage(messages, (message) => message.kind === "command.completed" && message.commandId === "cmd-db-port-capture");
       await expect(capturedDatabase!.query("SELECT 1")).rejects.toThrow("RT_APPLICATION_DATABASE_SCOPE_CLOSED");
+      send("unsafeFramework");
+      await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { commandId?: string } | undefined)?.commandId === "cmd-db-port-unsafeFramework");
+      expect((await pool.query("SELECT count(*)::int AS count FROM \"better_realtime_public_db_port\".realtime_commands WHERE tenant_id = $1 AND command_id = $2", [tenantId, "cmd-db-port-capture"])).rows[0]?.count).toBe(1);
+      expect((await pool.query("SELECT count(*)::int AS count FROM \"better_realtime_public_db_port\".realtime_commands WHERE tenant_id = $1 AND command_id = $2", [tenantId, "cmd-db-port-unsafeFramework"])).rows[0]?.count).toBe(0);
+      expect(server.ready).toBe(true);
       send("spoof");
       const spoofFailure = await waitForWireMessage(messages, (message) => message.kind === "error" && (message.error as { commandId?: string } | undefined)?.commandId === "cmd-db-port-spoof");
       expect(spoofFailure.error).toMatchObject({ retryable: false, disposition: "fail_operation" });
       expect(server.ready).toBe(true);
       const bundle = server.evidenceBundle(tenantId);
       expect(bundle.records.some(({ record }) => record.reasonCode === "RT_DATABASE_UNAVAILABLE")).toBe(false);
-      expect(bundle.records.some(({ record }) => record.boundary === "db.rolled_back" && record.commandId === "cmd-db-port-spoof" && record.details?.sqlstate !== undefined)).toBe(false);
-      expect(bundle.records.some(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed" && record.commandId === "cmd-db-port-spoof" && record.details?.sqlstate === "42P01" && record.details.failureProvenance === "authoritative_abort")).toBe(true);
+      const spoofCommandPseudonym = pseudonymizeIdentifier("cmd-db-port-spoof", bundle.pseudonymizationKey);
+      expect(bundle.records.some(({ record }) => record.boundary === "db.rolled_back" && record.commandId === spoofCommandPseudonym && record.details?.sqlstate !== undefined)).toBe(false);
+      expect(bundle.records.some(({ record }) => record.boundary === "gateway.transaction_rolled_back_observed" && record.commandId === spoofCommandPseudonym && record.details?.sqlstate === "42P01" && record.details.failureProvenance === "authoritative_abort")).toBe(true);
     } finally { socket?.close(); await server.dispose(); }
   });
 
@@ -1737,7 +2163,7 @@ suite("Postgres event log and transactional outbox", () => {
           if (context.operation === "command" && !blockerOpen) {
             blockerOpen = true;
             await blocker!.query("BEGIN");
-            await blocker!.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`schema:better_realtime:command:${context.tenantId}:${context.principalNamespaceId}:${context.commandId}`]);
+            await blocker!.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [structuredTransactionLockKey(gateway!.store.storage.namespace, "command", [context.tenantId!, context.principalNamespaceId!, context.commandId!])]);
             throw new Error("Connection terminated unexpectedly");
           }
         } }

@@ -19,6 +19,10 @@ export default defineConfig({
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? "output/playwright/test-results",
   timeout: 45_000,
   fullyParallel: false,
+  // The repository-level browser matrix launches one fresh Playwright process
+  // per engine so each owns an isolated PostgreSQL harness. A direct
+  // single-project invocation remains deterministic with one worker.
+  workers: 1,
   retries: 0,
   reporter: [["list"]],
   globalTeardown: "./tests/e2e/global-teardown.ts",
@@ -30,7 +34,9 @@ export default defineConfig({
     viewport: { width: 1440, height: 1000 }
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } }
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    { name: "webkit", use: { ...devices["Desktop Safari"] } }
   ],
   webServer: [
     {

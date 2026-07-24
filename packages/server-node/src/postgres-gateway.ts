@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
-import { FlightRecorder } from "@realtime/diagnostics";
+import { FlightRecorder, type EvidenceRecord, type EvidenceRoutingContext, type RecordInput } from "@realtime/diagnostics";
 import { BETTER_REALTIME_SUBPROTOCOL, assertCapabilityInvariants, decodeWireMessage, isClientToServerMessage, type Capabilities, type CommandMessage, type CommandStatusRequest, type ContractIdentity, type ErrorInfo, type EventMessage, type JsonValue, type SessionOpen, type StreamSubscribe } from "@realtime/protocol";
-import { PostgresEventLog, TransactionOutcomeError, TransactionRolledBackError, type IdentityKey, type PostgresStoredEvent, type PostgresTransactionOptions, type TransactionOperationLease } from "@realtime/store-postgres";
+import { POSTGRES_FRAMEWORK_TABLES, PostgresEventLog, TransactionOutcomeError, TransactionRolledBackError, type CommandEventReservation, type IdentityKey, type PostgresStoredEvent, type PostgresTransactionOptions, type TransactionOperationLease } from "@realtime/store-postgres";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import { WebSocket, WebSocketServer } from "ws";
 import type { AuthenticatedPrincipal } from "./demo-auth.ts";
@@ -46,6 +46,7 @@ class ApplicationHookUnavailable extends Error {
 
 interface TrustedDatabaseQueryFailure { readonly infrastructureFailure: boolean; readonly sqlstate?: string }
 const trustedApplicationDatabaseCauses = new WeakMap<GatewayApplicationError, TrustedDatabaseQueryFailure>();
+const postgresFrameworkTableNames = new Set<string>(POSTGRES_FRAMEWORK_TABLES);
 
 export interface PostgresGatewayDatabase {
   query<TResult extends QueryResultRow = QueryResultRow>(text: string, values?: readonly unknown[]): Promise<QueryResult<TResult>>;
@@ -79,7 +80,7 @@ export interface PostgresGatewayCommandMutationContext {
   eventId: string;
 }
 
-export interface PostgresGatewayCommandPlan {
+export interface PostgresGatewayLegacyCommandPlan {
   stream: string;
   eventType: string;
   eventSchema: string;
@@ -88,13 +89,29 @@ export interface PostgresGatewayCommandPlan {
   mutate(database: PostgresGatewayDatabase, context: PostgresGatewayCommandMutationContext): Promise<JsonValue>;
 }
 
+export interface PostgresGatewayCommandTransactionContext {
+  tenantId: string;
+  principalNamespaceId: string;
+  commandId: string;
+  emit(stream: string, eventType: string, eventSchema: string, eventData: JsonValue): CommandEventReservation;
+}
+
+export interface PostgresGatewayCommandTransactionPlan {
+  targets: readonly string[];
+  resultSchema: string;
+  execute(database: PostgresGatewayDatabase, context: PostgresGatewayCommandTransactionContext): Promise<JsonValue>;
+}
+
+export type PostgresGatewayCommandPlan = PostgresGatewayLegacyCommandPlan | PostgresGatewayCommandTransactionPlan;
+
 export interface PostgresGatewayCommandResult {
   commandId: string;
   schema: string;
   result: JsonValue;
-  eventId: string;
-  stream: string;
-  sequence: number;
+  events: readonly PostgresStoredEvent[];
+  eventId?: string;
+  stream?: string;
+  sequence?: number;
 }
 
 export interface PostgresGatewayApplication {
@@ -134,6 +151,7 @@ export interface PostgresGatewayOptions {
   drainTimeoutMs?: number;
   recorderLimits?: { maxRecords: number; maxBytes: number; maxAgeMs: number };
   databaseRecorderLimits?: { maxRecords: number; maxBytes: number; maxAgeMs: number };
+  onEvidenceRecord?: (record: EvidenceRecord, routing: EvidenceRoutingContext) => void;
   topologyId?: string;
   authenticate(auth: JsonValue): Promise<AuthenticatedPrincipal> | AuthenticatedPrincipal;
   maintenanceIntervalMs?: number;
@@ -212,8 +230,8 @@ export class PostgresGatewayServer {
     this.drainTimeoutMs = boundedDuration(options.drainTimeoutMs ?? 250, "RT_DRAIN_TIMEOUT_INVALID");
     this.#testControlPlaneEnabled = Object.hasOwn(options, "enableTestControlPlane") && options.enableTestControlPlane === true;
     this.#originPolicy = compileWebSocketOriginPolicy(options.originPolicy);
-    this.recorder = new FlightRecorder({ runtimeId: options.runtimeId, ...(options.runtimeBootId ? { runtimeBootId: options.runtimeBootId } : {}), producerRole: "server", ...(options.recorderLimits ? { limits: options.recorderLimits } : {}) });
-    this.store = new PostgresEventLog(options.pool, new FlightRecorder({ runtimeId: `${options.runtimeId}:postgres`, ...(options.runtimeBootId ? { runtimeBootId: options.runtimeBootId } : {}), producerRole: "database", ...(options.databaseRecorderLimits ? { limits: options.databaseRecorderLimits } : options.recorderLimits ? { limits: options.recorderLimits } : {}) }), options.transactionOptions, options.storageSchema ? { schema: options.storageSchema } : {});
+    this.recorder = new FlightRecorder({ runtimeId: options.runtimeId, ...(options.runtimeBootId ? { runtimeBootId: options.runtimeBootId } : {}), producerRole: "server", ...(options.recorderLimits ? { limits: options.recorderLimits } : {}), ...(options.onEvidenceRecord ? { onRecord: options.onEvidenceRecord } : {}) });
+    this.store = new PostgresEventLog(options.pool, new FlightRecorder({ runtimeId: `${options.runtimeId}:postgres`, ...(options.runtimeBootId ? { runtimeBootId: options.runtimeBootId } : {}), producerRole: "database", ...(options.databaseRecorderLimits ? { limits: options.databaseRecorderLimits } : options.recorderLimits ? { limits: options.recorderLimits } : {}), ...(options.onEvidenceRecord ? { onRecord: options.onEvidenceRecord } : {}) }), options.transactionOptions, options.storageSchema ? { schema: options.storageSchema } : {});
     this.capabilities = {
       schemaValidation: true,
       eventIdentity: true,
@@ -322,6 +340,9 @@ export class PostgresGatewayServer {
   async #disposeOwned(): Promise<void> {
     await this.#releaseRuntimeAllocations(true);
     await new Promise<void>((resolve) => this.#wss.close(() => resolve()));
+    if (this.#drainTimer) clearTimeout(this.#drainTimer);
+    this.#drainTimer = undefined;
+    this.#clients.clear();
     this.#started = false;
   }
 
@@ -335,7 +356,12 @@ export class PostgresGatewayServer {
     if (this.#drainTimer) clearTimeout(this.#drainTimer);
     this.#publisherTimer = undefined; this.#pollTimer = undefined; this.#healthTimer = undefined; this.#maintenanceTimer = undefined; this.#drainTimer = undefined;
     for (const client of this.#clients) { this.#clearClientTimers(client); client.socket.close(1001, "gateway shutdown"); }
-    this.#clients.clear();
+    if (terminal && this.#clients.size > 0) {
+      this.#drainTimer = setTimeout(() => {
+        this.#drainTimer = undefined;
+        for (const client of this.#clients) client.socket.terminate();
+      }, this.drainTimeoutMs);
+    }
     this.#applicationHooks.clear();
     if (this.#listenDispose) await this.#listenDispose().catch(() => undefined);
     this.#listenDispose = undefined;
@@ -355,9 +381,9 @@ export class PostgresGatewayServer {
     this.#draining = true;
     this.#accepting = false;
     for (const client of this.#clients) {
-      this.recorder.record({ kind: "session.drain_started", boundary: "session.drain_started", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { reason: handoffReason } });
+      this.#recordForClient(client, { kind: "session.drain_started", boundary: "session.drain_started", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { reason: handoffReason } });
       for (const subscription of client.subscriptions.values()) {
-        this.recorder.record({ kind: "gateway.drain_started", boundary: "gateway.drain_started", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), stream: subscription.stream, causalHandoffId: handoffId(client.tenantId!, subscription.stream, subscription.cursor), details: { reason: handoffReason, cursor: subscription.cursor } });
+        this.#recordForClient(client, { kind: "gateway.drain_started", boundary: "gateway.drain_started", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), stream: subscription.stream, causalHandoffId: handoffId(client.tenantId!, subscription.stream, subscription.cursor), details: { reason: handoffReason, cursor: subscription.cursor } });
       }
       this.#error(client, { code: "RT_SERVER_DRAINING", scope: "session", disposition: "retry", retryable: true, retryAfterMs: 50 });
       client.socket.close(1012, "gateway draining");
@@ -389,14 +415,14 @@ export class PostgresGatewayServer {
       if (now - client.rateWindowStartedAt >= 1_000) { client.rateWindowStartedAt = now; client.rateWindowMessages = 0; }
       client.rateWindowMessages += 1;
       if (client.rateWindowMessages > this.maxInboundMessagesPerSecond) {
-        this.recorder.record({ kind: "resource.limit_exceeded", boundary: "message.rate_limited", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { resourceType: "inbound_rate", maxMessagesPerSecond: this.maxInboundMessagesPerSecond } });
+        this.#recordForClient(client, { kind: "resource.limit_exceeded", boundary: "message.rate_limited", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { resourceType: "inbound_rate", maxMessagesPerSecond: this.maxInboundMessagesPerSecond } });
         socket.close(1013, "message rate exceeded");
         return;
       }
       const raw = data.toString();
       const bytes = Buffer.byteLength(raw);
       if (client.queuedMessages + 1 > this.maxInboundQueueMessages || client.queuedBytes + bytes > this.maxInboundQueueBytes) {
-        this.recorder.record({ kind: "resource.limit_exceeded", boundary: "message.rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { resourceType: "inbound_queue", nextRecords: client.queuedMessages + 1, nextBytes: client.queuedBytes + bytes, maxRecords: this.maxInboundQueueMessages, maxBytes: this.maxInboundQueueBytes } });
+        this.#recordForClient(client, { kind: "resource.limit_exceeded", boundary: "message.rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { resourceType: "inbound_queue", nextRecords: client.queuedMessages + 1, nextBytes: client.queuedBytes + bytes, maxRecords: this.maxInboundQueueMessages, maxBytes: this.maxInboundQueueBytes } });
         socket.close(1009, "inbound queue capacity exceeded");
         return;
       }
@@ -409,7 +435,7 @@ export class PostgresGatewayServer {
       });
     });
     socket.on("error", (error: Error & { code?: string }) => {
-      this.recorder.record({ kind: "transport.receive_failed", boundary: "message.rejected", outcome: "failure", reasonCode: error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH" ? "RT_MESSAGE_TOO_LARGE" : "RT_TRANSPORT_RECEIVE_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { code: error.code ?? "unknown" } });
+      this.#recordForClient(client, { kind: "transport.receive_failed", boundary: "message.rejected", outcome: "failure", reasonCode: error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH" ? "RT_MESSAGE_TOO_LARGE" : "RT_TRANSPORT_RECEIVE_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { code: error.code ?? "unknown" } });
     });
     socket.on("close", () => {
       client.closed = true;
@@ -417,7 +443,7 @@ export class PostgresGatewayServer {
       this.#clearClientTimers(client);
       if (client.queuedMessages === 0) this.#clients.delete(client);
     });
-    this.recorder.record({ kind: "transport.opened", boundary: "transport.opened", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT });
+    this.#recordForClient(client, { kind: "transport.opened", boundary: "transport.opened", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT });
   }
 
   async #message(client: GatewayClient, raw: string): Promise<void> {
@@ -429,14 +455,14 @@ export class PostgresGatewayServer {
     if (!isClientToServerMessage(message)) { this.#error(client, { code: "RT_MESSAGE_INVALID", scope: "message", disposition: "fail_session", retryable: false }); client.socket.close(1008, "invalid direction"); return; }
     if (client.opened && (this.#draining || !this.ready)) {
       const reasonCode = this.#databaseReady && this.#listenerReady && this.#outboxReady ? "RT_SERVER_DRAINING" : "RT_DATABASE_UNAVAILABLE";
-      this.recorder.record({ kind: "session.operation_rejected", boundary: "session.operation_rejected", outcome: "failure", reasonCode, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), ...( "commandId" in message && typeof message.commandId === "string" ? { commandId: message.commandId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), kind: message.kind, durableSuccessClaimed: false } });
+      this.#recordForClient(client, { kind: "session.operation_rejected", boundary: "session.operation_rejected", outcome: "failure", reasonCode, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), ...( "commandId" in message && typeof message.commandId === "string" ? { commandId: message.commandId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), kind: message.kind, durableSuccessClaimed: false } });
       this.#error(client, { code: reasonCode, scope: "session", disposition: "retry", retryable: true, retryAfterMs: 250 });
       return;
     }
     switch (message.kind) {
       case "session.open": await this.#open(client, message); break;
       case "session.auth.update":
-        this.recorder.record({ kind: "session.unsupported_behavior", boundary: "session.unsupported_behavior", outcome: "failure", reasonCode: "RT_AUTH_REFRESH_UNSUPPORTED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { kind: message.kind } });
+        this.#recordForClient(client, { kind: "session.unsupported_behavior", boundary: "session.unsupported_behavior", outcome: "failure", reasonCode: "RT_AUTH_REFRESH_UNSUPPORTED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { kind: message.kind } });
         this.#error(client, { code: "RT_AUTH_REFRESH_UNSUPPORTED", scope: "session", disposition: "fail_session", retryable: false });
         client.socket.close(1008, "auth refresh unsupported");
         break;
@@ -477,14 +503,14 @@ export class PostgresGatewayServer {
     client.sessionId = `session_${crypto.randomUUID()}`;
     client.sessionGeneration = ++this.#sessionGeneration;
     this.#send(client, { kind: "session.ready", sessionId: client.sessionId, sessionGeneration: client.sessionGeneration, authGeneration: 1, resumeStatus: message.resume ? "unavailable" : "fresh", ...(message.resume ? { resumeUnavailableReason: "not_found" } : {}), capabilities: this.capabilities, heartbeat: { mode: "application", ...this.heartbeat } });
-    this.recorder.record({ kind: "session.accepted", boundary: "session.accepted", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: client.traceId, sessionId: client.sessionId, details: { tenantId: client.tenantId, principalNamespaceId, sessionGeneration: client.sessionGeneration } });
+    this.#recordForClient(client, { kind: "session.accepted", boundary: "session.accepted", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: client.traceId, sessionId: client.sessionId, details: { tenantId: client.tenantId, principalNamespaceId, sessionGeneration: client.sessionGeneration } });
     client.heartbeatInterval = setInterval(() => this.#ping(client), this.heartbeat.intervalMs);
   }
 
   async #subscribe(client: GatewayClient, message: StreamSubscribe): Promise<void> {
     this.#requirePrincipal(client);
     if (client.subscriptions.size >= this.maxSubscriptionsPerClient) {
-      this.recorder.record({ kind: "resource.limit_exceeded", boundary: "subscription.rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId: client.tenantId, resourceType: "subscription", nextRecords: client.subscriptions.size + 1, maxRecords: this.maxSubscriptionsPerClient } });
+      this.#recordForClient(client, { kind: "resource.limit_exceeded", boundary: "subscription.rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId: client.tenantId, resourceType: "subscription", nextRecords: client.subscriptions.size + 1, maxRecords: this.maxSubscriptionsPerClient } });
       this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "stream", disposition: "fail_operation", retryable: false, stream: message.stream });
       return;
     }
@@ -496,7 +522,7 @@ export class PostgresGatewayServer {
         : client.permissions?.has("room:42:read") === true && message.stream === "room:42" && typeof message.input === "object" && message.input !== null && !Array.isArray(message.input) && (message.input as Record<string, JsonValue>).roomId === "42";
     } catch (error) { throw new GatewayApplicationError("stream", error, undefined, message.stream); }
     if (!authorized) {
-      this.recorder.record({ kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), stream: message.stream, details: { response: "generic" } });
+      this.#recordForClient(client, { kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), stream: message.stream, details: { response: "generic" } });
       this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "stream", disposition: "fail_operation", retryable: false, stream: message.stream });
       return;
     }
@@ -522,8 +548,8 @@ export class PostgresGatewayServer {
       const replayId = `replay_${crypto.randomUUID()}`;
       const causalHandoffId = handoffId(tenantId, stream, message.after);
       if (!this.#send(client, { kind: "stream.subscribed", requestId: message.requestId, subscriptionId, stream, mode: "replay", baseline: message.after, head }) || !this.#send(client, { kind: "stream.replay.begin", subscriptionId, replayId, stream, requestedAfter: message.after, head })) { client.subscriptions.delete(subscriptionId); return; }
-      this.recorder.record({ kind: "replay.selected", boundary: "replay.selected", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, causalHandoffId, stream, details: { tenantId, requestedAfter: message.after, head } });
-      this.recorder.record({ kind: "causal.handoff", boundary: "causal.handoff", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, causalHandoffId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, requestedAfter: message.after } });
+      this.#recordForTenant(tenantId, { kind: "replay.selected", boundary: "replay.selected", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, causalHandoffId, stream, details: { tenantId, requestedAfter: message.after, head } });
+      this.#recordForTenant(tenantId, { kind: "causal.handoff", boundary: "causal.handoff", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, causalHandoffId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, requestedAfter: message.after } });
       const replay = await this.#deliverThroughHead(client, subscriptionId, tenantId, stream, message.after, decodeSequence(head), "replay", replayId, async () => {
         if (!this.#interleaveNextReplay) return;
         this.#interleaveNextReplay = false;
@@ -558,13 +584,13 @@ export class PostgresGatewayServer {
     state.cursor = snapshot.cursor;
     const resyncId = `resync_${crypto.randomUUID()}`;
     const replayId = `replay_${crypto.randomUUID()}`;
-    if (!this.#send(client, { kind: "stream.subscribed", requestId: message.requestId, subscriptionId, stream: message.stream, mode: "snapshot", baseline: message.after ?? null, head: snapshot.head }) || !this.#send(client, { kind: "stream.resync.required", subscriptionId, resyncId, stream: message.stream, reason }) || !this.#send(client, { kind: "stream.snapshot", subscriptionId, resyncId, snapshotId: `snapshot_${crypto.randomUUID()}`, stream: message.stream, cursor: snapshot.cursor, head: snapshot.head, schema: snapshotSchema, state: snapshot.state })) { this.recorder.record({ kind: "snapshot.delivery_failed", boundary: "snapshot.fence_released", outcome: "failure", reasonCode: "RT_RECOVERY_SEND_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId, cursor: snapshot.cursor, head: snapshot.head } }); client.subscriptions.delete(subscriptionId); return; }
+    if (!this.#send(client, { kind: "stream.subscribed", requestId: message.requestId, subscriptionId, stream: message.stream, mode: "snapshot", baseline: message.after ?? null, head: snapshot.head }) || !this.#send(client, { kind: "stream.resync.required", subscriptionId, resyncId, stream: message.stream, reason }) || !this.#send(client, { kind: "stream.snapshot", subscriptionId, resyncId, snapshotId: `snapshot_${crypto.randomUUID()}`, stream: message.stream, cursor: snapshot.cursor, head: snapshot.head, schema: snapshotSchema, state: snapshot.state })) { this.#recordForTenant(tenantId, { kind: "snapshot.delivery_failed", boundary: "snapshot.fence_released", outcome: "failure", reasonCode: "RT_RECOVERY_SEND_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId, cursor: snapshot.cursor, head: snapshot.head } }); client.subscriptions.delete(subscriptionId); return; }
     const catchup = await this.#deliverThroughHead(client, subscriptionId, tenantId, message.stream, snapshot.cursor, snapshot.headSequence, "snapshot_catchup", replayId);
     if (!catchup.complete) { client.subscriptions.delete(subscriptionId); return; }
     state.cursor = snapshot.head;
     if (!this.#send(client, { kind: "stream.replay.complete", subscriptionId, replayId, stream: message.stream, through: snapshot.head })) { client.subscriptions.delete(subscriptionId); return; }
     state.recovering = false;
-    this.recorder.record({ kind: "snapshot.fence_released", boundary: "snapshot.fence_released", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId, cursor: snapshot.cursor, head: snapshot.head, catchup: catchup.count } });
+    this.#recordForTenant(tenantId, { kind: "snapshot.fence_released", boundary: "snapshot.fence_released", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream: message.stream, details: { tenantId, cursor: snapshot.cursor, head: snapshot.head, catchup: catchup.count } });
     await this.#catchUpAll();
   }
 
@@ -575,9 +601,9 @@ export class PostgresGatewayServer {
     while (expectedSequence <= headSequence) {
       const page = await this.store.readAfter(tenantId, stream, current, 1_000);
       const selected = page.filter((event) => event.sequence <= headSequence);
-      if (selected.length === 0) { this.recorder.record({ kind: "recovery.gap_unresolved", boundary: "event.catchup_completed", outcome: "failure", reasonCode: "RT_GAP_UNRESOLVED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, expectedSequence, headSequence } }); return { complete: false, count }; }
+      if (selected.length === 0) { this.#recordForTenant(tenantId, { kind: "recovery.gap_unresolved", boundary: "event.catchup_completed", outcome: "failure", reasonCode: "RT_GAP_UNRESOLVED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, expectedSequence, headSequence } }); return { complete: false, count }; }
       for (const event of selected) {
-        if (event.sequence !== expectedSequence || !this.#sendEvent(client, subscriptionId, event, deliveryMode, replayId)) { this.recorder.record({ kind: "recovery.delivery_failed", boundary: "event.catchup_completed", outcome: "failure", reasonCode: event.sequence !== expectedSequence ? "RT_GAP_UNRESOLVED" : "RT_RECOVERY_SEND_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, eventId: event.eventId, details: { tenantId, expectedSequence, receivedSequence: event.sequence, headSequence } }); return { complete: false, count }; }
+        if (event.sequence !== expectedSequence || !this.#sendEvent(client, subscriptionId, event, deliveryMode, replayId)) { this.#recordForTenant(tenantId, { kind: "recovery.delivery_failed", boundary: "event.catchup_completed", outcome: "failure", reasonCode: event.sequence !== expectedSequence ? "RT_GAP_UNRESOLVED" : "RT_RECOVERY_SEND_FAILED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, eventId: event.eventId, details: { tenantId, expectedSequence, receivedSequence: event.sequence, headSequence } }); return { complete: false, count }; }
         current = event.cursor;
         expectedSequence = event.sequence + 1;
         count += 1;
@@ -585,7 +611,7 @@ export class PostgresGatewayServer {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
-    this.recorder.record({ kind: "event.catchup_completed", boundary: "event.catchup_completed", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, throughSequence: headSequence, count, pages: Math.ceil(count / 1_000) } });
+    this.#recordForTenant(tenantId, { kind: "event.catchup_completed", boundary: "event.catchup_completed", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, traceId: replayId, ...(client.sessionId ? { sessionId: client.sessionId } : {}), stream, details: { tenantId, throughSequence: headSequence, count, pages: Math.ceil(count / 1_000) } });
     return { complete: true, count };
   }
 
@@ -595,7 +621,7 @@ export class PostgresGatewayServer {
     let authorized: boolean;
     try { authorized = this.options.application?.authorizeCommand ? await this.#runApplicationHook(client, "command_authorization", () => this.options.application!.authorizeCommand!(applicationContext, message)) : client.permissions?.has("room:42:write") === true; }
     catch (error) { throw new GatewayApplicationError("command", error, message.commandId); }
-    if (!authorized) { this.recorder.record({ kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, response: "generic" } }); this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "command", disposition: "fail_operation", retryable: false, commandId: message.commandId }); return; }
+    if (!authorized) { this.#recordForClient(client, { kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, response: "generic" } }); this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "command", disposition: "fail_operation", retryable: false, commandId: message.commandId }); return; }
     let plan: PostgresGatewayCommandPlan | null;
     try {
       plan = this.options.application?.executeCommand
@@ -603,22 +629,47 @@ export class PostgresGatewayServer {
         : this.#defaultCommandPlan(message);
     } catch (error) { throw new GatewayApplicationError("command", error, message.commandId); }
     if (!plan) { this.#rejectCommand(client, message.commandId); return; }
-    let execution;
+    let execution: { status: "completed"; duplicate: boolean; result: JsonValue; resultSchema: string; events: PostgresStoredEvent[] } | { status: "expired"; duplicate: true };
     this.#commandsActive += 1;
     try {
-      execution = await this.store.executeCommand({ tenantId: client.tenantId!, principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, commandType: message.type, commandSchema: message.schema, commandInput: message.input, stream: plan.stream, eventType: plan.eventType, schema: plan.eventSchema, data: plan.eventData, resultSchema: plan.resultSchema, commandResultRetentionMs: this.capabilities.commandResultRetentionMs!, idempotencyRetentionMs: this.capabilities.idempotencyRetentionMs!, mutate: async (database, sequence, eventId, operation) => {
-        return withApplicationDatabase(database, operation, (error) => new GatewayApplicationError("command", error, message.commandId), (applicationDatabase) => this.#trackApplicationWork(client, "command_mutation", () => plan.mutate(applicationDatabase, { tenantId: client.tenantId!, principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, stream: plan.stream, sequence, eventId })));
-      } });
+      if (isTransactionCommandPlan(plan)) {
+        execution = await this.store.executeCommandTransaction({
+          tenantId: client.tenantId!,
+          principalNamespaceId: client.principalNamespaceId!,
+          commandId: message.commandId,
+          commandType: message.type,
+          commandSchema: message.schema,
+          commandInput: message.input,
+          targets: plan.targets,
+          resultSchema: plan.resultSchema,
+          commandResultRetentionMs: this.capabilities.commandResultRetentionMs!,
+          idempotencyRetentionMs: this.capabilities.idempotencyRetentionMs!,
+          execute: async (database, transaction) => withApplicationDatabase(database, transaction.operation, (error) => new GatewayApplicationError("command", error, message.commandId), (applicationDatabase) => this.#trackApplicationWork(client, "command_mutation", () => plan.execute(applicationDatabase, {
+            tenantId: client.tenantId!,
+            principalNamespaceId: client.principalNamespaceId!,
+            commandId: message.commandId,
+            emit: transaction.emit
+          })))
+        });
+      } else {
+        const legacy = await this.store.executeCommand({ tenantId: client.tenantId!, principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, commandType: message.type, commandSchema: message.schema, commandInput: message.input, stream: plan.stream, eventType: plan.eventType, schema: plan.eventSchema, data: plan.eventData, resultSchema: plan.resultSchema, commandResultRetentionMs: this.capabilities.commandResultRetentionMs!, idempotencyRetentionMs: this.capabilities.idempotencyRetentionMs!, mutate: async (database, sequence, eventId, operation) => {
+          return withApplicationDatabase(database, operation, (error) => new GatewayApplicationError("command", error, message.commandId), (applicationDatabase) => this.#trackApplicationWork(client, "command_mutation", () => plan.mutate(applicationDatabase, { tenantId: client.tenantId!, principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, stream: plan.stream, sequence, eventId })));
+        } });
+        execution = legacy.status === "completed" ? { ...legacy, events: [legacy.event] } : legacy;
+      }
     } catch (error) {
       if (error instanceof Error && error.message === "RT_COMMAND_INTENT_CONFLICT") { this.#rejectCommand(client, message.commandId); return; }
       throw error;
     } finally { this.#commandsActive -= 1; }
     if (execution.status === "expired") { this.#send(client, { kind: "command.receipt", commandId: message.commandId, state: "expired", error: { code: "RT_COMMAND_EXPIRED", scope: "command", disposition: "fail_operation", retryable: false, commandId: message.commandId } }); return; }
-    if (!this.#validCommandResult(client, { commandId: message.commandId, schema: execution.resultSchema, result: execution.result, eventId: execution.event.eventId, stream: execution.event.stream, sequence: execution.event.sequence })) { this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "command", disposition: "fail_operation", retryable: false, commandId: message.commandId }); return; }
+    const firstEvent = execution.events[0];
+    if (!this.#validCommandResult(client, { commandId: message.commandId, schema: execution.resultSchema, result: execution.result, events: execution.events, ...(firstEvent ? { eventId: firstEvent.eventId, stream: firstEvent.stream, sequence: firstEvent.sequence } : {}) })) { this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "command", disposition: "fail_operation", retryable: false, commandId: message.commandId }); return; }
     if (this.#loseNextAck) { this.#loseNextAck = false; client.socket.close(1012, "injected ACK loss"); return; }
     this.#send(client, { kind: "command.receipt", commandId: message.commandId, state: "accepted" });
-    this.#send(client, { kind: "command.completed", commandId: message.commandId, schema: execution.resultSchema, result: execution.result, causalEventIds: [execution.event.eventId], causalEvents: [{ eventId: execution.event.eventId, stream: execution.event.stream, sequence: execution.event.sequence }] });
-    this.recorder.record({ kind: "command.completed", boundary: "command.completed", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: message.commandId, eventId: execution.event.eventId, causalHandoffId: `event:${execution.event.eventId}`, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, duplicate: execution.duplicate } });
+    const causalEvents = execution.events.map((event) => ({ eventId: event.eventId, stream: event.stream, sequence: event.sequence }));
+    this.#send(client, { kind: "command.completed", commandId: message.commandId, schema: execution.resultSchema, result: execution.result, causalEventIds: causalEvents.map((event) => event.eventId), causalEvents });
+    this.#recordForClient(client, { kind: "command.completed", boundary: "command.completed", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: message.commandId, ...(firstEvent ? { eventId: firstEvent.eventId, causalHandoffId: `event:${firstEvent.eventId}` } : {}), details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, duplicate: execution.duplicate, causalEventCount: causalEvents.length } });
+    this.#recordCommandCausalEvents(client, message.commandId, execution.events);
     await this.#publishTick();
     await this.#catchUpAll();
   }
@@ -627,16 +678,19 @@ export class PostgresGatewayServer {
     this.#requirePrincipal(client);
     const status = await this.store.commandStatus(client.tenantId!, client.principalNamespaceId!, message.commandId);
     if (status.state === "unknown") {
-      if (await this.store.commandExistsForOtherPrincipal(client.tenantId!, client.principalNamespaceId!, message.commandId)) this.recorder.record({ kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, response: "unknown", existenceExposed: false } });
+      if (await this.store.commandExistsForOtherPrincipal(client.tenantId!, client.principalNamespaceId!, message.commandId)) this.#recordForClient(client, { kind: "authorization.denied", boundary: "authorization.denied", outcome: "failure", reasonCode: "RT_AUTH_REQUIRED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, response: "unknown", existenceExposed: false } });
       this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "unknown" });
     } else if (status.state === "expired") this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "expired" });
     else {
-      if (!this.#validCommandResult(client, { commandId: message.commandId, schema: status.resultSchema, result: status.result, eventId: status.eventId, stream: status.eventStream, sequence: status.eventSequence })) { this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "unknown" }); return; }
-      this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "completed", schema: status.resultSchema, result: status.result, causalEventIds: [status.eventId], causalEvents: [{ eventId: status.eventId, stream: status.eventStream, sequence: status.eventSequence }] });
-      this.recorder.record({ kind: "command.status_reconciled", boundary: "command.status_reconciled", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, eventId: status.eventId, causalHandoffId: `event:${status.eventId}`, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, state: status.state } });
+      const firstEvent = status.events[0];
+      if (!this.#validCommandResult(client, { commandId: message.commandId, schema: status.resultSchema, result: status.result, events: status.events, ...(firstEvent ? { eventId: firstEvent.eventId, stream: firstEvent.stream, sequence: firstEvent.sequence } : {}) })) { this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "unknown" }); return; }
+      const causalEvents = status.events.map((event) => ({ eventId: event.eventId, stream: event.stream, sequence: event.sequence }));
+      this.#send(client, { kind: "command.status", requestId: message.requestId, commandId: message.commandId, state: "completed", schema: status.resultSchema, result: status.result, causalEventIds: causalEvents.map((event) => event.eventId), causalEvents });
+      this.#recordForClient(client, { kind: "command.status_reconciled", boundary: "command.status_reconciled", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, ...(firstEvent ? { eventId: firstEvent.eventId, causalHandoffId: `event:${firstEvent.eventId}` } : {}), details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, state: status.state, causalEventCount: causalEvents.length } });
+      this.#recordCommandCausalEvents(client, message.commandId, status.events);
     }
-    this.recorder.record({ kind: "security.non_enumerating_response", boundary: "security.non_enumerating_response", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, wireState: status.state === "unknown" ? "unknown" : status.state } });
-    this.recorder.record({ kind: "command.status_queried", boundary: "command.status_queried", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, state: status.state } });
+    this.#recordForClient(client, { kind: "security.non_enumerating_response", boundary: "security.non_enumerating_response", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, wireState: status.state === "unknown" ? "unknown" : status.state } });
+    this.#recordForClient(client, { kind: "command.status_queried", boundary: "command.status_queried", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), principalNamespaceId: client.principalNamespaceId!, commandId: message.commandId, details: { tenantId: client.tenantId, principalNamespaceId: client.principalNamespaceId, state: status.state } });
   }
 
   async #publishTick(): Promise<void> {
@@ -655,7 +709,7 @@ export class PostgresGatewayServer {
 
   #trackApplicationWork<T>(client: GatewayClient, operation: string, factory: () => Promise<T> | T): Promise<T> {
     if (this.#applicationHooks.size >= this.maxApplicationHooks) {
-      this.recorder.record({ kind: "resource.limit_exceeded", boundary: "application.hook_rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), resourceType: "application_hook", operation, nextRecords: this.#applicationHooks.size + 1, maxRecords: this.maxApplicationHooks } });
+      this.#recordForClient(client, { kind: "resource.limit_exceeded", boundary: "application.hook_rejected", outcome: "failure", reasonCode: "RT_RESOURCE_LIMIT_EXCEEDED", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.sessionId ? { sessionId: client.sessionId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), resourceType: "application_hook", operation, nextRecords: this.#applicationHooks.size + 1, maxRecords: this.maxApplicationHooks } });
       throw new ApplicationHookUnavailable("capacity");
     }
     const registry = this.#applicationHooks;
@@ -704,6 +758,40 @@ export class PostgresGatewayServer {
     finally { this.#catchupActive = false; }
   }
 
+  #recordForTenant(tenantId: string | undefined, input: RecordInput): void {
+    this.recorder.record(input, tenantId ? { tenantId } : {});
+  }
+
+  #recordForClient(client: GatewayClient, input: RecordInput): void {
+    this.#recordForTenant(client.tenantId, input);
+  }
+
+  #recordCommandCausalEvents(client: GatewayClient, commandId: string, events: readonly PostgresStoredEvent[]): void {
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!;
+      this.#recordForClient(client, {
+        kind: "command.causal_event_linked",
+        boundary: "command.causal_event_linked",
+        outcome: "success",
+        ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT,
+        ...(client.traceId ? { traceId: client.traceId } : {}),
+        ...(client.sessionId ? { sessionId: client.sessionId } : {}),
+        ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}),
+        commandId,
+        eventId: event.eventId,
+        stream: event.stream,
+        causalHandoffId: `event:${event.eventId}`,
+        details: {
+          tenantId: client.tenantId,
+          ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}),
+          index,
+          count: events.length,
+          eventSequence: event.sequence
+        }
+      });
+    }
+  }
+
   #sendEvent(client: GatewayClient, subscriptionId: string, event: PostgresStoredEvent, deliveryMode: EventMessage["deliveryMode"], replayId?: string, deliveryId = `delivery_${crypto.randomUUID()}`): boolean {
     const validator = this.options.application?.validateOutboundEvent;
     const subscription = client.subscriptions.get(subscriptionId);
@@ -714,12 +802,12 @@ export class PostgresGatewayServer {
     }
     if (!valid) {
       client.subscriptions.delete(subscriptionId);
-      this.recorder.record({ kind: "event.outbound_validation_failed", boundary: "event.delivery_attempted", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(replayId ? { traceId: replayId } : client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), stream: event.stream, eventId: event.eventId, ...(event.commandId ? { commandId: event.commandId } : {}), details: { tenantId: client.tenantId, ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), schema: event.schema, type: event.type, delivered: false } });
+      this.#recordForClient(client, { kind: "event.outbound_validation_failed", boundary: "event.delivery_attempted", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(replayId ? { traceId: replayId } : client.traceId ? { traceId: client.traceId } : {}), ...(client.sessionId ? { sessionId: client.sessionId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), stream: event.stream, eventId: event.eventId, ...(event.commandId ? { commandId: event.commandId } : {}), details: { tenantId: client.tenantId, ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), schema: event.schema, type: event.type, delivered: false } });
       this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "stream", disposition: "fail_operation", retryable: false, stream: event.stream });
       return false;
     }
     const sent = this.#send(client, { kind: "event", deliveryId, sessionGeneration: client.sessionGeneration, deliveryMode, ...(replayId ? { replayId } : {}), eventId: event.eventId, stream: event.stream, sequence: event.sequence, cursor: event.cursor, type: event.type, schema: event.schema, ...(event.commandId ? { commandId: event.commandId } : {}), occurredAt: event.occurredAt, data: event.data });
-    if (sent) this.recorder.record({ kind: "event.delivery_attempted", boundary: "event.delivery_attempted", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(replayId ? { traceId: replayId } : client.traceId ? { traceId: client.traceId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), stream: event.stream, eventId: event.eventId, ...(event.commandId ? { commandId: event.commandId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), ...(client.principalNamespaceId ? { observerPrincipalNamespaceId: client.principalNamespaceId } : {}), deliveryMode, deliveryId } });
+    if (sent) this.#recordForClient(client, { kind: "event.delivery_attempted", boundary: "event.delivery_attempted", outcome: "success", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(replayId ? { traceId: replayId } : client.traceId ? { traceId: client.traceId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), stream: event.stream, eventId: event.eventId, ...(event.commandId ? { commandId: event.commandId } : {}), details: { ...(client.tenantId ? { tenantId: client.tenantId } : {}), ...(event.commandPrincipalNamespaceId ? { principalNamespaceId: event.commandPrincipalNamespaceId } : {}), ...(client.principalNamespaceId ? { observerPrincipalNamespaceId: client.principalNamespaceId } : {}), deliveryMode, deliveryId } });
     return sent;
   }
 
@@ -731,7 +819,7 @@ export class PostgresGatewayServer {
     const socketWritableBytes = (client.socket as unknown as { _socket?: { writableLength?: number } })._socket?.writableLength ?? 0;
     const queuedBytes = Math.max(client.socket.bufferedAmount, socketWritableBytes);
     if (queuedBytes + bytes > this.maxOutboundBufferedBytes) {
-      this.recorder.record({ kind: "slow_consumer.disconnected", boundary: "slow_consumer.disconnected", outcome: "failure", reasonCode: "RT_SLOW_CONSUMER", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), details: { bufferedAmount: client.socket.bufferedAmount, socketWritableBytes, nextMessageBytes: bytes, maxOutboundBufferedBytes: this.maxOutboundBufferedBytes } });
+      this.#recordForClient(client, { kind: "slow_consumer.disconnected", boundary: "slow_consumer.disconnected", outcome: "failure", reasonCode: "RT_SLOW_CONSUMER", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), details: { bufferedAmount: client.socket.bufferedAmount, socketWritableBytes, nextMessageBytes: bytes, maxOutboundBufferedBytes: this.maxOutboundBufferedBytes } });
       client.socket.close(1013, "slow consumer");
       return false;
     }
@@ -764,7 +852,7 @@ export class PostgresGatewayServer {
     const validator = this.options.application?.validateCommandResult;
     try { if (!validator || validator(this.#applicationContext(client), result)) return true; }
     catch { /* an application validator failure is not database unavailability */ }
-    this.recorder.record({ kind: "command.outbound_validation_failed", boundary: "command.completed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: result.commandId, eventId: result.eventId, stream: result.stream, details: { ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), schema: result.schema, delivered: false } });
+    this.#recordForClient(client, { kind: "command.outbound_validation_failed", boundary: "command.completed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), commandId: result.commandId, ...(result.eventId ? { eventId: result.eventId } : {}), ...(result.stream ? { stream: result.stream } : {}), details: { ...(client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), schema: result.schema, delivered: false } });
     return false;
   }
 
@@ -805,22 +893,22 @@ export class PostgresGatewayServer {
       if (queryFailure ? queryFailure.infrastructureFailure : isDatabaseInfrastructureFailure(authoritativeCause)) { this.#databaseUnavailable(authoritativeCause, client.tenantId); return; }
       const sqlstate = queryFailure?.sqlstate ?? errorCode(authoritativeCause);
       const retryable = sqlstate === "40001" || sqlstate === "40P01";
-      this.recorder.record({ kind: "gateway.transaction_rolled_back_observed", boundary: "gateway.transaction_rolled_back_observed", outcome: "failure", reasonCode: error.code, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, transactionId: error.context.transactionId, transactionOperation: error.context.operation, ...(error.context.operationCorrelationId ? { operationCorrelationId: error.context.operationCorrelationId } : {}), ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), causalHandoffId: `transaction:${error.context.transactionId}`, ...(error.context.commandId ? { commandId: error.context.commandId } : {}), ...(error.context.eventId ? { eventId: error.context.eventId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: error.context.tenantId ?? client.tenantId, ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), observer: "gateway", producerClaimed: false, durableSuccessClaimed: false, failureProvenance: "authoritative_abort", ...(sqlstate ? { sqlstate } : {}), retryable } });
+      this.#recordForClient(client, { kind: "gateway.transaction_rolled_back_observed", boundary: "gateway.transaction_rolled_back_observed", outcome: "failure", reasonCode: error.code, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, transactionId: error.context.transactionId, transactionOperation: error.context.operation, ...(error.context.operationCorrelationId ? { operationCorrelationId: error.context.operationCorrelationId } : {}), ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), causalHandoffId: `transaction:${error.context.transactionId}`, ...(error.context.commandId ? { commandId: error.context.commandId } : {}), ...(error.context.eventId ? { eventId: error.context.eventId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: error.context.tenantId ?? client.tenantId, ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), observer: "gateway", producerClaimed: false, durableSuccessClaimed: false, failureProvenance: "authoritative_abort", ...(sqlstate ? { sqlstate } : {}), retryable } });
       this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: error.context.commandId ? "command" : "runtime", disposition: retryable ? "retry" : "fail_operation", retryable, ...(retryable ? { retryAfterMs: 50 } : {}), ...(error.context.commandId ? { commandId: error.context.commandId } : {}) });
       return;
     }
     if (error instanceof TransactionOutcomeError) {
-      this.recorder.record({ kind: "gateway.transaction_outcome_indeterminate_observed", boundary: "gateway.transaction_outcome_indeterminate_observed", outcome: "unknown", reasonCode: error.code, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, transactionId: error.context.transactionId, transactionOperation: error.context.operation, ...(error.context.operationCorrelationId ? { operationCorrelationId: error.context.operationCorrelationId } : {}), ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), causalHandoffId: `transaction:${error.context.transactionId}`, ...(error.context.commandId ? { commandId: error.context.commandId } : {}), ...(error.context.eventId ? { eventId: error.context.eventId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: error.context.tenantId ?? client.tenantId, ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), observer: "gateway", producerClaimed: false, durableSuccessClaimed: false } });
+      this.#recordForClient(client, { kind: "gateway.transaction_outcome_indeterminate_observed", boundary: "gateway.transaction_outcome_indeterminate_observed", outcome: "unknown", reasonCode: error.code, ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, transactionId: error.context.transactionId, transactionOperation: error.context.operation, ...(error.context.operationCorrelationId ? { operationCorrelationId: error.context.operationCorrelationId } : {}), ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), causalHandoffId: `transaction:${error.context.transactionId}`, ...(error.context.commandId ? { commandId: error.context.commandId } : {}), ...(error.context.eventId ? { eventId: error.context.eventId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: error.context.tenantId ?? client.tenantId, ...(error.context.principalNamespaceId ? { principalNamespaceId: error.context.principalNamespaceId } : {}), observer: "gateway", producerClaimed: false, durableSuccessClaimed: false } });
       this.#error(client, { code: error.code, scope: error.context.commandId ? "command" : "runtime", disposition: "retry", retryable: true, retryAfterMs: 250, ...(error.context.commandId ? { commandId: error.context.commandId } : {}) });
       return;
     }
     if (isDatabaseInfrastructureFailure(error)) { this.#databaseUnavailable(error, client.tenantId); return; }
-    this.recorder.record({ kind: "operation.failed", boundary: "operation.failed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: client.tenantId, errorType: error instanceof Error ? error.name : typeof error, durableSuccessClaimed: false } });
+    this.#recordForClient(client, { kind: "operation.failed", boundary: "operation.failed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(client.traceId ? { traceId: client.traceId } : {}), details: { tenantId: client.tenantId, errorType: error instanceof Error ? error.name : typeof error, durableSuccessClaimed: false } });
     this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: "runtime", disposition: "fail_operation", retryable: false });
   }
 
   #applicationFailure(client: GatewayClient, error: GatewayApplicationError, transactionId?: string): void {
-    this.recorder.record({ kind: "application.operation_failed", boundary: "application.operation_failed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(transactionId ? { transactionId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), ...(error.commandId && client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), ...(error.commandId ? { commandId: error.commandId } : {}), ...(error.stream ? { stream: error.stream } : {}), details: { tenantId: client.tenantId, ...(error.commandId && client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), errorType: error.originalError instanceof Error ? error.originalError.name : typeof error.originalError, provenance: "application", durableSuccessClaimed: false } });
+    this.#recordForClient(client, { kind: "application.operation_failed", boundary: "application.operation_failed", outcome: "failure", reasonCode: "RT_OPERATION_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, ...(transactionId ? { transactionId } : {}), ...(client.traceId ? { traceId: client.traceId } : {}), ...(error.commandId && client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), ...(error.commandId ? { commandId: error.commandId } : {}), ...(error.stream ? { stream: error.stream } : {}), details: { tenantId: client.tenantId, ...(error.commandId && client.principalNamespaceId ? { principalNamespaceId: client.principalNamespaceId } : {}), errorType: error.originalError instanceof Error ? error.originalError.name : typeof error.originalError, provenance: "application", durableSuccessClaimed: false } });
     this.#error(client, { code: "RT_OPERATION_UNAVAILABLE", scope: error.scope, disposition: "fail_operation", retryable: false, ...(error.commandId ? { commandId: error.commandId } : {}), ...(error.stream ? { stream: error.stream } : {}) });
   }
 
@@ -830,8 +918,8 @@ export class PostgresGatewayServer {
     this.#listenerReady = false;
     this.#outboxReady = false;
     this.#accepting = false;
-    this.recorder.record({ kind: "database.operation_failed", boundary: "database.operation_failed", outcome: "failure", reasonCode: "RT_DATABASE_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { operation: "gateway_health_or_durable_operation", ...(tenantId ? { tenantId } : {}), error: error instanceof Error ? error.message : String(error) } });
-    this.recorder.record({ kind: "capability.health_changed", boundary: "capability.health_changed", outcome: "failure", reasonCode: "RT_DATABASE_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { ...this.#healthDetails(), ...(tenantId ? { tenantId } : {}), error: error instanceof Error ? error.message : String(error) } });
+    this.#recordForTenant(tenantId, { kind: "database.operation_failed", boundary: "database.operation_failed", outcome: "failure", reasonCode: "RT_DATABASE_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { operation: "gateway_health_or_durable_operation", ...(tenantId ? { tenantId } : {}), error: error instanceof Error ? error.message : String(error) } });
+    this.#recordForTenant(tenantId, { kind: "capability.health_changed", boundary: "capability.health_changed", outcome: "failure", reasonCode: "RT_DATABASE_UNAVAILABLE", ...POSTGRES_GATEWAY_EVIDENCE_COMPONENT, details: { ...this.#healthDetails(), ...(tenantId ? { tenantId } : {}), error: error instanceof Error ? error.message : String(error) } });
     for (const client of this.#clients) this.#error(client, { code: "RT_DATABASE_UNAVAILABLE", scope: "runtime", disposition: "retry", retryable: true, retryAfterMs: 250 });
     this.gracefulDrain("database_unavailable");
   }
@@ -882,6 +970,10 @@ function positiveBound(value: number, code: string): number {
 function boundedDuration(value: number, code: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 300_000) throw new Error(code);
   return value;
+}
+
+function isTransactionCommandPlan(plan: PostgresGatewayCommandPlan): plan is PostgresGatewayCommandTransactionPlan {
+  return "targets" in plan && Array.isArray(plan.targets) && typeof plan.execute === "function";
 }
 
 function validateHeartbeat(heartbeat: { intervalMs: number; timeoutMs: number }): { intervalMs: number; timeoutMs: number } {
@@ -963,8 +1055,26 @@ export function assertApplicationQueryText(text: string): void {
   const tokens = statements[0]!;
   const first = tokens[0]?.value ?? "";
   if (!["select", "insert", "update", "delete", "with"].includes(first)) throw new Error("RT_APPLICATION_DATABASE_QUERY_UNSAFE");
-  const prohibited = new Set(["pg_advisory_lock", "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared", "pg_advisory_unlock", "pg_advisory_unlock_shared", "pg_advisory_unlock_all", "set_config"]);
+  const prohibited = new Set([
+    "pg_advisory_lock",
+    "pg_advisory_lock_shared",
+    "pg_try_advisory_lock",
+    "pg_try_advisory_lock_shared",
+    "pg_advisory_xact_lock",
+    "pg_advisory_xact_lock_shared",
+    "pg_try_advisory_xact_lock",
+    "pg_try_advisory_xact_lock_shared",
+    "pg_advisory_unlock",
+    "pg_advisory_unlock_shared",
+    "pg_advisory_unlock_all",
+    "set_config"
+  ]);
   if (tokens.some((token) => prohibited.has(token.value))) throw new Error("RT_APPLICATION_DATABASE_QUERY_UNSAFE");
+  // The application callback shares the framework-owned transaction, so the
+  // underlying connection necessarily has framework DML privileges. Reserve
+  // every framework relation name and reject even read access through quoted,
+  // unquoted, schema-qualified, or data-modifying CTE syntax.
+  if (tokens.some((token) => postgresFrameworkTableNames.has(token.value))) throw new Error("RT_APPLICATION_DATABASE_QUERY_UNSAFE");
   const topLevelCommand = first === "with" ? tokens.slice(1).find((token) => !token.quoted && token.depth === 0 && ["select", "insert", "update", "delete"].includes(token.value)) : tokens[0];
   if (!topLevelCommand) throw new Error("RT_APPLICATION_DATABASE_QUERY_UNSAFE");
   if (topLevelCommand.value === "select" && tokens.some((token) => token.depth === 0 && token.value === "into")) throw new Error("RT_APPLICATION_DATABASE_QUERY_UNSAFE");

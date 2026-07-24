@@ -24,7 +24,7 @@ export function canonicalCapabilityProfile(value: Record<string, unknown> | unde
 }
 
 export function assertMatrixCapabilityProfiles(profiles: Array<{ id: string; capabilityProfile: Record<string, unknown> }>): void {
-  const baseline = profiles.find((entry) => entry.id === "candidate-client-to-alpha1-server")?.capabilityProfile;
+  const baseline = profiles.find((entry) => entry.id === "candidate-client-to-alpha4-server")?.capabilityProfile;
   if (!baseline || profiles.length !== 3 || profiles.some((entry) => JSON.stringify(entry.capabilityProfile) !== JSON.stringify(baseline))) throw new Error("RT_COMPAT_CAPABILITY_PROFILE_DRIFT");
 }
 

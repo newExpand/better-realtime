@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/newExpand/better-realtime/blob/main/release/public-release-bundle-identity.schema.json",
+  "title": "Better Realtime two-package release identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repository", "version", "sourceSha", "tag", "tagMessage", "title", "bodySha256", "packages"],
+  "properties": {
+    "schemaVersion": { "const": "better-realtime.release-bundle.v1" },
+    "repository": { "const": "newExpand/better-realtime" },
+    "version": { "$ref": "#/$defs/version" },
+    "sourceSha": { "$ref": "#/$defs/sha1" },
+    "tag": { "type": "string", "pattern": "^v0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+    "tagMessage": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "bodySha256": { "$ref": "#/$defs/sha256" },
+    "packages": {
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/basePackage" },
+        { "$ref": "#/$defs/mcpPackage" }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "publicIdentity": { "$ref": "#/$defs/asset" }
+  },
+  "$defs": {
+    "version": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+    "sha1": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "size"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "packageBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "artifact", "checksum", "packageFiles", "unpackedSize", "npmEnvironment"],
+      "properties": {
+        "name": { "enum": ["better-realtime", "better-realtime-mcp"] },
+        "artifact": { "$ref": "#/$defs/asset" },
+        "checksum": { "$ref": "#/$defs/asset" },
+        "packageFiles": { "type": "integer", "minimum": 1 },
+        "unpackedSize": { "type": "integer", "minimum": 1 },
+        "npmEnvironment": { "enum": ["npm-alpha", "npm-mcp-alpha"] }
+      }
+    },
+    "basePackage": {
+      "allOf": [
+        { "$ref": "#/$defs/packageBase" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "better-realtime" },
+            "npmEnvironment": { "const": "npm-alpha" }
+          },
+          "required": ["name", "npmEnvironment"]
+        }
+      ]
+    },
+    "mcpPackage": {
+      "allOf": [
+        { "$ref": "#/$defs/packageBase" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "better-realtime-mcp" },
+            "npmEnvironment": { "const": "npm-mcp-alpha" }
+          },
+          "required": ["name", "npmEnvironment"]
+        }
+      ]
+    }
+  }
+}

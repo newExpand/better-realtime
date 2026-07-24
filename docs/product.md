@@ -81,7 +81,7 @@ await attempt.observed
 
 room.data
 room.status
-sendMessage.totalPendingCount
+sendMessage.pendingCount
 
 // The application bootstrap—not a React component—owns terminal cleanup.
 const disposeRealtime = () => client.dispose()

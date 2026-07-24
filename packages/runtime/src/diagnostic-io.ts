@@ -2,13 +2,56 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
+  adaptLocalDiagnosticSource as adaptSynchronousDiagnosticSource,
   LocalDiagnosticQuery,
   type LocalEvidenceBundleV1
 } from "@realtime/diagnostics";
+import {
+  BoundedLocalEvidenceSink,
+  DIAGNOSTIC_SOURCE_SCHEMA_VERSION,
+  EVIDENCE_SINK_SCHEMA_VERSION,
+  EvidenceCoverageLedger,
+  createDiagnosticSourceAdapter,
+  type BoundedLocalEvidenceSinkOptions,
+  type DiagnosticResultProofPolicy,
+  type DiagnosticSource,
+  type DiagnosticSourceAdapterOptions,
+  type DiagnosticSourceCapabilities,
+  type DiagnosticSourceResult,
+  type DiagnosticSourceSnapshot,
+  type EvidenceCoverageSnapshot,
+  type EvidenceCoverageLedgerOptions,
+  type EvidenceEnvelopeV1,
+  type EvidenceSink,
+  type EvidenceSinkCapabilities,
+  type MissingEvidenceRange
+} from "./diagnostic-boundary.js";
 import type { DiagnosticQueryRequest, DiagnosticQueryResult, DoctorQueryDefinition, EvidenceBundleV1 } from "./diagnostic-types.js";
 import { BETTER_REALTIME_COMPONENT_ID, BETTER_REALTIME_PRODUCT, BETTER_REALTIME_VERSION } from "./release.js";
 
 export type { DiagnosticQueryRequest, DiagnosticQueryResult, DoctorQueryDefinition, EvidenceBundleV1 } from "./diagnostic-types.js";
+export {
+  BoundedLocalEvidenceSink,
+  DIAGNOSTIC_SOURCE_SCHEMA_VERSION,
+  EVIDENCE_SINK_SCHEMA_VERSION,
+  EvidenceCoverageLedger,
+  createDiagnosticSourceAdapter
+};
+export type {
+  BoundedLocalEvidenceSinkOptions,
+  DiagnosticResultProofPolicy,
+  DiagnosticSource,
+  DiagnosticSourceAdapterOptions,
+  DiagnosticSourceCapabilities,
+  DiagnosticSourceResult,
+  DiagnosticSourceSnapshot,
+  EvidenceCoverageLedgerOptions,
+  EvidenceCoverageSnapshot,
+  EvidenceEnvelopeV1,
+  EvidenceSink,
+  EvidenceSinkCapabilities,
+  MissingEvidenceRange
+};
 
 export const DIAGNOSTIC_TOOL_PROTOCOL_VERSION = "0.1" as const;
 const MAX_LOCAL_EVIDENCE_BYTES = 64 * 1024 * 1024;
@@ -19,21 +62,20 @@ export interface LocalDiagnosticSource {
   runStoredDoctor(tenantId: string): DiagnosticQueryResult;
 }
 
+export type AsyncDiagnosticSource = DiagnosticSource<DiagnosticQueryRequest, DiagnosticQueryResult>;
+
 export async function openLocalDiagnosticSource(sourcePath: string, expectedTenantId?: string): Promise<LocalDiagnosticSource> {
   if (!sourcePath || /^(?:https?|ftp|data):/iu.test(sourcePath)) throw new Error("RT_DIAGNOSTIC_SOURCE_LOCAL_ONLY");
   const absolutePath = isAbsolute(sourcePath) ? sourcePath : resolve(process.cwd(), sourcePath);
   const value: unknown = JSON.parse(await readBoundedFile(absolutePath));
   const bundle = value as EvidenceBundleV1;
-  if (expectedTenantId && bundle.tenantId !== expectedTenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
   const query = new LocalDiagnosticQuery(bundle as LocalEvidenceBundleV1);
-  const configured = bundle.defaultDoctorQuery ? structuredClone(bundle.defaultDoctorQuery) : undefined;
+  if (expectedTenantId) query.rawEvidence({ tenantId: expectedTenantId, limit: 1 });
   return Object.freeze({
     sourceKind: "local_file" as const,
     query: (request: DiagnosticQueryRequest) => withProductIdentity(query.query(request as never) as unknown as DiagnosticQueryResult),
-    runStoredDoctor: (tenantId: string): DiagnosticQueryResult => {
-      if (!configured) throw new Error("RT_DIAGNOSTIC_CONCLUSION_UNSUPPORTED:default doctor contract is absent");
-      return withProductIdentity(query.query({ kind: "doctor", tenantId, ...structuredClone(configured) } as never) as unknown as DiagnosticQueryResult);
-    }
+    runStoredDoctor: (tenantId: string): DiagnosticQueryResult =>
+      withProductIdentity(query.storedDoctor(tenantId) as unknown as DiagnosticQueryResult)
   });
 }
 
@@ -47,6 +89,11 @@ export function runStoredDoctor(source: LocalDiagnosticSource, tenantId: string)
 
 export function executeDiagnosticQuery(source: LocalDiagnosticSource, request: DiagnosticQueryRequest): DiagnosticQueryResult {
   return source.query(request);
+}
+
+/** Adapt the alpha.4 synchronous local-file source to the async source boundary. */
+export function adaptLocalDiagnosticSource(source: LocalDiagnosticSource): AsyncDiagnosticSource {
+  return adaptSynchronousDiagnosticSource(source) as unknown as AsyncDiagnosticSource;
 }
 
 export function diagnosticPublicError(error: unknown): { code: string; message: string } {

@@ -1,4 +1,4 @@
-import { FlightRecorder, ResourceRegistry, ResourceScope, doctor, type DoctorReport, type EvidenceRecord, type ExpectedBoundary, type OwnedResource } from "@realtime/diagnostics";
+import { FlightRecorder, ResourceRegistry, ResourceScope, type EvidenceRecord, type OwnedResource } from "@realtime/diagnostics/browser";
 import { ProtocolStateMachine } from "@realtime/protocol/state-machines";
 import { decodeWireMessage, isServerToClientMessage } from "@realtime/protocol/validator";
 import { assertCapabilityInvariants } from "@realtime/protocol/types";
@@ -19,6 +19,7 @@ export interface StreamDefinition<TInput extends JsonValue, TState> {
   applyEvent(state: TState, event: EventMessage): TState;
   applySnapshot(state: JsonValue): TState;
   snapshotSequence(state: TState): number;
+  decodeSnapshot?(state: JsonValue): { data: TState; sequence: number };
 }
 
 function settleBeforeAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -80,6 +81,9 @@ interface PendingCommand {
   causalEventIds: Set<string>;
   causalEventPositions: Map<string, CausalEventPosition>;
   appliedCausalEventIds: Set<string>;
+  completionSettled: boolean;
+  observationSettled: boolean;
+  error: Error | null;
 }
 
 export interface CommandAttempt<TResult extends JsonValue = JsonValue> {
@@ -88,6 +92,37 @@ export interface CommandAttempt<TResult extends JsonValue = JsonValue> {
   completed: Promise<TResult>;
   observed: Promise<void>;
 }
+
+export interface CommandAttemptSnapshot {
+  readonly commandId: string;
+  readonly state: CommandState;
+  readonly deliveryAttempt: number;
+  readonly createdAt: string;
+  readonly completionSettled: boolean;
+  readonly observationSettled: boolean;
+}
+
+export interface CommandActivitySnapshot {
+  readonly completionPendingCount: number;
+  readonly observationPendingCount: number;
+  readonly lastAttempt: CommandAttemptSnapshot | null;
+  readonly lastError: Error | null;
+}
+
+interface CommandActivity {
+  readonly listeners: Set<() => void>;
+  lastCommandId: string | null;
+  lastAttempt: CommandAttemptSnapshot | null;
+  lastError: Error | null;
+  snapshot: CommandActivitySnapshot;
+}
+
+const EMPTY_COMMAND_ACTIVITY: CommandActivitySnapshot = Object.freeze({
+  completionPendingCount: 0,
+  observationPendingCount: 0,
+  lastAttempt: null,
+  lastError: null
+});
 
 export interface ClientOptions {
   transport: TransportFactory;
@@ -130,6 +165,7 @@ export class RealtimeClient {
     validateResult?: (value: JsonValue) => JsonValue;
   }>>;
   #commands = new Map<string, PendingCommand>();
+  #commandActivities = new Map<string, CommandActivity>();
   #appliedEvents = new Set<string>();
   #sessionGeneration = 0;
   #sessionId: string | undefined;
@@ -164,6 +200,15 @@ export class RealtimeClient {
     this.resources = new ResourceRegistry(this.recorder);
     this.#scope = new ResourceScope(this.resources, this.runtimeId);
     this.#commandSchemas = options.commands ?? {};
+    for (const type of Object.keys(this.#commandSchemas)) {
+      this.#commandActivities.set(type, {
+        listeners: new Set(),
+        lastCommandId: null,
+        lastAttempt: null,
+        lastError: null,
+        snapshot: EMPTY_COMMAND_ACTIVITY
+      });
+    }
     this.#maxMessageBytes = this.#positiveLimit(options.maxMessageBytes ?? 1_048_576, "maxMessageBytes");
     this.#maxRecoveryBufferRecords = this.#positiveLimit(options.maxRecoveryBufferRecords ?? 10_000, "maxRecoveryBufferRecords");
     this.#maxRecoveryBufferBytes = this.#positiveLimit(options.maxRecoveryBufferBytes ?? 16_777_216, "maxRecoveryBufferBytes");
@@ -190,6 +235,20 @@ export class RealtimeClient {
     return () => this.#globalListeners.delete(subscriptionListener);
   }
   runtimeSnapshot() { return this.#runtimeSnapshot; }
+
+  subscribeCommand(type: string, listener: () => void): () => void {
+    if (this.#disposed) throw new Error("RT_CLIENT_DISPOSED");
+    const activity = this.#commandActivities.get(type);
+    if (!activity) throw new Error(`RT_COMMAND_UNKNOWN:${type}`);
+    activity.listeners.add(listener);
+    return () => activity.listeners.delete(listener);
+  }
+
+  commandSnapshot(type: string): CommandActivitySnapshot {
+    const activity = this.#commandActivities.get(type);
+    if (!activity) throw new Error(`RT_COMMAND_UNKNOWN:${type}`);
+    return activity.snapshot;
+  }
 
   async connect(): Promise<void> {
     if (this.#disposed || this.connectionState === "disposed" || this.#connecting || this.#transport) return;
@@ -303,13 +362,19 @@ export class RealtimeClient {
       commandId, type, input, machine: new ProtocolStateMachine("command"), state: "created", attempt: 0, createdAt: new Date().toISOString(),
       completed: new Promise((resolve, reject) => { resolveCompleted = resolve; rejectCompleted = reject; }),
       observed: new Promise((resolve, reject) => { resolveObserved = resolve; rejectObserved = reject; }),
-      resolveCompleted, rejectCompleted, resolveObserved, rejectObserved, causalEventIds: new Set(), causalEventPositions: new Map(), appliedCausalEventIds: new Set()
+      resolveCompleted, rejectCompleted, resolveObserved, rejectObserved, causalEventIds: new Set(), causalEventPositions: new Map(), appliedCausalEventIds: new Set(),
+      completionSettled: false, observationSettled: false, error: null
     };
     // Consumers intentionally choose either settlement boundary. Mark both
     // promises as observed without changing what callers receive from await.
     void pending.completed.catch(() => undefined);
     void pending.observed.catch(() => undefined);
     this.#commands.set(commandId, pending);
+    const activity = this.#commandActivities.get(type);
+    if (activity) {
+      activity.lastCommandId = commandId;
+      activity.lastError = null;
+    }
     this.#commandTransition(pending, "execute");
     this.recorder.record({ kind: "command.created", boundary: "command.created", outcome: "success", component: "client", componentVersion: "0.1.0", commandId });
     void this.connect();
@@ -334,18 +399,6 @@ export class RealtimeClient {
   traceCommand(commandId: string) { return { schemaVersion: "1.0", commandId, ...this.recorder.query({ commandId }, 500) }; }
   inspectStream(stream: string) { return { schemaVersion: "1.0", stream, ...this.recorder.query({ stream }, 500) }; }
   leaks() { const active = this.resources.active(); const orphaned = active.filter((resource) => resource.state === "failed"); return { schemaVersion: "1.0", verdict: orphaned.length === 0 ? "proven" : "disproven", active, orphaned, count: orphaned.length }; }
-  doctor(options: { producerRecords?: readonly EvidenceRecord[]; producerStats?: { droppedRecords: number; evictedRecords: number }; scope?: Partial<Pick<EvidenceRecord, "traceId" | "sessionId" | "stream" | "commandId">>; expectedBoundaries?: ExpectedBoundary[] } = {}): DoctorReport {
-    const stats = this.recorder.stats();
-    return doctor({
-      records: [...this.recorder.records(), ...(options.producerRecords ?? [])],
-      expectedBoundaries: options.expectedBoundaries ?? [{ producerRole: "server", boundary: "replay.selected" }, { producerRole: "server", boundary: "event.delivery_attempted" }, { producerRole: "client", boundary: "client.event_applied" }, { producerRole: "client", boundary: "replay.completed" }],
-      expectedProducers: ["client", "server"], ...(options.scope ? { scope: options.scope } : {}),
-      droppedRecords: stats.droppedRecords + (options.producerStats?.droppedRecords ?? 0),
-      evictedRecords: stats.evictedRecords + (options.producerStats?.evictedRecords ?? 0),
-      expectedOutcome: "subscribed application state converges through the declared recovery head"
-    });
-  }
-
   dispose(): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;
     this.#disposed = true;
@@ -372,8 +425,7 @@ export class RealtimeClient {
     const disposeError = new Error("RT_CLIENT_DISPOSED");
     for (const command of this.#commands.values()) {
       if (command.machine.can("dispose")) await attempt(() => this.#commandTransition(command, "dispose"));
-      command.rejectCompleted(disposeError);
-      command.rejectObserved(disposeError);
+      this.#rejectCommandPromises(command, disposeError);
     }
     this.#commands.clear();
     this.#appliedEvents.clear();
@@ -381,7 +433,10 @@ export class RealtimeClient {
     if (this.#sessionMachine.can("dispose")) await attempt(() => this.#transition("session", this.#sessionMachine, "dispose"));
     await attempt(() => this.#scope.dispose());
     try { this.#notifyGlobal(); } catch (error) { errors.push(error); }
-    finally { this.#globalListeners.clear(); }
+    finally {
+      this.#globalListeners.clear();
+      for (const activity of this.#commandActivities.values()) activity.listeners.clear();
+    }
     if (errors.length > 0) throw new AggregateError(errors, "client cleanup failed");
   }
 
@@ -467,7 +522,7 @@ export class RealtimeClient {
     for (const command of this.#commands.values()) {
       const error = new Error(code);
       if (command.machine.can("dispose")) this.#commandTransition(command, "dispose");
-      command.rejectCompleted(error); command.rejectObserved(error);
+      this.#rejectCommandPromises(command, error);
       this.#commands.delete(command.commandId);
     }
     if (this.#connectionMachine.can("dispose")) this.#transition("connection", this.#connectionMachine, "dispose");
@@ -523,8 +578,15 @@ export class RealtimeClient {
     let data: unknown;
     let sequence: number;
     try {
-      data = entry.definition.applySnapshot(message.state);
-      sequence = entry.definition.snapshotSequence(data);
+      if (entry.definition.decodeSnapshot) {
+        const decoded = entry.definition.decodeSnapshot(message.state);
+        data = decoded.data;
+        sequence = decoded.sequence;
+      } else {
+        data = entry.definition.applySnapshot(message.state);
+        sequence = entry.definition.snapshotSequence(data);
+      }
+      if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("RT_STREAM_SNAPSHOT_SEQUENCE_INVALID");
     } catch (error) {
       this.#failStreamMaterialization(entry, "snapshot", error);
       return;
@@ -635,7 +697,7 @@ export class RealtimeClient {
       return;
     }
     if (state === "accepted") { this.#commandTransition(command, "command.receipt.accepted"); this.recorder.record({ kind: "command.receipt_observed", boundary: "client.command_receipt_observed", outcome: "success", component: "client", componentVersion: "0.1.0", commandId }); }
-    else { this.#commandTransition(command, "command.receipt.rejected"); const error = new Error(code ?? `command ${state}`); command.rejectCompleted(error); command.rejectObserved(error); this.#commands.delete(commandId); }
+    else { this.#commandTransition(command, "command.receipt.rejected"); const error = new Error(code ?? `command ${state}`); this.#rejectCommandPromises(command, error); this.#commands.delete(commandId); }
     this.#notifyGlobal();
   }
 
@@ -650,7 +712,7 @@ export class RealtimeClient {
     if (message.schema !== expectedSchema) { this.#rejectCommandSchema(command, message.schema, expectedSchema); return; }
     const result = this.#validateCommandResult(command, message.result);
     if (result === undefined) return;
-    this.#commandTransition(command, "command.completed"); command.result = result; command.resolveCompleted(result);
+    this.#commandTransition(command, "command.completed"); command.result = result; this.#resolveCommandCompleted(command, result);
     this.#linkCausalEvents(command, message.causalEventIds, message.causalEvents);
     this.recorder.record({ kind: "command.completed_observed", boundary: "client.command_completed_observed", outcome: "success", component: "client", componentVersion: "0.1.0", commandId: message.commandId, details: { causalEventIds: message.causalEventIds ?? [], causalEventPositions: message.causalEvents?.length ?? 0 } });
     this.#reconcileCausalObservation(command);
@@ -665,11 +727,11 @@ export class RealtimeClient {
       if (message.schema !== expectedSchema) { this.#rejectCommandSchema(command, message.schema ?? "missing", expectedSchema); return; }
       const result = this.#validateCommandResult(command, message.result ?? null);
       if (result === undefined) return;
-      this.#commandTransition(command, "command.status.completed"); command.result = result; command.resolveCompleted(result);
+      this.#commandTransition(command, "command.status.completed"); command.result = result; this.#resolveCommandCompleted(command, result);
       this.#linkCausalEvents(command, message.causalEventIds, message.causalEvents);
       this.#reconcileCausalObservation(command);
     } else if (message.state === "accepted") this.#commandTransition(command, "command.status.accepted");
-    else { this.#commandTransition(command, `command.status.${message.state}`); const error = new Error(`command outcome ${message.state}`); command.rejectCompleted(error); command.rejectObserved(error); this.#commands.delete(command.commandId); }
+    else { this.#commandTransition(command, `command.status.${message.state}`); const error = new Error(`command outcome ${message.state}`); this.#rejectCommandPromises(command, error); this.#commands.delete(command.commandId); }
     this.#notifyGlobal();
   }
 
@@ -679,7 +741,7 @@ export class RealtimeClient {
     if (eventId) command.causalEventIds.delete(eventId);
     if (command.causalEventIds.size > 0) return;
     if (command.state !== "completed") return;
-    this.#commandTransition(command, "causal_events.applied"); command.resolveObserved();
+    this.#commandTransition(command, "causal_events.applied"); this.#resolveCommandObserved(command);
     const observedEventId = command.appliedCausalEventIds.values().next().value as string | undefined;
     this.recorder.record({ kind: "command.observed", boundary: "command.observed", outcome: "success", component: "client", componentVersion: "0.1.0", commandId, ...(observedEventId ? { eventId: observedEventId, causalHandoffId: `event:${observedEventId}` } : {}) });
     this.#commands.delete(commandId);
@@ -716,12 +778,53 @@ export class RealtimeClient {
     this.recorder.record({ kind: "command.sent", boundary: "command.sent", outcome: sent ? "success" : "failure", ...(sent ? {} : { reasonCode: "RT_TRANSPORT_SEND_FAILED" }), component: "client", componentVersion: "0.1.0", commandId: command.commandId, commandAttemptId: `${command.commandId}:attempt:${command.attempt}` });
   }
 
+  #resolveCommandCompleted(command: PendingCommand, value: JsonValue): void {
+    if (command.completionSettled) return;
+    command.completionSettled = true;
+    command.resolveCompleted(value);
+    this.#captureCommandActivity(command);
+  }
+
+  #resolveCommandObserved(command: PendingCommand): void {
+    if (command.observationSettled) return;
+    command.observationSettled = true;
+    command.resolveObserved();
+    this.#captureCommandActivity(command);
+  }
+
+  #rejectCommandPromises(command: PendingCommand, reason: unknown): void {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    command.error = error;
+    if (!command.completionSettled) {
+      command.completionSettled = true;
+      command.rejectCompleted(error);
+    }
+    if (!command.observationSettled) {
+      command.observationSettled = true;
+      command.rejectObserved(error);
+    }
+    this.#captureCommandActivity(command);
+  }
+
+  #captureCommandActivity(command: PendingCommand): void {
+    const activity = this.#commandActivities.get(command.type);
+    if (!activity || activity.lastCommandId !== command.commandId) return;
+    activity.lastAttempt = Object.freeze({
+      commandId: command.commandId,
+      state: command.state,
+      deliveryAttempt: command.attempt,
+      createdAt: command.createdAt,
+      completionSettled: command.completionSettled,
+      observationSettled: command.observationSettled
+    });
+    activity.lastError = command.error;
+  }
+
   #rejectCommandSchema(command: PendingCommand, actual: string, expected: string): void {
     const error = new Error(`RT_CONTRACT_COMMAND_RESULT_SCHEMA_MISMATCH: expected ${expected}, received ${actual}`);
     if (command.machine.can("command.result.invalid")) this.#commandTransition(command, "command.result.invalid");
     this.recorder.record({ kind: "contract.schema_mismatch", boundary: "protocol.contract_mismatch", outcome: "failure", reasonCode: "RT_CONTRACT_COMMAND_RESULT_SCHEMA_MISMATCH", component: "client", componentVersion: "0.2.0", commandId: command.commandId, details: { expected, actual } });
-    command.rejectCompleted(error);
-    command.rejectObserved(error);
+    this.#rejectCommandPromises(command, error);
     this.#commands.delete(command.commandId);
     this.#notifyGlobal();
   }
@@ -743,8 +846,7 @@ export class RealtimeClient {
         commandId: command.commandId,
         details: { error: error.message }
       });
-      command.rejectCompleted(error);
-      command.rejectObserved(error);
+      this.#rejectCommandPromises(command, error);
       this.#commands.delete(command.commandId);
       this.#notifyGlobal();
       return undefined;
@@ -920,12 +1022,40 @@ export class RealtimeClient {
   #commandTransition(command: PendingCommand, event: string): void {
     const transition = command.machine.transition(event);
     command.state = transition.to as CommandState;
+    this.#captureCommandActivity(command);
     this.recorder.record({ kind: "command.transition", boundary: "command.transition", outcome: "success", component: "client", componentVersion: "0.1.0", commandId: command.commandId, details: transition });
   }
 
   #notifyGlobal(): void {
     this.#runtimeSnapshot = { connectionState: this.connectionState, sessionState: this.sessionState, sessionGeneration: this.#sessionGeneration, pendingCount: this.pendingCount };
     this.#globalListeners.forEach((listener) => listener());
+    this.#publishCommandActivities();
+  }
+
+  #publishCommandActivities(): void {
+    for (const [type, activity] of this.#commandActivities) {
+      let completionPendingCount = 0;
+      let observationPendingCount = 0;
+      for (const command of this.#commands.values()) {
+        if (command.type !== type) continue;
+        if (!command.completionSettled) completionPendingCount += 1;
+        if (!command.observationSettled) observationPendingCount += 1;
+      }
+      const current = activity.snapshot;
+      if (
+        current.completionPendingCount === completionPendingCount
+        && current.observationPendingCount === observationPendingCount
+        && current.lastAttempt === activity.lastAttempt
+        && current.lastError === activity.lastError
+      ) continue;
+      activity.snapshot = Object.freeze({
+        completionPendingCount,
+        observationPendingCount,
+        lastAttempt: activity.lastAttempt,
+        lastError: activity.lastError
+      });
+      activity.listeners.forEach((listener) => listener());
+    }
   }
 
   #positiveLimit(value: number, name: string): number {

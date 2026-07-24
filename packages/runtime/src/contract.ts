@@ -94,6 +94,47 @@ export interface StreamContract<TInput, TSnapshot, TEvents extends EventSchemaMa
   readonly kind: "stream";
 }
 
+export interface StateStreamEventMeta<TType extends string = string> {
+  readonly type: TType;
+  readonly sequence: number;
+  readonly eventId?: string;
+  readonly commandId?: string;
+  readonly cursor?: string;
+  readonly occurredAt?: string;
+}
+
+export type StateStreamEventDefinitions<TState, TEvents extends EventSchemaMap> = {
+  readonly [TName in keyof TEvents & string]: {
+    readonly data: TEvents[TName];
+    readonly reduce: (
+      state: TState,
+      data: InferSchema<TEvents[TName]>,
+      meta: StateStreamEventMeta<TName>
+    ) => TState;
+  }
+};
+
+export interface StateStreamConfig<TInput, TState, TEvents extends EventSchemaMap> {
+  readonly input: RuntimeSchema<TInput>;
+  readonly state: RuntimeSchema<TState>;
+  readonly events: StateStreamEventDefinitions<TState, TEvents>;
+  readonly key: (input: TInput) => string;
+  readonly initial: (input: TInput) => TState;
+}
+
+export interface StateStreamContract<TInput, TState, TEvents extends EventSchemaMap> {
+  readonly kind: "stream";
+  readonly materialization: "state_reducer_v1";
+  readonly input: RuntimeSchema<TInput>;
+  readonly snapshot: RuntimeSchema<TState>;
+  readonly events: TEvents;
+  readonly key: (input: TInput) => string;
+  readonly initial: (input: TInput) => TState;
+  readonly applyEvent: (state: TState, event: StreamEvent<TEvents>) => TState;
+}
+
+export type AnyStreamContract = StreamContract<any, any, any> | StateStreamContract<any, any, any>;
+
 export interface CommandConfig<TInput, TResult> {
   readonly input: RuntimeSchema<TInput>;
   readonly result: RuntimeSchema<TResult>;
@@ -103,7 +144,7 @@ export interface CommandContract<TInput, TResult> extends CommandConfig<TInput, 
   readonly kind: "command";
 }
 
-export type StreamContractMap = Readonly<Record<string, StreamContract<any, any, any>>>;
+export type StreamContractMap = Readonly<Record<string, AnyStreamContract>>;
 export type CommandContractMap = Readonly<Record<string, CommandContract<any, any>>>;
 
 export interface ContractIdentity {
@@ -118,7 +159,9 @@ export interface StreamManifest {
   readonly snapshot: JsonSchema;
   readonly snapshotSchema: string;
   readonly ordering: "per_stream";
-  readonly materialization: "state";
+  readonly materialization: "state" | "state_reducer_v1";
+  readonly state?: JsonSchema;
+  readonly stateSchema?: string;
   readonly events: Readonly<Record<string, { readonly schema: string; readonly payload: JsonSchema }>>;
 }
 
@@ -188,9 +231,11 @@ export type CommandInput<TContract extends AnyRealtimeContract, TName extends Co
 export type CommandResult<TContract extends AnyRealtimeContract, TName extends CommandName<TContract>> = InferSchema<ContractCommands<TContract>[TName]["result"]>;
 
 interface CompiledStream {
-  readonly definition: StreamContract<any, any, any>;
+  readonly definition: AnyStreamContract;
   readonly input: ValidateFunction;
   readonly snapshot: ValidateFunction;
+  readonly wireSnapshot: ValidateFunction;
+  readonly wireSnapshotSchema: RuntimeSchema<unknown>;
   readonly events: ReadonlyMap<string, { readonly schema: string; readonly validate: ValidateFunction }>;
 }
 
@@ -216,12 +261,52 @@ export function stream<TInput, TSnapshot, const TEvents extends EventSchemaMap>(
   return Object.freeze({ kind: "stream", ...config });
 }
 
+export function stateStream<
+  const TInputSchema extends RuntimeSchema<any>,
+  const TStateSchema extends RuntimeSchema<any>,
+  const TEvents extends EventSchemaMap
+>(config: {
+  readonly input: TInputSchema;
+  readonly state: TStateSchema;
+  readonly events: StateStreamEventDefinitions<InferSchema<TStateSchema>, TEvents>;
+  readonly key: (input: InferSchema<TInputSchema>) => string;
+  readonly initial: (input: InferSchema<TInputSchema>) => InferSchema<TStateSchema>;
+}): StateStreamContract<InferSchema<TInputSchema>, InferSchema<TStateSchema>, TEvents> {
+  const events = Object.fromEntries(
+    Object.entries(config.events).map(([name, definition]) => [name, definition.data])
+  ) as TEvents;
+  const reducers = config.events as unknown as Readonly<Record<string, {
+    readonly reduce: (state: InferSchema<TStateSchema>, data: unknown, meta: StateStreamEventMeta) => InferSchema<TStateSchema>;
+  }>>;
+  return Object.freeze({
+    kind: "stream",
+    materialization: "state_reducer_v1",
+    input: config.input,
+    snapshot: config.state,
+    events,
+    key: config.key,
+    initial: config.initial,
+    applyEvent: (current: InferSchema<TStateSchema>, event: StreamEvent<TEvents>) => {
+      const reducer = reducers[event.type];
+      if (!reducer) throw new RealtimeContractError("RT_CONTRACT_STREAM_EVENT_UNKNOWN", event.type);
+      return reducer.reduce(current, event.data, {
+        type: event.type,
+        sequence: event.sequence,
+        ...(event.eventId === undefined ? {} : { eventId: event.eventId }),
+        ...(event.commandId === undefined ? {} : { commandId: event.commandId }),
+        ...(event.cursor === undefined ? {} : { cursor: event.cursor }),
+        ...(event.occurredAt === undefined ? {} : { occurredAt: event.occurredAt })
+      });
+    }
+  }) as StateStreamContract<InferSchema<TInputSchema>, InferSchema<TStateSchema>, TEvents>;
+}
+
 export function command<TInput, TResult>(config: CommandConfig<TInput, TResult>): CommandContract<TInput, TResult> {
   return Object.freeze({ kind: "command", ...config });
 }
 
 export function defineRealtimeContract<
-  const TStreams extends Readonly<Record<string, StreamContract<any, any, any>>>,
+  const TStreams extends Readonly<Record<string, AnyStreamContract>>,
   const TCommands extends Readonly<Record<string, CommandContract<any, any>>>
 >(definition: {
   readonly contractId: string;
@@ -251,13 +336,39 @@ export function defineRealtimeContract<
     }
     claimSchemaIdentity(schemaIdentities, item.input.identity, item.input.schema, `stream:${name}:input`);
     claimSchemaIdentity(schemaIdentities, item.snapshot.identity, item.snapshot.schema, `stream:${name}:snapshot`);
+    const wireSnapshotSchema = isStateStreamContract(item)
+      ? stateStreamSnapshotSchema(item.snapshot)
+      : item.snapshot;
+    claimSchemaIdentity(schemaIdentities, wireSnapshotSchema.identity, wireSnapshotSchema.schema, `stream:${name}:wire-snapshot`);
     streams.set(name, {
       definition: item,
       input: compileSchema(item.input.schema, `stream:${name}:input`),
       snapshot: compileSchema(item.snapshot.schema, `stream:${name}:snapshot`),
+      wireSnapshot: compileSchema(wireSnapshotSchema.schema, `stream:${name}:wire-snapshot`),
+      wireSnapshotSchema,
       events
     });
-    streamManifest[name] = Object.freeze({ input: item.input.schema, inputSchema: item.input.identity, snapshot: item.snapshot.schema, snapshotSchema: item.snapshot.identity, ordering: "per_stream", materialization: "state", events: Object.freeze(eventManifest) });
+    streamManifest[name] = isStateStreamContract(item)
+      ? Object.freeze({
+          input: item.input.schema,
+          inputSchema: item.input.identity,
+          snapshot: wireSnapshotSchema.schema,
+          snapshotSchema: wireSnapshotSchema.identity,
+          ordering: "per_stream",
+          materialization: "state_reducer_v1",
+          state: item.snapshot.schema,
+          stateSchema: item.snapshot.identity,
+          events: Object.freeze(eventManifest)
+        })
+      : Object.freeze({
+          input: item.input.schema,
+          inputSchema: item.input.identity,
+          snapshot: item.snapshot.schema,
+          snapshotSchema: item.snapshot.identity,
+          ordering: "per_stream",
+          materialization: "state",
+          events: Object.freeze(eventManifest)
+        });
   }
 
   const commands = new Map<string, CompiledCommand>();
@@ -305,6 +416,60 @@ export function contractRuntime(contract: AnyRealtimeContract): ContractRuntime 
   const runtime = runtimes.get(contract);
   if (!runtime) throw new RealtimeContractError("RT_CONTRACT_INVALID", "contract", ["contract was not created by defineRealtimeContract"]);
   return runtime;
+}
+
+export interface DecodedContractStreamSnapshot {
+  readonly data: JsonValue;
+  readonly sequence: number;
+}
+
+/** Package-internal bridge used by the client facade. */
+export function decodeContractStreamSnapshot(
+  contract: AnyRealtimeContract,
+  name: string,
+  value: unknown
+): DecodedContractStreamSnapshot {
+  const runtime = contractRuntime(contract);
+  const member = runtime.streams.get(name);
+  if (!member) throw new RealtimeContractError("RT_CONTRACT_STREAM_UNKNOWN", name);
+  if (!isStateStreamContract(member.definition)) {
+    const data = validateStream(runtime, name, "snapshot", value) as JsonValue;
+    const sequence = member.definition.snapshotSequence(data);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new RealtimeContractError("RT_CONTRACT_STREAM_SNAPSHOT_INVALID", name, ["snapshotSequence must return a non-negative safe integer"]);
+    }
+    return { data, sequence };
+  }
+  if (!isJsonValue(value) || !member.wireSnapshot(value)) {
+    throw validationError("RT_CONTRACT_STREAM_SNAPSHOT_INVALID", name, member.wireSnapshot.errors);
+  }
+  const envelope = value as { readonly state: JsonValue; readonly includedSequence: number };
+  return {
+    data: validateStream(runtime, name, "snapshot", envelope.state) as JsonValue,
+    sequence: envelope.includedSequence
+  };
+}
+
+/** Package-internal bridge used by the server facade. */
+export function encodeContractStreamSnapshot(
+  contract: AnyRealtimeContract,
+  name: string,
+  state: unknown,
+  includedSequence: number
+): JsonValue {
+  const runtime = contractRuntime(contract);
+  const member = runtime.streams.get(name);
+  if (!member) throw new RealtimeContractError("RT_CONTRACT_STREAM_UNKNOWN", name);
+  const validated = validateStream(runtime, name, "snapshot", state) as JsonValue;
+  if (!isStateStreamContract(member.definition)) return validated;
+  if (!Number.isSafeInteger(includedSequence) || includedSequence < 0) {
+    throw new RealtimeContractError("RT_CONTRACT_STREAM_SNAPSHOT_INVALID", name, ["includedSequence must be a non-negative safe integer"]);
+  }
+  const envelope = { state: validated, includedSequence };
+  if (!member.wireSnapshot(envelope)) {
+    throw validationError("RT_CONTRACT_STREAM_SNAPSHOT_INVALID", name, member.wireSnapshot.errors);
+  }
+  return cloneRuntimeJson(envelope);
 }
 
 function validateStream(runtime: ContractRuntime, name: string, boundary: "input" | "snapshot", value: unknown): unknown {
@@ -361,6 +526,26 @@ function normalizeSchema(schema: JsonSchema): JsonSchema {
   if (typeof normalized === "boolean") return normalized;
   if (normalized.$schema !== undefined && normalized.$schema !== JSON_SCHEMA_DIALECT) throw new RealtimeContractError("RT_CONTRACT_SCHEMA_INVALID", "$schema", [`expected ${JSON_SCHEMA_DIALECT}`]);
   return deepFreeze({ ...normalized, $schema: JSON_SCHEMA_DIALECT });
+}
+
+function isStateStreamContract(value: AnyStreamContract): value is StateStreamContract<any, any, any> {
+  return "materialization" in value && value.materialization === "state_reducer_v1";
+}
+
+function stateStreamSnapshotSchema(state: RuntimeSchema<unknown>): RuntimeSchema<unknown> {
+  const identityDigest = sha256(canonicalJson({
+    identity: state.identity,
+    schema: state.schema
+  } as JsonValue));
+  return jsonSchema(`better-realtime.state-snapshot.${identityDigest}@1`, {
+    type: "object",
+    required: ["includedSequence", "state"],
+    properties: {
+      includedSequence: { type: "integer", minimum: 0 },
+      state: state.schema
+    },
+    additionalProperties: false
+  }) as RuntimeSchema<unknown>;
 }
 
 function assertPortableSchema(value: JsonValue, path: string): void {

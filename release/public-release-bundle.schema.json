@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/newExpand/better-realtime/blob/main/release/public-release-bundle.schema.json",
+  "title": "Better Realtime public two-package release evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repository", "version", "packageSource", "workflow", "githubRelease", "packages", "evidence"],
+  "properties": {
+    "schemaVersion": { "const": "better-realtime.public-release-bundle.v1" },
+    "repository": { "const": "newExpand/better-realtime" },
+    "version": { "$ref": "#/$defs/version" },
+    "packageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tag", "annotatedTagObject"],
+      "properties": {
+        "commit": { "$ref": "#/$defs/sha1" },
+        "tag": { "type": "string", "pattern": "^v0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+        "annotatedTagObject": { "$ref": "#/$defs/sha1" }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "path", "ref", "commit", "runId", "runAttempt"],
+      "properties": {
+        "repository": { "const": "newExpand/better-realtime" },
+        "path": { "const": ".github/workflows/release-bundle.yml" },
+        "ref": { "const": "refs/heads/main" },
+        "commit": { "$ref": "#/$defs/sha1" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      }
+    },
+    "githubRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "tag"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "tag": { "type": "string", "pattern": "^v0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        { "$ref": "#/$defs/basePackage" },
+        { "$ref": "#/$defs/mcpPackage" }
+      ],
+      "items": false
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedAt", "verification"],
+      "properties": {
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "checks"],
+          "properties": {
+            "status": { "enum": ["prepublication-approved", "verified"] },
+            "checks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "version": { "type": "string", "pattern": "^0\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$" },
+    "sha1": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sha512": { "type": "string", "pattern": "^[a-f0-9]{128}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "sha512", "integrity", "size", "unpackedSize", "fileCount"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha512": { "$ref": "#/$defs/sha512" },
+        "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "size": { "type": "integer", "minimum": 1 },
+        "unpackedSize": { "type": "integer", "minimum": 1 },
+        "fileCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "githubAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "size"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tarball", "sha256", "sha512", "integrity", "size", "fileCount", "distTags"],
+      "properties": {
+        "tarball": { "type": "string", "pattern": "^https://registry\\.npmjs\\.org/" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha512": { "$ref": "#/$defs/sha512" },
+        "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "size": { "type": "integer", "minimum": 1 },
+        "fileCount": { "type": "integer", "minimum": 1 },
+        "distTags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["alpha", "latest"],
+          "properties": {
+            "alpha": { "$ref": "#/$defs/version" },
+            "latest": { "oneOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] }
+          }
+        }
+      }
+    },
+    "packageBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "artifact", "githubAsset", "expectedNpmRegistry", "environment"],
+      "properties": {
+        "name": { "enum": ["better-realtime", "better-realtime-mcp"] },
+        "version": { "$ref": "#/$defs/version" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "githubAsset": { "$ref": "#/$defs/githubAsset" },
+        "expectedNpmRegistry": { "$ref": "#/$defs/registry" },
+        "environment": { "enum": ["npm-alpha", "npm-mcp-alpha"] }
+      }
+    },
+    "basePackage": {
+      "allOf": [
+        { "$ref": "#/$defs/packageBase" },
+        { "type": "object", "properties": { "name": { "const": "better-realtime" }, "environment": { "const": "npm-alpha" } } }
+      ]
+    },
+    "mcpPackage": {
+      "allOf": [
+        { "$ref": "#/$defs/packageBase" },
+        { "type": "object", "properties": { "name": { "const": "better-realtime-mcp" }, "environment": { "const": "npm-mcp-alpha" } } }
+      ]
+    }
+  }
+}

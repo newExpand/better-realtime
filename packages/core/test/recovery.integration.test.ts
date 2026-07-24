@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NodeWebSocketTransport } from "@realtime/transport-reference";
+import { doctor } from "@realtime/diagnostics";
 import { ReferenceServer } from "../../server-node/src/index.ts";
 import type { EventMessage, JsonValue } from "@realtime/protocol";
 import { RealtimeClient, type StreamDefinition, type StreamSnapshot } from "../src/index.ts";
@@ -61,7 +62,17 @@ describe("production-shaped recovery journey", () => {
     expect(client.recorder.records().some((record) => record.boundary === "client.replay_begin_observed")).toBe(true);
     expect(client.recorder.records().some((record) => record.boundary === "replay.completed" && record.outcome === "success")).toBe(true);
     const replay = server.recorder.records().filter((record) => record.boundary === "replay.selected" && record.stream === "room:42").at(-1)!;
-    expect(client.doctor({ producerRecords: server.recorder.records(), producerStats: server.recorder.stats(), scope: { traceId: replay.traceId!, stream: "room:42" } }).verdict).toBe("proven");
+    const clientStats = client.recorder.stats();
+    const serverStats = server.recorder.stats();
+    expect(doctor({
+      records: [...client.recorder.records(), ...server.recorder.records()],
+      expectedBoundaries: [{ producerRole: "server", boundary: "replay.selected" }, { producerRole: "server", boundary: "event.delivery_attempted" }, { producerRole: "client", boundary: "client.event_applied" }, { producerRole: "client", boundary: "replay.completed" }],
+      expectedProducers: ["client", "server"],
+      scope: { traceId: replay.traceId!, stream: "room:42" },
+      droppedRecords: clientStats.droppedRecords + serverStats.droppedRecords,
+      evictedRecords: clientStats.evictedRecords + serverStats.evictedRecords,
+      expectedOutcome: "subscribed application state converges through the declared recovery head"
+    }).verdict).toBe("proven");
   });
 
   it("deduplicates the same event identity across delivery attempts", async () => {

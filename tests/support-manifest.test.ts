@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { assertStatusEvidence, type SupportFeature } from "../scripts/check-support.ts";
 
@@ -40,5 +41,20 @@ describe("support claim evidence axes", () => {
   it("requires internal fixtures and explicit unsupported behavior to have runtime tests", () => {
     expect(() => assertStatusEvidence(feature({ runtimeStatus: "internal-fixture" }))).toThrow("RT_SUPPORT_RUNTIME_STATUS_WITHOUT_IMPLEMENTATION_EVIDENCE");
     expect(() => assertStatusEvidence(feature({ protocolStatus: "defined", protocolEvidence: ["spec/fixture.json"], runtimeStatus: "unsupported" }))).toThrow("RT_SUPPORT_RUNTIME_STATUS_WITHOUT_IMPLEMENTATION_EVIDENCE");
+  });
+
+  it("binds offline MCP support to the companion package instead of the excluded legacy source", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../support/alpha-0.1.json", import.meta.url), "utf8")) as {
+      features: SupportFeature[];
+    };
+    const diagnostics = manifest.features.find(({ id }) => id === "offline-diagnostics");
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics?.runtimeEvidence).toEqual(expect.arrayContaining([
+      "packages/runtime/src/diagnostic-io.ts",
+      "packages/mcp/src/index.ts",
+      "packages/mcp/src/bin.ts"
+    ]));
+    expect(diagnostics?.runtimeEvidence).not.toContain("packages/runtime/src/mcp.ts");
+    expect(diagnostics?.verificationEvidence).toContain("packages/mcp/test/mcp.test.ts");
   });
 });

@@ -1,8 +1,14 @@
 import { RealtimeClient as CoreRealtimeClient, type StreamDefinition as CoreStreamDefinition } from "@realtime/core";
+import {
+  BoundedEvidenceExporter,
+  FlightRecorder,
+  type EvidenceSink as InternalEvidenceSink
+} from "@realtime/diagnostics/browser";
 import { BrowserWebSocketTransport } from "@realtime/transport-reference/browser";
 import {
   RealtimeContractError,
   contractRuntime,
+  decodeContractStreamSnapshot,
   type AnyRealtimeContract,
   type CommandInput,
   type CommandName,
@@ -17,6 +23,10 @@ import {
   type StreamName,
   type StreamState
 } from "./contract.js";
+import type {
+  DiagnosticProducerInstance,
+  SourceDiagnosticEvidenceRecord
+} from "./diagnostic-types.js";
 
 export { BETTER_REALTIME_COMPONENT_ID, BETTER_REALTIME_PACKAGE, BETTER_REALTIME_PRODUCT, BETTER_REALTIME_VERSION } from "./release.js";
 
@@ -26,6 +36,7 @@ export {
   command,
   defineRealtimeContract,
   jsonSchema,
+  stateStream,
   stream
 } from "./contract.js";
 export type {
@@ -50,6 +61,10 @@ export type {
   RealtimeContract,
   RealtimeContractManifest,
   RuntimeSchema,
+  StateStreamConfig,
+  StateStreamContract,
+  StateStreamEventDefinitions,
+  StateStreamEventMeta,
   StreamConfig,
   StreamContract,
   StreamEvent,
@@ -102,6 +117,22 @@ export interface CommandAttempt<TResult> {
   readonly observed: Promise<void>;
 }
 
+export interface CommandAttemptSnapshot {
+  readonly commandId: string;
+  readonly state: CommandState;
+  readonly deliveryAttempt: number;
+  readonly createdAt: string;
+  readonly completionSettled: boolean;
+  readonly observationSettled: boolean;
+}
+
+export interface CommandActivitySnapshot {
+  readonly completionPendingCount: number;
+  readonly observationPendingCount: number;
+  readonly lastAttempt: CommandAttemptSnapshot | null;
+  readonly lastError: Error | null;
+}
+
 export interface RealtimeWebSocketEventMap {
   readonly open: unknown;
   readonly error: unknown;
@@ -122,12 +153,22 @@ export interface WebSocketConstructor {
   new(url: string | URL, protocols?: string | string[]): WebSocketLike;
 }
 
-export interface RealtimeClientOptions {
-  readonly url: string;
+export interface RealtimeTransportConnection {
+  readonly bufferedAmount: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  onMessage(listener: (data: string) => void): () => void;
+  onClose(listener: (event: { readonly code: number; readonly reason: string }) => void): () => void;
+}
+
+export interface RealtimeTransportFactory {
+  connect(signal?: AbortSignal): Promise<RealtimeTransportConnection>;
+}
+
+interface RealtimeClientCommonOptions {
   readonly auth: (signal?: AbortSignal) => JsonObject | Promise<JsonObject>;
-  readonly webSocket?: WebSocketConstructor;
+  readonly diagnostics?: RealtimeClientDiagnosticsOptions;
   readonly reconnectDelaysMs?: number[];
-  readonly connectTimeoutMs?: number;
   readonly sessionOpenTimeoutMs?: number;
   readonly maxPendingCommands?: number;
   readonly maxDedupeEntries?: number;
@@ -137,6 +178,65 @@ export interface RealtimeClientOptions {
   readonly maxRecoveryBufferBytes?: number;
 }
 
+export interface RealtimeEvidenceEnvelope {
+  readonly schemaVersion: "1.0";
+  readonly tenantId: string;
+  readonly payloadPolicy: "redacted";
+  readonly record: SourceDiagnosticEvidenceRecord;
+}
+
+export interface RealtimeEvidenceSink {
+  readonly schemaVersion: "1.0";
+  readonly capabilities: {
+    readonly authoritative: boolean;
+    readonly durable: boolean;
+    readonly sampled: boolean;
+    readonly multiProducer: boolean;
+  };
+  record(evidence: RealtimeEvidenceEnvelope): Promise<void>;
+  registerExpectedProducers?(instances: readonly DiagnosticProducerInstance[]): void;
+  finalizeExpectedProducers?(): void;
+  declareExpectedProducers?(instances: readonly DiagnosticProducerInstance[]): void;
+  closeProducer?(checkpoint: DiagnosticProducerInstance & { readonly highWaterMark: number; readonly closed: true }): void;
+  recordExportFailure?(count?: number): void;
+}
+
+export interface RealtimeClientDiagnosticsOptions {
+  readonly sink: RealtimeEvidenceSink;
+  /**
+   * Shared mode registers this client's producer additively. The topology
+   * owner must call sink.finalizeExpectedProducers() after every producer is
+   * registered and before any producer is disposed.
+   */
+  readonly topology?: "exclusive" | "shared";
+  /** Secret key material used only to pseudonymize evidence before export. */
+  readonly pseudonymizationKey: string;
+  readonly tenantId: string;
+  readonly maxPendingRecords?: number;
+}
+
+export interface RealtimeEvidenceExportSnapshot {
+  readonly pendingRecords: number;
+  readonly acceptedRecords: number;
+  readonly exportFailedRecords: number;
+  readonly closed: boolean;
+}
+
+export type RealtimeClientOptions = RealtimeClientCommonOptions & (
+  | {
+      readonly url: string;
+      readonly webSocket?: WebSocketConstructor;
+      readonly connectTimeoutMs?: number;
+      readonly transport?: never;
+    }
+  | {
+      readonly transport: RealtimeTransportFactory;
+      readonly url?: never;
+      readonly webSocket?: never;
+      readonly connectTimeoutMs?: never;
+    }
+);
+
 export interface RealtimeClient<TContract extends AnyRealtimeContract> {
   readonly contract: TContract;
   readonly identity: ContractIdentity;
@@ -145,14 +245,25 @@ export interface RealtimeClient<TContract extends AnyRealtimeContract> {
   execute<TName extends CommandName<TContract>>(name: TName, input: CommandInput<TContract, TName>): CommandAttempt<CommandResult<TContract, TName>>;
   subscribeRuntime(listener: () => void): () => void;
   runtimeSnapshot(): RuntimeSnapshot;
+  subscribeCommand<TName extends CommandName<TContract>>(name: TName, listener: () => void): () => void;
+  commandSnapshot<TName extends CommandName<TContract>>(name: TName): CommandActivitySnapshot;
+  flushEvidence(): Promise<void>;
+  evidenceSnapshot(): RealtimeEvidenceExportSnapshot;
   dispose(): Promise<void>;
 }
 
 export function createRealtimeClient<TContract extends AnyRealtimeContract>(contract: TContract, options: RealtimeClientOptions): RealtimeClient<TContract> {
   const runtime = contractRuntime(contract);
   const validators = contract as AnyRealtimeContract;
-  const WebSocketImpl = options.webSocket ?? globalThis.WebSocket;
-  if (!WebSocketImpl) throw new RealtimeContractError("RT_CONTRACT_INVALID", "client.webSocket", ["browser WebSocket implementation is unavailable"]);
+  const usesCustomTransport = "transport" in options && options.transport !== undefined;
+  if (usesCustomTransport && ("url" in options || "webSocket" in options || "connectTimeoutMs" in options)) {
+    throw new RealtimeContractError("RT_CONTRACT_INVALID", "client.transport", ["transport cannot be combined with url, webSocket, or connectTimeoutMs"]);
+  }
+  const WebSocketImpl = !usesCustomTransport ? options.webSocket ?? globalThis.WebSocket : undefined;
+  if (!usesCustomTransport && !WebSocketImpl) throw new RealtimeContractError("RT_CONTRACT_INVALID", "client.webSocket", ["browser WebSocket implementation is unavailable"]);
+  const transport = usesCustomTransport
+    ? options.transport
+    : new BrowserWebSocketTransport(options.url, WebSocketImpl as unknown as typeof WebSocket, { ...(options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs }) });
 
   const definitions: CoreStreamDefinition<JsonValue, unknown>[] = [...runtime.streams].map(([name, member]) => ({
     stream: name,
@@ -171,16 +282,36 @@ export function createRealtimeClient<TContract extends AnyRealtimeContract>(cont
       const validated = validators.validateStreamEvent(name, event);
       return validators.validateStreamSnapshot(name, member.definition.applyEvent(state, validated));
     },
+    decodeSnapshot: (state) => decodeContractStreamSnapshot(contract, name, state),
     applySnapshot: (state) => validators.validateStreamSnapshot(name, state),
-    snapshotSequence: (state) => {
-      const sequence = member.definition.snapshotSequence(state);
-      if (!Number.isSafeInteger(sequence) || sequence < 0) throw new RealtimeContractError("RT_CONTRACT_STREAM_SNAPSHOT_INVALID", name, ["snapshotSequence must return a non-negative safe integer"]);
-      return sequence;
-    }
+    snapshotSequence: (state) => decodeContractStreamSnapshot(contract, name, state).sequence
   })) as CoreStreamDefinition<JsonValue, unknown>[];
 
+  let evidenceExporter: BoundedEvidenceExporter | undefined;
+  const evidenceRecorder = options.diagnostics
+    ? new FlightRecorder({
+        runtimeId: `client_${crypto.randomUUID()}`,
+        producerRole: "client",
+        onRecord: (record) => evidenceExporter?.record(record)
+      })
+    : undefined;
+  if (options.diagnostics && evidenceRecorder) {
+    evidenceExporter = new BoundedEvidenceExporter({
+      sink: options.diagnostics.sink as unknown as InternalEvidenceSink,
+      ...(options.diagnostics.topology === undefined ? {} : { topology: options.diagnostics.topology }),
+      pseudonymizationKey: options.diagnostics.pseudonymizationKey,
+      tenantId: options.diagnostics.tenantId,
+      expectedProducers: [{
+        producerRole: evidenceRecorder.producerRole,
+        runtimeId: evidenceRecorder.runtimeId,
+        runtimeBootId: evidenceRecorder.runtimeBootId
+      }],
+      ...(options.diagnostics.maxPendingRecords === undefined ? {} : { maxPendingRecords: options.diagnostics.maxPendingRecords })
+    });
+  }
+
   const internal = new CoreRealtimeClient({
-    transport: new BrowserWebSocketTransport(options.url, WebSocketImpl as unknown as typeof WebSocket, { ...(options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs }) }),
+    transport,
     contract: contract.identity,
     auth: options.auth,
     streams: definitions,
@@ -189,6 +320,7 @@ export function createRealtimeClient<TContract extends AnyRealtimeContract>(cont
       resultSchema: command.resultSchema,
       validateResult: (value: JsonValue) => validators.validateCommandResult(name, value) as JsonValue
     }])),
+    ...(evidenceRecorder ? { recorder: evidenceRecorder } : {}),
     ...(options.reconnectDelaysMs ? { reconnectDelaysMs: options.reconnectDelaysMs } : {}),
     ...(options.sessionOpenTimeoutMs === undefined ? {} : { sessionOpenTimeoutMs: options.sessionOpenTimeoutMs }),
     ...(options.maxPendingCommands !== undefined ? { maxPendingCommands: options.maxPendingCommands } : {}),
@@ -230,7 +362,30 @@ export function createRealtimeClient<TContract extends AnyRealtimeContract>(cont
     },
     subscribeRuntime: (listener: () => void) => internal.subscribeRuntime(listener),
     runtimeSnapshot: () => internal.runtimeSnapshot(),
-    dispose: () => internal.dispose()
+    subscribeCommand: (name: string, listener: () => void) => internal.subscribeCommand(name, listener),
+    commandSnapshot: (name: string) => internal.commandSnapshot(name),
+    flushEvidence: () => evidenceExporter?.flush() ?? Promise.resolve(),
+    evidenceSnapshot: () => evidenceExporter?.snapshot() ?? {
+      pendingRecords: 0,
+      acceptedRecords: 0,
+      exportFailedRecords: 0,
+      closed: false
+    },
+    dispose: async () => {
+      try {
+        await internal.dispose();
+      } finally {
+        if (evidenceExporter && evidenceRecorder) {
+          await evidenceExporter.close([{
+            producerRole: evidenceRecorder.producerRole,
+            runtimeId: evidenceRecorder.runtimeId,
+            runtimeBootId: evidenceRecorder.runtimeBootId,
+            highWaterMark: evidenceRecorder.stats().highWaterMark,
+            closed: true
+          }]);
+        }
+      }
+    }
   }) as RealtimeClient<TContract>;
 }
 

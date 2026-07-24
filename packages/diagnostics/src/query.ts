@@ -28,6 +28,8 @@ export interface LocalEvidenceBundleV1 {
   schemaVersion: "1.0";
   tenantId: string;
   payloadPolicy: "redacted";
+  /** Absent only for alpha.4-compatible legacy source bundles. */
+  identifierPolicy?: "source" | "pseudonymized";
   pseudonymizationKey: string;
   records: readonly TenantEvidenceRecord[];
   resources?: readonly ResourceInventoryItem[];
@@ -55,6 +57,7 @@ export const localEvidenceBundleSchemaV1 = {
     schemaVersion: { const: "1.0" },
     tenantId: { type: "string", minLength: 1, maxLength: 512 },
     payloadPolicy: { const: "redacted" },
+    identifierPolicy: { enum: ["source", "pseudonymized"] },
     pseudonymizationKey: { type: "string", minLength: 32, maxLength: 512 },
     records: { type: "array", maxItems: 100_000, items: { type: "object", additionalProperties: false, required: ["tenantId", "record"], properties: {
       tenantId: { type: "string", minLength: 1, maxLength: 512 },
@@ -163,6 +166,10 @@ export const diagnosticQueryResultSchemaV1 = {
 } as const;
 
 const validateQueryResult = new Ajv2020({ strict: false }).compile(diagnosticQueryResultSchemaV1);
+const validatePseudonymizedRecord = new Ajv2020({ strict: false }).compile({
+  ...publicEvidenceRecordSchema,
+  $defs: diagnosticQueryResultSchemaV1.$defs
+});
 
 export interface QueryCompleteness {
   status: "complete" | "partial";
@@ -242,40 +249,44 @@ export class LocalDiagnosticQuery {
 
   constructor(bundle: LocalEvidenceBundleV1) {
     if (!validateBundle(bundle)) throw new Error(`RT_DIAGNOSTIC_BUNDLE_INVALID:${JSON.stringify(validateBundle.errors)}`);
+    const identifierPolicy = bundle.identifierPolicy ?? "source";
+    assertBundleIdentifierPolicy(bundle, identifierPolicy, bundle.identifierPolicy !== undefined);
     const recordIds = new Set<string>();
     const producerSequences = new Set<string>();
     for (const entry of bundle.records) {
-      if (entry.tenantId !== bundle.tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
-      if (typeof entry.record.details?.tenantId === "string" && entry.record.details.tenantId !== bundle.tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
       if (typeof entry.record.principalNamespaceId === "string" && typeof entry.record.details?.principalNamespaceId === "string" && entry.record.principalNamespaceId !== entry.record.details.principalNamespaceId) throw new Error("RT_DIAGNOSTIC_BUNDLE_INVALID");
       const sequenceKey = `${instanceKey(entry.record)}\u0000${entry.record.recordSequence}`;
       if (recordIds.has(entry.record.recordId) || producerSequences.has(sequenceKey)) throw new Error("RT_DIAGNOSTIC_BUNDLE_INVALID");
       recordIds.add(entry.record.recordId);
       producerSequences.add(sequenceKey);
     }
-    this.#tenantId = bundle.tenantId;
     this.#pseudonymizationKey = bundle.pseudonymizationKey;
+    const alreadyPseudonymized = identifierPolicy === "pseudonymized";
+    const normalizedTenantId = alreadyPseudonymized ? bundle.tenantId : pseudonymizeIdentifier(bundle.tenantId, this.#pseudonymizationKey);
+    this.#tenantId = normalizedTenantId;
     this.#bundle = {
       schemaVersion: bundle.schemaVersion,
-      tenantId: pseudonymizeIdentifier(bundle.tenantId, this.#pseudonymizationKey),
+      tenantId: normalizedTenantId,
       payloadPolicy: bundle.payloadPolicy,
+      identifierPolicy: "pseudonymized",
       pseudonymizationKey: bundle.pseudonymizationKey,
       records: [],
       ...(bundle.resources ? { resources: bundle.resources.map((resource) => ({ ...resource })) } : {}),
       resourceCapture: bundle.resourceCapture,
       ...(bundle.resourceCaptureProof ? { resourceCaptureProof: { ...bundle.resourceCaptureProof } } : {}),
       loss: { ...bundle.loss },
-      expectedProducerInstances: bundle.expectedProducerInstances.map((instance) => normalizeProducerInstance(instance, this.#pseudonymizationKey)),
-      ...(bundle.unavailableProducerInstances ? { unavailableProducerInstances: bundle.unavailableProducerInstances.map((instance) => normalizeProducerInstance(instance, this.#pseudonymizationKey)) } : {}),
-      ...(bundle.defaultDoctorQuery ? { defaultDoctorQuery: { ...bundle.defaultDoctorQuery, expectedBoundaries: bundle.defaultDoctorQuery.expectedBoundaries.map((boundary) => ({ ...boundary })), expectedProducers: [...bundle.defaultDoctorQuery.expectedProducers], ...(bundle.defaultDoctorQuery.scope ? { scope: { ...bundle.defaultDoctorQuery.scope } } : {}) } } : {})
+      expectedProducerInstances: bundle.expectedProducerInstances.map((instance) => alreadyPseudonymized ? { ...instance } : normalizeProducerInstance(instance, this.#pseudonymizationKey)),
+      ...(bundle.unavailableProducerInstances ? { unavailableProducerInstances: bundle.unavailableProducerInstances.map((instance) => alreadyPseudonymized ? { ...instance } : normalizeProducerInstance(instance, this.#pseudonymizationKey)) } : {}),
+      ...(bundle.defaultDoctorQuery ? { defaultDoctorQuery: alreadyPseudonymized ? clone(bundle.defaultDoctorQuery) : pseudonymizeStoredDoctorQuery(bundle.defaultDoctorQuery, this.#pseudonymizationKey) } : {})
     };
     this.#records = [...bundle.records.map((entry) => {
+      if (alreadyPseudonymized) return clone(entry.record);
       const redaction = { count: 0 };
       const record = redactEvidenceRecord(entry.record, this.#pseudonymizationKey, redaction);
       this.#hiddenRedactions.set(record.recordId, Math.max(0, redaction.count - countRedactedFields(record)));
       return record;
     })].sort(compareRecords);
-    this.#resources = [...(bundle.resources ?? []).map((resource) => redactResource(resource, this.#pseudonymizationKey))].sort((left, right) => left.resourceId.localeCompare(right.resourceId));
+    this.#resources = [...(bundle.resources ?? []).map((resource) => alreadyPseudonymized ? { ...resource } : redactResource(resource, this.#pseudonymizationKey))].sort((left, right) => left.resourceId.localeCompare(right.resourceId));
     this.#sourceDigest = sourceSnapshotDigest(bundle, this.#pseudonymizationKey);
   }
 
@@ -347,17 +358,29 @@ export class LocalDiagnosticQuery {
   }
 
   doctor(request: DoctorQueryRequest): DoctorQueryResult {
+    return this.#doctor(request, false);
+  }
+
+  storedDoctor(tenantId: string): DoctorQueryResult {
+    const configured = this.#bundle.defaultDoctorQuery;
+    if (!configured) throw new Error("RT_DIAGNOSTIC_CONCLUSION_UNSUPPORTED:default doctor contract is absent");
+    return this.#doctor({ kind: "doctor", tenantId, ...clone(configured) }, true);
+  }
+
+  #doctor(request: DoctorQueryRequest, identifiersPseudonymized: boolean): DoctorQueryResult {
     this.#assertTenant(request.tenantId);
     assertDoctorQuery(request);
     if (request.expectedProducers.some((role) => !this.#bundle.expectedProducerInstances.some((instance) => instance.producerRole === role))) throw new Error("RT_DIAGNOSTIC_TOPOLOGY_INCOMPLETE");
-    const normalizedScope: NonNullable<DoctorQueryRequest["scope"]> = request.scope ? normalizeScope(request.scope, this.#pseudonymizationKey)! : {};
+    const normalizedScope: NonNullable<DoctorQueryRequest["scope"]> = request.scope
+      ? identifiersPseudonymized ? clone(request.scope) : normalizeScope(request.scope, this.#pseudonymizationKey)!
+      : {};
     if (normalizedScope.commandId && !normalizedScope.principalNamespaceId && !normalizedScope.operationCorrelationId && !normalizedScope.eventId && !normalizedScope.transactionId) {
       const principalNamespaceId = scopeCommandRecords(this.#records, normalizedScope.commandId)[0]?.principalNamespaceId;
       if (principalNamespaceId) normalizedScope.principalNamespaceId = principalNamespaceId;
     }
     const report = runDoctor({
       records: this.#records,
-      expectedBoundaries: request.expectedBoundaries.map((boundary) => normalizeExpectedBoundary(boundary, this.#pseudonymizationKey)),
+      expectedBoundaries: request.expectedBoundaries.map((boundary) => identifiersPseudonymized ? { ...boundary } : normalizeExpectedBoundary(boundary, this.#pseudonymizationKey)),
       expectedProducers: request.expectedProducers,
       ...(request.requireCausalHandoffs === undefined ? {} : { requireCausalHandoffs: request.requireCausalHandoffs }),
       ...(Object.keys(normalizedScope).length > 0 ? { scope: normalizedScope } : {}),
@@ -417,7 +440,10 @@ export class LocalDiagnosticQuery {
     return this.#records.some((record) => instanceKey(record) === instanceKey(expected) && record.boundary === "resource.inventory_captured" && record.outcome === "success" && record.details?.captureId === proof.captureId && record.details?.capturedAt === proof.capturedAt && record.details?.inventoryCount === proof.inventoryCount && record.details?.inventoryDigest === proof.inventoryDigest);
   }
 
-  #assertTenant(tenantId: string): void { assertQueryString(tenantId, "RT_DIAGNOSTIC_TENANT_MISMATCH"); if (tenantId !== this.#tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH"); }
+  #assertTenant(tenantId: string): void {
+    assertQueryString(tenantId, "RT_DIAGNOSTIC_TENANT_MISMATCH");
+    if (pseudonymizeIdentifier(tenantId, this.#pseudonymizationKey) !== this.#tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
+  }
 }
 
 function queryLimit(value = DEFAULT_QUERY_LIMIT): number {
@@ -579,7 +605,7 @@ function base64UrlDecode(value: string): string {
 
 const safeDetailKeys = new Map<string, string>(safeDetailKeyNames.map((key) => [key, key]));
 const pseudonymizedDetailValueKeys = new Set([
-  "appendId", "causalEventIds", "commandId", "connectionId", "deliveryId", "eventId", "outboxId", "outboxIds", "ownerId", "principalNamespaceId", "observerPrincipalNamespaceId", "requestId", "resourceId", "sessionId", "stream", "traceId", "transactionId"
+  "appendId", "causalEventIds", "commandId", "connectionId", "deliveryId", "eventId", "outboxId", "outboxIds", "ownerId", "principalNamespaceId", "observerPrincipalNamespaceId", "requestId", "resourceId", "sessionId", "stream", "tenantId", "traceId", "transactionId"
 ].map(normalizeDetailKey));
 const safeNumericDetailKeys = new Set([
   "actual", "after", "attempt", "bufferedAmount", "bytes", "causalEventPositions", "consumers", "count", "cursor", "cursorSequence", "delay", "delivered", "eventSequence", "expected", "expectedSequence", "first", "from", "head", "headSequence", "idempotencyRetentionMs", "index", "intentHashVersion", "inventoryCount", "last", "maxBufferedBytes", "maxBytes", "maxMessageBytes", "maxOutboundBufferedBytes", "maxRecords", "nextBytes", "nextMessageBytes", "nextRecords", "pages", "projectedSequence", "receivedSequence", "recordSequence", "replayRetentionMs", "requestedAfter", "sequence", "sessionGeneration", "snapshotBytes", "snapshotSequence", "socketWritableBytes", "through", "throughSequence", "timeoutMs", "commandResultRetentionMs", "maxRecoveryBufferBytes", "maxRecoveryBufferRecords"
@@ -613,6 +639,66 @@ function redactResource(resource: ResourceInventoryItem, pseudonymizationKey: st
   return { ...resource, resourceId: pseudonymizeIdentifier(resource.resourceId, pseudonymizationKey), ownerId: pseudonymizeIdentifier(resource.ownerId, pseudonymizationKey) };
 }
 
+function pseudonymizeStoredDoctorQuery(
+  query: Omit<DoctorQueryRequest, "kind" | "tenantId">,
+  pseudonymizationKey: string
+): Omit<DoctorQueryRequest, "kind" | "tenantId"> {
+  const { scope, ...base } = query;
+  return {
+    ...base,
+    expectedBoundaries: query.expectedBoundaries.map((boundary) => normalizeExpectedBoundary(boundary, pseudonymizationKey)),
+    expectedProducers: [...query.expectedProducers],
+    expectedOutcome: "configured expected outcome (redacted)",
+    ...(scope ? { scope: normalizeScope(scope, pseudonymizationKey)! } : {})
+  };
+}
+
+export function redactLocalEvidenceBundle(bundle: LocalEvidenceBundleV1): LocalEvidenceBundleV1 {
+  if (!validateBundle(bundle)) throw new Error(`RT_DIAGNOSTIC_BUNDLE_INVALID:${JSON.stringify(validateBundle.errors)}`);
+  const policy = bundle.identifierPolicy ?? "source";
+  if (policy !== "source") throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  assertBundleIdentifierPolicy(bundle, policy, bundle.identifierPolicy !== undefined);
+  // Reuse the source constructor's duplicate, topology, tenant, and correlation
+  // checks before crossing the export boundary.
+  void new LocalDiagnosticQuery(bundle);
+
+  const key = bundle.pseudonymizationKey;
+  const tenantId = pseudonymizeIdentifier(bundle.tenantId, key);
+  const resources = bundle.resources?.map((resource) => redactResource(resource, key));
+  let resourceCaptureProof = bundle.resourceCaptureProof ? { ...bundle.resourceCaptureProof } : undefined;
+  if (resourceCaptureProof && resources) {
+    resourceCaptureProof = { ...resourceCaptureProof, inventoryDigest: resourceInventoryDigest(resources, key) };
+  }
+  const records = bundle.records.map((entry) => {
+    const record = redactEvidenceRecord(entry.record, key);
+    if (
+      resourceCaptureProof
+      && record.boundary === "resource.inventory_captured"
+      && record.details?.captureId === resourceCaptureProof.captureId
+    ) {
+      record.details = { ...record.details, inventoryDigest: resourceCaptureProof.inventoryDigest };
+    }
+    return { tenantId, record };
+  });
+  const output: LocalEvidenceBundleV1 = {
+    schemaVersion: bundle.schemaVersion,
+    tenantId,
+    payloadPolicy: bundle.payloadPolicy,
+    identifierPolicy: "pseudonymized",
+    pseudonymizationKey: key,
+    records,
+    ...(resources ? { resources } : {}),
+    resourceCapture: bundle.resourceCapture,
+    ...(resourceCaptureProof ? { resourceCaptureProof } : {}),
+    loss: { ...bundle.loss },
+    expectedProducerInstances: bundle.expectedProducerInstances.map((instance) => normalizeProducerInstance(instance, key)),
+    ...(bundle.unavailableProducerInstances ? { unavailableProducerInstances: bundle.unavailableProducerInstances.map((instance) => normalizeProducerInstance(instance, key)) } : {}),
+    ...(bundle.defaultDoctorQuery ? { defaultDoctorQuery: pseudonymizeStoredDoctorQuery(bundle.defaultDoctorQuery, key) } : {})
+  };
+  assertBundleIdentifierPolicy(output, "pseudonymized", true);
+  return output;
+}
+
 function normalizeFilters(filters: RawEvidenceRequest["filters"], pseudonymizationKey: string): NonNullable<RawEvidenceRequest["filters"]> {
   const output = { ...filters };
   for (const field of ["stream", "transactionId", "commandId", "eventId", "resourceId"] as const) if (typeof output[field] === "string") output[field] = pseudonymizeIdentifier(output[field]!, pseudonymizationKey);
@@ -638,6 +724,62 @@ function normalizeExpectedBoundary(boundary: DoctorOptions["expectedBoundaries"]
     ...(boundary.runtimeId ? { runtimeId: pseudonymizeIdentifier(boundary.runtimeId, pseudonymizationKey) } : {}),
     ...(boundary.runtimeBootId ? { runtimeBootId: pseudonymizeIdentifier(boundary.runtimeBootId, pseudonymizationKey) } : {})
   };
+}
+
+const publicPseudonymPattern = /^pseudonym:sha256:[a-f0-9]{64}$/u;
+const publicOperationCorrelationPattern = /^opcorr:sha256:[a-f0-9]{64}$/u;
+
+function assertBundleIdentifierPolicy(
+  bundle: LocalEvidenceBundleV1,
+  policy: "source" | "pseudonymized",
+  explicit: boolean
+): void {
+  if (policy === "source") {
+    for (const entry of bundle.records) {
+      if (entry.tenantId !== bundle.tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
+      if (typeof entry.record.details?.tenantId === "string" && entry.record.details.tenantId !== bundle.tenantId) throw new Error("RT_DIAGNOSTIC_TENANT_MISMATCH");
+    }
+    if (explicit && bundleContainsPseudonymizedIdentifiers(bundle)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    return;
+  }
+  if (!publicPseudonymPattern.test(bundle.tenantId)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  for (const entry of bundle.records) {
+    if (entry.tenantId !== bundle.tenantId || !validatePseudonymizedRecord(entry.record)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    if (typeof entry.record.details?.tenantId === "string" && entry.record.details.tenantId !== bundle.tenantId) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  }
+  for (const instance of [...bundle.expectedProducerInstances, ...(bundle.unavailableProducerInstances ?? [])]) {
+    if (!publicPseudonymPattern.test(instance.runtimeId) || !publicPseudonymPattern.test(instance.runtimeBootId)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  }
+  for (const resource of bundle.resources ?? []) {
+    if (!publicPseudonymPattern.test(resource.resourceId) || !publicPseudonymPattern.test(resource.ownerId)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  }
+  const configured = bundle.defaultDoctorQuery;
+  if (configured) {
+    if (configured.expectedOutcome !== "configured expected outcome (redacted)") throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    for (const boundary of configured.expectedBoundaries) {
+      if (boundary.runtimeId !== undefined && !publicPseudonymPattern.test(boundary.runtimeId)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+      if (boundary.runtimeBootId !== undefined && !publicPseudonymPattern.test(boundary.runtimeBootId)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    }
+    for (const [field, value] of Object.entries(configured.scope ?? {})) {
+      if (typeof value !== "string") continue;
+      if (field === "operationCorrelationId" ? !publicOperationCorrelationPattern.test(value) : !publicPseudonymPattern.test(value)) throw new Error("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    }
+  }
+}
+
+function bundleContainsPseudonymizedIdentifiers(bundle: LocalEvidenceBundleV1): boolean {
+  if (publicPseudonymPattern.test(bundle.tenantId)) return true;
+  for (const entry of bundle.records) {
+    if (publicPseudonymPattern.test(entry.tenantId)) return true;
+    for (const field of pseudonymizedFields) {
+      const value = entry.record[field as keyof EvidenceRecord];
+      if (typeof value === "string" && publicPseudonymPattern.test(value)) return true;
+    }
+  }
+  for (const instance of [...bundle.expectedProducerInstances, ...(bundle.unavailableProducerInstances ?? [])]) {
+    if (publicPseudonymPattern.test(instance.runtimeId) || publicPseudonymPattern.test(instance.runtimeBootId)) return true;
+  }
+  return (bundle.resources ?? []).some((resource) => publicPseudonymPattern.test(resource.resourceId) || publicPseudonymPattern.test(resource.ownerId));
 }
 
 function countRedactedFields(value: unknown): number {

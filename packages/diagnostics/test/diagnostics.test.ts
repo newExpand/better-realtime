@@ -4,11 +4,58 @@ import { FlightRecorder, ResourceRegistry, ResourceScope, doctor } from "../src/
 describe("bounded diagnostics", () => {
   const commandOperation = `opcorr:sha256:${"a".repeat(64)}` as const;
   const outboxOperation = `opcorr:sha256:${"b".repeat(64)}` as const;
+  it("delivers each accepted record to one synchronous collection hook", () => {
+    const collected: unknown[] = [];
+    const recorder = new FlightRecorder({
+      runtimeId: "hook-test",
+      runtimeBootId: "hook-boot",
+      producerRole: "client",
+      onRecord: (record) => collected.push(record)
+    });
+    const accepted = recorder.record({
+      kind: "transport.opened",
+      boundary: "transport.opened",
+      outcome: "success",
+      component: "client",
+      componentVersion: "test"
+    });
+    expect(collected).toEqual([accepted]);
+    expect(recorder.stats().highWaterMark).toBe(1);
+  });
+
   it("evicts explicitly at record bounds", () => {
     const recorder = new FlightRecorder({ runtimeId: "test", producerRole: "client", limits: { maxRecords: 2, maxBytes: 50_000, maxAgeMs: 60_000 } });
     for (const boundary of ["transport.opened", "session.accepted", "client.event_applied"]) recorder.record({ kind: "boundary", boundary, outcome: "success", component: "client", componentVersion: "test" });
     expect(recorder.records()).toHaveLength(2);
     expect(recorder.stats().evictedRecords).toBe(1);
+  });
+
+  it.each([
+    ["maxRecords", Number.NaN],
+    ["maxRecords", Number.POSITIVE_INFINITY],
+    ["maxRecords", 0],
+    ["maxRecords", -1],
+    ["maxRecords", 1.5],
+    ["maxBytes", Number.NaN],
+    ["maxBytes", Number.POSITIVE_INFINITY],
+    ["maxBytes", 0],
+    ["maxAgeMs", Number.NaN],
+    ["maxAgeMs", Number.POSITIVE_INFINITY],
+    ["maxAgeMs", 0]
+  ] as const)("rejects an invalid %s recorder limit", (name, value) => {
+    expect(() => new FlightRecorder({
+      runtimeId: "test",
+      producerRole: "client",
+      limits: { [name]: value }
+    })).toThrow(`RT_DIAGNOSTIC_RECORDER_LIMIT_INVALID:${name}`);
+  });
+
+  it("rejects maxRecords values whose edge bound is not a safe integer", () => {
+    expect(() => new FlightRecorder({
+      runtimeId: "test",
+      producerRole: "client",
+      limits: { maxRecords: Math.floor(Number.MAX_SAFE_INTEGER / 2) + 1 }
+    })).toThrow("RT_DIAGNOSTIC_RECORDER_LIMIT_INVALID:maxRecords");
   });
 
   it("reports the last success and first divergent boundary without guessing", () => {
@@ -89,6 +136,67 @@ describe("bounded diagnostics", () => {
     const report = doctor({ records: [...database.records(), ...server.records(), ...client.records()], expectedBoundaries: [{ producerRole: "database", boundary: "db.committed" }, { producerRole: "server", boundary: "command.completed" }, { producerRole: "client", boundary: "command.observed" }], expectedProducers: ["database", "server", "client"], scope: { eventId: "event-a" }, expectedOutcome: "one command operation", requireCausalHandoffs: true });
     expect(report.verdict).toBe("indeterminate");
     expect(report.completeness.missingProducers).toEqual(["server"]);
+  });
+
+  it("proves every event in a multi-event command through an event-scoped causal closure", () => {
+    const database = new FlightRecorder({ runtimeId: "database", runtimeBootId: "db-boot", producerRole: "database" });
+    const server = new FlightRecorder({ runtimeId: "gateway", runtimeBootId: "gateway-boot", producerRole: "server" });
+    for (const [index, eventId] of ["event-a", "event-b"].entries()) {
+      database.record({
+        kind: "outbox.appended",
+        boundary: "outbox.appended",
+        outcome: "success",
+        component: "store-postgres",
+        componentVersion: "test",
+        commandId: "command-multi",
+        eventId,
+        stream: `room:${index}`,
+        causalHandoffId: `event:${eventId}`
+      });
+      server.record({
+        kind: "command.causal_event_linked",
+        boundary: "command.causal_event_linked",
+        outcome: "success",
+        component: "postgres-gateway",
+        componentVersion: "test",
+        commandId: "command-multi",
+        eventId,
+        stream: `room:${index}`,
+        causalHandoffId: `event:${eventId}`,
+        details: { index, count: 2, eventSequence: 1 }
+      });
+    }
+    const expectedBoundaries = [
+      { producerRole: "database" as const, boundary: "outbox.appended" },
+      { producerRole: "server" as const, boundary: "command.causal_event_linked" }
+    ];
+    const expectedProducers = ["database" as const, "server" as const];
+
+    for (const eventId of ["event-a", "event-b"]) {
+      const report = doctor({
+        records: [...database.records(), ...server.records()],
+        expectedBoundaries,
+        expectedProducers,
+        scope: { eventId },
+        expectedOutcome: "each causal command event crossed the gateway",
+        requireCausalHandoffs: true
+      });
+      expect(report.verdict).toBe("proven");
+      expect(report.evidenceClosure).toHaveLength(2);
+      expect(report.evidenceClosure.every((entry) => entry.eventId === eventId && entry.causalHandoffId === `event:${eventId}`)).toBe(true);
+    }
+
+    const withoutSecondGatewayLink = [...database.records(), ...server.records()].filter((record) =>
+      !(record.producerRole === "server" && record.eventId === "event-b")
+    );
+    expect(doctor({
+      records: withoutSecondGatewayLink,
+      expectedBoundaries,
+      expectedProducers,
+      scope: { eventId: "event-b" },
+      expectedOutcome: "second causal command event crossed the gateway",
+      requireCausalHandoffs: true
+    }).verdict).toBe("indeterminate");
   });
 
   it("does not splice required boundaries across conflicting command attempts", () => {

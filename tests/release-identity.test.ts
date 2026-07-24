@@ -10,11 +10,10 @@ describe("Better Realtime public release identity", () => {
     const manifest = JSON.parse(await readFile(resolve(root, "packages/runtime/package.json"), "utf8")) as Record<string, unknown>;
     expect(manifest).toMatchObject({
       name: "better-realtime",
-      version: "0.1.0-alpha.4",
+      version: "0.2.0-alpha.1",
       license: "MIT",
       bin: {
-        "better-realtime": "./dist/cli-bin.js",
-        "better-realtime-mcp": "./dist/mcp-stdio.js"
+        "better-realtime": "./dist/cli-bin.js"
       },
       repository: { type: "git", url: "git+https://github.com/newExpand/better-realtime.git" },
       homepage: "https://github.com/newExpand/better-realtime#readme",
@@ -26,19 +25,24 @@ describe("Better Realtime public release identity", () => {
       main: "./dist/index.js",
       types: "./dist/index.d.ts",
       files: ["dist"],
-      engines: { node: ">=22.0.0" },
       exports: {
         ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
         "./react": { types: "./dist/react.d.ts", import: "./dist/react.js" },
         "./server": { types: "./dist/server.d.ts", browser: "./dist/node-only.js", node: "./dist/server.js" },
-        "./diagnostics": { types: "./dist/diagnostic-io.d.ts", browser: "./dist/node-only.js", node: "./dist/diagnostic-io.js" },
-        "./mcp": { types: "./dist/mcp.d.ts", browser: "./dist/node-only.js", node: "./dist/mcp.js" }
+        "./diagnostics": { types: "./dist/diagnostic-io.d.ts", browser: "./dist/node-only.js", node: "./dist/diagnostic-io.js" }
       },
       peerDependencies: { pg: ">=8.22.0 <9", react: ">=18.2.0 <20", ws: ">=8.21.1 <9" },
-      peerDependenciesMeta: { react: { optional: true } }
+      peerDependenciesMeta: { pg: { optional: true }, react: { optional: true }, ws: { optional: true } }
     });
-    expect(manifest.peerDependenciesMeta).not.toHaveProperty("pg");
-    expect(manifest.peerDependenciesMeta).not.toHaveProperty("ws");
+    expect(manifest).not.toHaveProperty("engines");
+    expect(manifest.exports).not.toHaveProperty("./mcp");
+    const mcpManifest = JSON.parse(await readFile(resolve(root, "packages/mcp/package.json"), "utf8")) as Record<string, unknown>;
+    expect(mcpManifest).toMatchObject({
+      name: "better-realtime-mcp",
+      version: "0.2.0-alpha.1",
+      engines: { node: ">=22.0.0" },
+      bin: { "better-realtime-mcp": "./dist/bin.js" }
+    });
   });
 
   it("fails closed on missing or unexpected package files", async () => {
@@ -81,10 +85,16 @@ describe("Better Realtime public release identity", () => {
     const diagnostics = await readFile(resolve(root, "docs/public/diagnostics.md"), "utf8");
     const runbook = await readFile(resolve(root, "docs/public/release.md"), "utf8");
     for (const document of [template, readme, quickstart]) {
-      expect(document).toContain("npm install better-realtime@alpha react pg ws");
+      expect(document).toContain("npm install better-realtime@0.2.0-alpha.1 react");
+      expect(document).toContain("npm install better-realtime@0.2.0-alpha.1 pg ws");
+      expect(document).toContain("npm install better-realtime-mcp@0.2.0-alpha.1");
       expect(document).not.toContain("npm install better-realtime react pg ws");
-      expect(document).toContain("`0.1.0-alpha.4`");
     }
+    for (const document of [template, readme]) {
+      expect(document).toContain("`0.1.0-alpha.4` is the current published evaluation release");
+      expect(document).toContain("unpublished `0.2.0-alpha.1` candidate");
+    }
+    expect(quickstart).toContain("release candidate for Better Realtime `0.2.0-alpha.1`");
     expect(template).toContain("this is stream recovery, not resume-token session restoration");
     expect(template).toContain("pnpm e2e:consumer");
     expect(template).toContain("npm exec -- better-realtime doctor");
@@ -97,8 +107,9 @@ describe("Better Realtime public release identity", () => {
       expect(target).not.toMatch(/(?:^\/|\.\.|\\)/u);
       await expect(access(resolve(root, target))).resolves.toBeUndefined();
     }
-    expect(quickstart).toContain("events: { notificationAdded: notification, notificationRead }");
-    expect(quickstart).toContain('event.type === "notificationAdded"');
+    expect(quickstart).toContain("inbox: stateStream({");
+    expect(quickstart).toContain("notificationAdded: {");
+    expect(quickstart).toContain("reduce: (state, item)");
     expect(quickstart).toContain("export const contract = defineRealtimeContract");
     expect(quickstart).toContain('import { contract } from "./contract.js"');
     expect(diagnostics).toContain('mode: 0o600');
@@ -289,14 +300,28 @@ describe("Better Realtime public release identity", () => {
     expect(source).toMatch(/return \{ \.\.\.result, product: BETTER_REALTIME_PRODUCT, productVersion: BETTER_REALTIME_VERSION, component: BETTER_REALTIME_COMPONENT_ID \}/u);
   });
 
-  it("keeps the shipped MCP adapter on stdio and outside the vulnerable Hono static path", async () => {
-    const source = await readFile(resolve(root, "packages/runtime/src/mcp.ts"), "utf8");
+  it("keeps the MCP companion on stdio and outside the vulnerable Hono static path", async () => {
+    const source = await readFile(resolve(root, "packages/mcp/src/index.ts"), "utf8");
     const runtimeSourceRoot = resolve(root, "packages/runtime/src");
-    const shippedSources = (await readdir(runtimeSourceRoot, { recursive: true }))
-      .filter((path) => path.endsWith(".ts"))
-      .map((path) => readFile(resolve(runtimeSourceRoot, path), "utf8"));
+    const mcpSourceRoot = resolve(root, "packages/mcp/src");
+    const runtimeConfig = await readFile(resolve(root, "packages/runtime/tsconfig.json"), "utf8");
+    const runtimeManifest = JSON.parse(await readFile(resolve(root, "packages/runtime/package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      exports?: Record<string, unknown>;
+    };
+    const shippedSources = [
+      ...((await readdir(runtimeSourceRoot, { recursive: true }))
+        .filter((path) => path.endsWith(".ts") && !["mcp.ts", "mcp-stdio.ts"].includes(path))
+        .map((path) => readFile(resolve(runtimeSourceRoot, path), "utf8"))),
+      ...((await readdir(mcpSourceRoot, { recursive: true }))
+        .filter((path) => path.endsWith(".ts"))
+        .map((path) => readFile(resolve(mcpSourceRoot, path), "utf8")))
+    ];
     expect(source).toContain('from "@modelcontextprotocol/sdk/server/index.js"');
     expect(source).toContain('from "@modelcontextprotocol/sdk/server/stdio.js"');
+    expect(runtimeConfig).toContain('"exclude": ["src/mcp.ts", "src/mcp-stdio.ts"]');
+    expect(runtimeManifest.dependencies).not.toHaveProperty("@modelcontextprotocol/sdk");
+    expect(runtimeManifest.exports).not.toHaveProperty("./mcp");
     expect((await Promise.all(shippedSources)).join("\n")).not.toMatch(/@hono\/node-server|streamableHttp|serveStatic|serve-static/u);
   });
 });

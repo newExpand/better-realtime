@@ -48,6 +48,7 @@ export async function checkReleaseSecurity(
   const buildJob = workflowJob(publish, "build");
   if (!buildJob.includes("id-token: none") || buildJob.includes("environment: npm-alpha")) throw new Error(`RT_RELEASE_BUILD_OIDC_EXPOSED:${relative(root, publishPath)}`);
   assertReleaseBuildAuditOrder(publish);
+  assertReleasePackageBoundary(publish);
   assertReleaseArtifactApproval(publish, stateMachine);
   assertReleaseRecoveryContract(publish, verify, stateMachine);
   assertReleaseIntegrityIdentityBoundary(publish, verify);
@@ -68,6 +69,24 @@ export async function checkReleaseSecurity(
     }
   }
   return { checked, privateMode, contractState: privateMode ? "bootstrap-closed-oidc-ready" : "oidc-only-contract" };
+}
+
+export function assertReleasePackageBoundary(workflow: string): void {
+  const buildJob = workflowJob(workflow, "build");
+  const packageGate = buildJob.indexOf("pnpm --dir release-source release:single-package:check");
+  const artifactBuild = buildJob.indexOf("pnpm --dir release-source --silent package:pack");
+  if (
+    packageGate < 0
+    || artifactBuild < 0
+    || packageGate > artifactBuild
+    || !buildJob.includes("RELEASE_PACKAGE_NAME: better-realtime")
+    || !buildJob.includes("RELEASE_PACKAGE_MANIFEST: packages/runtime/package.json")
+    || !buildJob.includes("RELEASE_ARTIFACT_COMMAND: package:pack")
+    || !buildJob.includes("RELEASE_WORKFLOW_PATH: .github/workflows/release.yml")
+    || !buildJob.includes("RELEASE_NPM_ENVIRONMENT: npm-alpha")
+    || buildJob.includes("package:pack:mcp")
+    || buildJob.includes("better-realtime-mcp-")
+  ) throw new Error("RT_RELEASE_PACKAGE_BOUNDARY_DRIFT");
 }
 
 export function assertPublishOidcBoundary(workflow: string): void {
@@ -456,7 +475,7 @@ export function assertReleaseArtifactApproval(workflow: string, adapter: string)
   if (
     !requiredInput("expected_sha256")
     || !requiredInput("expected_size")
-    || count(workflow, "package:pack") !== 1
+    || count(workflow, "pnpm --dir release-source --silent package:pack") !== 1
     || packIndex < 0
     || approvalIndex <= packIndex
     || identityIndex <= approvalIndex

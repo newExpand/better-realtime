@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1.0",
+  "workflow": ".github/workflows/release-bundle.yml",
+  "packages": [
+    {
+      "name": "better-realtime",
+      "manifest": "packages/runtime/package.json",
+      "packCommand": "package:pack",
+      "fileManifest": "release/package-files.json",
+      "environment": "npm-alpha",
+      "publishOrder": 1
+    },
+    {
+      "name": "better-realtime-mcp",
+      "manifest": "packages/mcp/package.json",
+      "packCommand": "package:pack:mcp",
+      "fileManifest": "release/mcp-package-files.json",
+      "environment": "npm-mcp-alpha",
+      "publishOrder": 2
+    }
+  ],
+  "partialSuccessPolicy": "verify exact published packages; never republish; publish the next absent package only after prior package byte/provenance verification",
+  "bootstrapPolicy": "better-realtime-mcp must exist and have its own trusted publisher before this workflow is dispatched"
+}

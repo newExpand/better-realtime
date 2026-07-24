@@ -125,12 +125,19 @@ jobs:
       - name: Install the immutable package source
         run: pnpm --dir release-source install --frozen-lockfile
       - run: pnpm --dir release-source audit --audit-level=high
+      - run: pnpm --dir release-source package:clean-room:isolation
       - name: Build the release artifact once
         id: artifact
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          RELEASE_PACKAGE_NAME: better-realtime
+          RELEASE_PACKAGE_MANIFEST: packages/runtime/package.json
+          RELEASE_ARTIFACT_COMMAND: package:pack
+          RELEASE_WORKFLOW_PATH: .github/workflows/release.yml
+          RELEASE_NPM_ENVIRONMENT: npm-alpha
         run: |
           set -euo pipefail
+          pnpm --dir release-source release:single-package:check
           artifact="better-realtime-$INPUT_VERSION.tgz"
           mkdir -p output
           pnpm --dir release-source --silent package:pack > output/package-report.json

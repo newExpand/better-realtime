@@ -20,6 +20,7 @@ export default defineConfig({
       { find: "@realtime/protocol/types", replacement: workspaceSource("../protocol/src/types.ts") },
       { find: "@realtime/protocol/constants", replacement: workspaceSource("../protocol/src/constants.ts") },
       { find: "@realtime/core", replacement: workspaceSource("../core/src/index.ts") },
+      { find: "@realtime/diagnostics/browser", replacement: workspaceSource("../diagnostics/src/browser.ts") },
       { find: "@realtime/diagnostics", replacement: workspaceSource("../diagnostics/src/index.ts") },
       { find: "@realtime/protocol", replacement: workspaceSource("../protocol/src/index.ts") },
       { find: "@realtime/server-node", replacement: workspaceSource("../server-node/src/index.ts") },
@@ -35,12 +36,10 @@ export default defineConfig({
       entry: {
         index: "src/index.ts",
         react: "src/react.ts",
-        server: "src/server.ts",
-        "diagnostic-io": "src/diagnostic-io.ts",
+        server: "src/server-entry.ts",
+        "diagnostic-io": "src/diagnostics-entry.ts",
         cli: "src/cli.ts",
         "cli-bin": "src/cli-bin.ts",
-        mcp: "src/mcp.ts",
-        "mcp-stdio": "src/mcp-stdio.ts",
         "node-only": "src/node-only.ts"
       },
       formats: ["es"],

@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { command, defineRealtimeContract, jsonSchema, stream } from "../src/index.ts";
 import { createRealtimeServer, postgres } from "../src/server.ts";
 import { validatePreparedEvent } from "../src/application-adapter.ts";
+import { BoundedLocalEvidenceSink, LocalDiagnosticQuery, pseudonymizeIdentifier } from "../../diagnostics/src/index.ts";
 
 const contract = defineRealtimeContract({
   contractId: "test.server-surface",
@@ -106,13 +107,139 @@ describe("public server surface", () => {
   });
 
   it("uses a fresh privacy domain for every exported evidence bundle", async () => {
-    const server = createRealtimeServer(contract, validOptions());
+    const tenantId = "tenant-evidence-secret";
+    const commandId = "command-evidence-secret";
+    const server = createRealtimeServer(contract, {
+      ...validOptions(),
+      diagnostics: {
+        defaultDoctorQuery: {
+          expectedBoundaries: [{ producerRole: "server", runtimeId: "test-server", boundary: "command.completed" }],
+          expectedProducers: ["server"],
+          expectedOutcome: "private expected outcome",
+          scope: { commandId }
+        }
+      }
+    });
     try {
-      const first = server.evidenceBundle("tenant");
-      const second = server.evidenceBundle("tenant");
+      const first = server.evidenceBundle(tenantId);
+      const second = server.evidenceBundle(tenantId);
       expect(first.pseudonymizationKey).toHaveLength(72);
       expect(second.pseudonymizationKey).toHaveLength(72);
       expect(first.pseudonymizationKey).not.toBe(second.pseudonymizationKey);
+      expect(first.identifierPolicy).toBe("pseudonymized");
+      expect(first.tenantId).toBe(pseudonymizeIdentifier(tenantId, first.pseudonymizationKey));
+      expect(first.expectedProducerInstances.every((instance) => instance.runtimeId.startsWith("pseudonym:sha256:") && instance.runtimeBootId.startsWith("pseudonym:sha256:"))).toBe(true);
+      expect(first.defaultDoctorQuery).toMatchObject({
+        expectedOutcome: "configured expected outcome (redacted)",
+        scope: { commandId: pseudonymizeIdentifier(commandId, first.pseudonymizationKey) }
+      });
+      const serialized = JSON.stringify(first);
+      for (const raw of [tenantId, commandId, "test-server", "private expected outcome"]) expect(serialized).not.toContain(`\"${raw}\"`);
+      expect(() => new LocalDiagnosticQuery(first).rawEvidence({ tenantId })).not.toThrow();
     } finally { await server.dispose(); }
+  });
+
+  it("owns server evidence producer lifecycle and rejects an ambiguous system tenant", async () => {
+    const sink = new BoundedLocalEvidenceSink();
+    const server = createRealtimeServer(contract, {
+      ...validOptions(),
+      diagnostics: {
+        evidence: {
+          sink,
+          pseudonymizationKey: "server-evidence-pseudonymization-key",
+          systemTenantId: "system"
+        }
+      }
+    });
+    expect(server.evidenceSnapshot()).toEqual({ pendingRecords: 0, acceptedRecords: 0, exportFailedRecords: 0, closed: false });
+    await server.flushEvidence();
+    const firstDispose = server.dispose();
+    const concurrentDispose = server.dispose();
+    expect(concurrentDispose).toBe(firstDispose);
+    await firstDispose;
+    expect(server.dispose()).toBe(firstDispose);
+    expect(server.evidenceSnapshot()).toMatchObject({ exportFailedRecords: 0, closed: true });
+    expect(sink.coverage.snapshot()).toMatchObject({
+      status: "complete",
+      expectedProducerInstances: [{ producerRole: "database" }, { producerRole: "server" }],
+      openProducerInstances: [],
+      missingRanges: []
+    });
+    expect(() => createRealtimeServer(contract, {
+      ...validOptions(),
+      diagnostics: {
+        evidence: {
+          sink: new BoundedLocalEvidenceSink(),
+          pseudonymizationKey: "server-evidence-pseudonymization-key",
+          systemTenantId: ""
+        }
+      }
+    })).toThrow("server.diagnostics.evidence.systemTenantId");
+  });
+
+  it("shares one rejected dispose promise across concurrent and later callers", async () => {
+    class FailingCloseSink extends BoundedLocalEvidenceSink {
+      override closeProducer(): void {
+        throw new Error("sink close failed");
+      }
+    }
+    const server = createRealtimeServer(contract, {
+      ...validOptions(),
+      diagnostics: {
+        evidence: {
+          sink: new FailingCloseSink(),
+          pseudonymizationKey: "server-evidence-pseudonymization-key",
+          systemTenantId: "system"
+        }
+      }
+    });
+
+    const firstDispose = server.dispose();
+    const concurrentDispose = server.dispose();
+    expect(concurrentDispose).toBe(firstDispose);
+    await expect(firstDispose).rejects.toThrow("RT_DIAGNOSTIC_EXPORT_FAILED");
+    expect(server.dispose()).toBe(firstDispose);
+    await expect(server.dispose()).rejects.toThrow("RT_DIAGNOSTIC_EXPORT_FAILED");
+  });
+
+  it("coordinates two gateway producer sets through one explicitly finalized sink", async () => {
+    const sink = new BoundedLocalEvidenceSink();
+    const evidence = {
+      sink,
+      topology: "shared" as const,
+      pseudonymizationKey: "shared-server-evidence-key-at-least-32-bytes",
+      systemTenantId: "system"
+    };
+    const first = createRealtimeServer(contract, {
+      ...validOptions(),
+      runtimeId: "gateway-a",
+      diagnostics: { evidence }
+    });
+    const second = createRealtimeServer(contract, {
+      ...validOptions(),
+      runtimeId: "gateway-b",
+      diagnostics: { evidence }
+    });
+
+    expect(sink.coverage.snapshot()).toMatchObject({
+      status: "partial",
+      expectedProducerSetDeclared: false,
+      expectedProducerInstances: expect.any(Array)
+    });
+    expect(sink.coverage.snapshot().expectedProducerInstances).toHaveLength(4);
+    sink.finalizeExpectedProducers();
+    await first.dispose();
+    expect(sink.coverage.snapshot()).toMatchObject({
+      status: "partial",
+      openProducerInstances: expect.any(Array)
+    });
+    expect(sink.coverage.snapshot().openProducerInstances).toHaveLength(2);
+    await second.dispose();
+    expect(sink.coverage.snapshot()).toMatchObject({
+      status: "complete",
+      openProducerInstances: [],
+      missingProducerInstances: [],
+      missingRanges: []
+    });
   });
 });

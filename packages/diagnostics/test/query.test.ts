@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Ajv2020 from "ajv/dist/2020.js";
-import { diagnosticQueryResultSchemaV1, FlightRecorder, LocalDiagnosticQuery, pseudonymizeIdentifier, resourceInventoryDigest, ResourceRegistry, type LocalEvidenceBundleV1 } from "../src/index.ts";
+import { diagnosticQueryResultSchemaV1, FlightRecorder, LocalDiagnosticQuery, pseudonymizeIdentifier, redactLocalEvidenceBundle, resourceInventoryDigest, ResourceRegistry, type LocalEvidenceBundleV1 } from "../src/index.ts";
 
 const tenantId = "tenant-a";
 const pseudonymizationKey = "tenant-a-diagnostic-key-32-bytes-long";
@@ -28,6 +28,54 @@ function bundle(overrides: Partial<LocalEvidenceBundleV1> = {}): LocalEvidenceBu
 }
 
 describe("local diagnostic query", () => {
+  it("accepts legacy source bundles once, consumes exported bundles without double pseudonymization, and rejects mixed policies", () => {
+    const exportKey = "export-test-key-material-32-bytes-long";
+    const source = bundle({
+      identifierPolicy: "source",
+      pseudonymizationKey: exportKey,
+      defaultDoctorQuery: {
+        expectedBoundaries: [{ producerRole: "server", runtimeId: "gateway", runtimeBootId: "boot-a", boundary: "command.completed" }],
+        expectedProducers: ["server"],
+        expectedOutcome: "private operator description",
+        scope: { commandId: "cmd-a" }
+      }
+    });
+    const exported = redactLocalEvidenceBundle(source);
+    const serialized = JSON.stringify(exported);
+    expect(exported).toMatchObject({
+      identifierPolicy: "pseudonymized",
+      tenantId: pseudonymizeIdentifier(tenantId, exportKey),
+      expectedProducerInstances: [{
+        producerRole: "server",
+        runtimeId: pseudonymizeIdentifier("gateway", exportKey),
+        runtimeBootId: pseudonymizeIdentifier("boot-a", exportKey)
+      }],
+      defaultDoctorQuery: {
+        expectedOutcome: "configured expected outcome (redacted)",
+        scope: { commandId: pseudonymizeIdentifier("cmd-a", exportKey) }
+      }
+    });
+    for (const secret of [tenantId, "boot-a", "cmd-a", "room:42", "private operator description", "must-not-leak", "private@example.test"]) {
+      expect(serialized).not.toContain(`\"${secret}\"`);
+    }
+    expect(exported.records.every(({ record }) => record.runtimeId !== "gateway" && record.runtimeBootId !== "boot-a")).toBe(true);
+
+    const query = new LocalDiagnosticQuery(exported);
+    const trace = query.traceCommand({ tenantId, commandId: "cmd-a" });
+    expect(trace.commandId).toBe(pseudonymizeIdentifier("cmd-a", exportKey));
+    expect(trace.records[0]?.commandId).toBe(pseudonymizeIdentifier("cmd-a", exportKey));
+    expect(trace.records[0]?.commandId).not.toBe(pseudonymizeIdentifier(pseudonymizeIdentifier("cmd-a", exportKey), exportKey));
+    expect(query.storedDoctor(tenantId).report.verdict).toBe("proven");
+
+    const mixedRecord = structuredClone(exported);
+    mixedRecord.records[0]!.record.runtimeId = "raw-runtime";
+    expect(() => new LocalDiagnosticQuery(mixedRecord)).toThrow("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    const mixedSource = bundle({ identifierPolicy: "source", expectedProducerInstances: [{ producerRole: "server", runtimeId: pseudonymizeIdentifier("gateway", pseudonymizationKey), runtimeBootId: "boot-a" }] });
+    expect(() => new LocalDiagnosticQuery(mixedSource)).toThrow("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    expect(() => new LocalDiagnosticQuery({ ...exported, identifierPolicy: "source" })).toThrow("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+    expect(() => new LocalDiagnosticQuery({ ...exported, defaultDoctorQuery: { ...exported.defaultDoctorQuery!, expectedOutcome: "raw description" } })).toThrow("RT_DIAGNOSTIC_BUNDLE_POLICY_INVALID");
+  });
+
   it("paginates immutable raw evidence with redacted payload provenance and covered ranges", () => {
     const query = new LocalDiagnosticQuery(bundle());
     const first = query.rawEvidence({ tenantId, limit: 2 });

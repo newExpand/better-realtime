@@ -44,6 +44,27 @@ Runtime facts → producer-local bounded evidence store
 
 Raw evidence remains immutable and queryable within its declared retention after deterministic analysis. Derived facts add interpretation; they do not replace, discard, or irreversibly summarize source records. Every derived fact links to its complete evidence closure. Retention eviction is explicit coverage loss, never mutation of surviving evidence.
 
+Producers and consumers meet at two versioned framework-neutral ports:
+
+```ts
+interface EvidenceSink {
+  record(evidence: EvidenceEnvelopeV1): Promise<void>
+  declareExpectedProducers?(instances: ProducerInstance[]): void
+  closeProducer?(checkpoint: ProducerCheckpoint): void
+  recordExportFailure?(count?: number): void
+}
+
+interface DiagnosticSource {
+  query(request: DiagnosticQuery): Promise<DiagnosticResult>
+}
+```
+
+The client and server facades connect their existing flight recorders to this port through a bounded exporter. The exporter pseudonymizes tenant, producer, command, attempt, delivery, event, transaction, and causal identifiers before calling application code; declares the exact producer topology; and closes each producer with its recorder high-water mark. Queue overflow, sink rejection, and lifecycle-close failure remain visible through `evidenceSnapshot()` and sink coverage. This collection path does not change recorder ownership or permit an asynchronous sink to block a correctness transition.
+
+Tenant routing is trusted metadata passed separately from the evidence payload. An application-supplied or malformed `details.tenantId` cannot select another sink partition. A single exporter declares its exact topology; multiple exporters use additive registration followed by an explicit topology-owner finalization. An unfinalized topology, a late producer, an open producer, or a missing producer is never proof-complete.
+
+The in-process implementation is a bounded local recorder and source, not a production durability claim. Its coverage ledger is authoritative for its declared producer instances and records accepted producer-local sequence ranges plus dropped, evicted, rejected, and export-failed records. Producer and range indexes have explicit bounds, and retention expiry is reflected before every coverage snapshot. Out-of-order records may close a range only when every intervening sequence is present; a leading or interior gap remains loss. A sink or export failure is itself evidence loss and prevents `proven`. Correctness records are never silently sampled. A durable multi-gateway source may implement the same interface only after it preserves all causal identities and passes the completeness conformance suite.
+
 The PostgreSQL two-gateway reference journey performs a bounded in-browser aggregation for one explicitly selected stable command: the database producer's `db.committed`, the exact gateway producer instance's `command.completed` or ACK-loss `command.status_reconciled`, and the browser runtime's `command.observed` share the exact causal event identity and an exact producer runtime/boot manifest. The join and doctor scope both require command ID and event ID; a prior successful command or same-named command from another operation cannot satisfy the selected command. Database recorder loss contributes to completeness just like server or client loss. This is a test-profile evidence join, not a general durable exporter. Gateway A/B recovery topology remains a separate server-side doctor proof, and either proof becomes partial when a required instance is unavailable or its retained evidence is incomplete.
 
 ## Diagnostic contract
@@ -372,7 +393,7 @@ Every bounded query reports `hasMore`, a continuation cursor, omitted counts, pa
 
 ### Read-only MCP
 
-The local stdio MCP v0 implements six tools: `realtime_doctor`, `realtime_trace_command`, `realtime_inspect_stream`, `realtime_leaks`, bounded `realtime_query_evidence`, and `realtime_query_evidence_closure`. All tools declare read-only, non-destructive, idempotent, closed-world annotations. Derived facts come first. Doctor returns a short opaque reference that expands only the selected conclusion closure through the same source handle; the handle retains at most 32 closures and evicts the oldest, so an evicted, altered, cross-handle, cross-source, or cross-query reference fails with `RT_DIAGNOSTIC_EVIDENCE_REFERENCE_INVALID`. Closure pages use the same count/byte bounds, authenticated cursor, tenant validation, redaction, completeness, and analyzer as other raw pages. The server reads only the evidence file explicitly supplied to its local process and exposes no mutation, disconnect, chaos, network-fetch, export, or admin operation.
+The separately packaged `better-realtime-mcp` local stdio MCP v0 implements six tools: `realtime_doctor`, `realtime_trace_command`, `realtime_inspect_stream`, `realtime_leaks`, bounded `realtime_query_evidence`, and `realtime_query_evidence_closure`. All tools declare read-only, non-destructive, idempotent, closed-world annotations. Derived facts come first. Doctor returns a short opaque reference that expands only the selected conclusion closure through the same source handle; the handle retains at most 32 closures and evicts the oldest, so an evicted, altered, cross-handle, cross-source, or cross-query reference fails with `RT_DIAGNOSTIC_EVIDENCE_REFERENCE_INVALID`. Closure pages use the same count/byte bounds, authenticated cursor, tenant validation, redaction, completeness, and analyzer as other raw pages. The server reads only the evidence file explicitly supplied to its local process and exposes no mutation, disconnect, chaos, network-fetch, export, or admin operation.
 
 The following larger resource/tool inventory remains a future extension rather than a v0 claim.
 
@@ -448,4 +469,4 @@ The suite also uses fault pairs: different injected causes that produce the same
 
 For the alpha CLI/MCP surface, completeness is **complete for the declared capture topology**, not production-global completeness. `server.evidenceBundle()` declares and captures one gateway server producer and that gateway's PostgreSQL store producer. Browser records, another gateway, PostgreSQL general logs, an exporter, and any producer not declared in the bundle are not implied.
 
-The current MCP is local stdio/read-only analysis of an explicitly extracted file. General browser evidence export, a remote durable evidence store, and a live authenticated production MCP service are unsupported. Sampling-based Sentry or OpenTelemetry data may complement operations but cannot replace unsampled correctness/causality evidence.
+The current MCP is local stdio/read-only analysis of an explicitly extracted file. The `EvidenceSink` and `DiagnosticSource` ports plus local conformance implementation do not imply general browser evidence export, a remote durable evidence store, or a live authenticated production MCP service. A future production MCP must query an authenticated, authorized, audited durable source; it must not be exposed directly from the gateway. Sampling-based Sentry or OpenTelemetry data may complement operations but cannot replace unsampled correctness/causality evidence.

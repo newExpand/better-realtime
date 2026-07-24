@@ -1,0 +1,563 @@
+name: Publish verified Better Realtime package bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: Exact approved shared package version, required: true, type: string }
+      source_sha: { description: Exact immutable package source commit, required: true, type: string }
+      workflow_sha: { description: Exact reviewed workflow commit on main, required: true, type: string }
+      evidence_generated_at: { description: Exact approved ISO-8601 UTC time when release evidence is generated, required: true, type: string }
+      expected_base_sha256: { description: Approved better-realtime tarball SHA-256, required: true, type: string }
+      expected_base_size: { description: Approved better-realtime packed bytes, required: true, type: string }
+      expected_base_unpacked_size: { description: Approved better-realtime unpacked bytes, required: true, type: string }
+      expected_base_files: { description: Approved better-realtime file count, required: true, type: string }
+      expected_mcp_sha256: { description: Approved better-realtime-mcp tarball SHA-256, required: true, type: string }
+      expected_mcp_size: { description: Approved better-realtime-mcp packed bytes, required: true, type: string }
+      expected_mcp_unpacked_size: { description: Approved better-realtime-mcp unpacked bytes, required: true, type: string }
+      expected_mcp_files: { description: Approved better-realtime-mcp file count, required: true, type: string }
+      expected_base_latest: { description: Expected better-realtime latest after verification, or literal absent, required: true, type: string }
+      expected_mcp_latest: { description: Expected better-realtime-mcp latest after verification, or literal absent, required: true, type: string }
+      companion_bootstrap_confirmed:
+        description: Confirm better-realtime-mcp exists and its release-bundle.yml/npm-mcp-alpha Trusted Publisher is configured
+        required: true
+        type: boolean
+
+permissions:
+  attestations: read
+  contents: read
+  checks: read
+  id-token: none
+
+concurrency:
+  group: release-bundle-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, checks: read, id-token: none }
+    outputs:
+      candidate_name: ${{ steps.identity.outputs.candidate_name }}
+      base_artifact: ${{ steps.pack.outputs.base_artifact }}
+      base_sha256: ${{ steps.approve.outputs.base_sha256 }}
+      base_size: ${{ steps.approve.outputs.base_size }}
+      base_files: ${{ steps.approve.outputs.base_files }}
+      base_unpacked_size: ${{ steps.approve.outputs.base_unpacked_size }}
+      mcp_artifact: ${{ steps.pack.outputs.mcp_artifact }}
+      mcp_sha256: ${{ steps.approve.outputs.mcp_sha256 }}
+      mcp_size: ${{ steps.approve.outputs.mcp_size }}
+      mcp_files: ${{ steps.approve.outputs.mcp_files }}
+      mcp_unpacked_size: ${{ steps.approve.outputs.mcp_unpacked_size }}
+      evidence_generated_at: ${{ steps.identity.outputs.evidence_generated_at }}
+    steps:
+      - name: Bind dispatch to approved source and workflow
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          EVIDENCE_GENERATED_AT: ${{ inputs.evidence_generated_at }}
+          EXPECTED_MCP_LATEST: ${{ inputs.expected_mcp_latest }}
+          BOOTSTRAP_CONFIRMED: ${{ inputs.companion_bootstrap_confirmed }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$REVIEWED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$REVIEWED_WORKFLOW_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"
+          test "$(node -e 'const value=process.argv[1]; const date=new Date(value); if (!Number.isFinite(date.valueOf())) process.exit(1); process.stdout.write(date.toISOString())' "$EVIDENCE_GENERATED_AT")" = "$EVIDENCE_GENERATED_AT"
+          test "$EXPECTED_MCP_LATEST" = "$VERSION"
+          test "$BOOTSTRAP_CONFIRMED" = true
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - run: corepack enable
+      - run: npm install --global npm@11.18.0
+      - name: Resolve shared candidate identity
+        id: identity
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          EVIDENCE_GENERATED_AT: ${{ inputs.evidence_generated_at }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$REVIEWED_WORKFLOW_SHA"
+          git cat-file -e "$SOURCE_SHA^{commit}"
+          git merge-base --is-ancestor "$SOURCE_SHA" "$REVIEWED_WORKFLOW_SHA"
+          test "$(git show "$SOURCE_SHA:packages/runtime/package.json" | jq -r .version)" = "$VERSION"
+          test "$(git show "$SOURCE_SHA:packages/mcp/package.json" | jq -r .version)" = "$VERSION"
+          echo "candidate_name=release-bundle-$SOURCE_SHA-$VERSION-attempt-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "evidence_generated_at=$EVIDENCE_GENERATED_AT" >> "$GITHUB_OUTPUT"
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the exact inert companion bootstrap before any external mutation
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          mkdir -p "$root/local" "$root/registry"
+          pnpm tsx scripts/create-mcp-bootstrap-artifact.ts "$root/local" > "$root/report.json"
+          npm pack better-realtime-mcp@0.0.0-bootstrap.0 --pack-destination "$root/registry" >/dev/null
+          test "$(jq -r .package "$root/report.json")" = better-realtime-mcp
+          test "$(jq -r .version "$root/report.json")" = 0.0.0-bootstrap.0
+          test "$(jq -r .publishTag "$root/report.json")" = bootstrap
+          test "$(jq -r .files "$root/report.json")" = 3
+          cmp "$(jq -r .artifact "$root/report.json")" "$root/registry/better-realtime-mcp-0.0.0-bootstrap.0.tgz"
+          versions="$(npm view better-realtime-mcp versions --json)"
+          tags="$(npm view better-realtime-mcp dist-tags --json)"
+          node -e '
+            const rawVersions = JSON.parse(process.argv[1]);
+            const versions = Array.isArray(rawVersions) ? rawVersions : [rawVersions];
+            const tags = JSON.parse(process.argv[2]);
+            if (versions.length !== 1 || versions[0] !== "0.0.0-bootstrap.0") process.exit(1);
+            if (!tags || typeof tags !== "object" || Array.isArray(tags)) process.exit(1);
+            if (tags.bootstrap !== "0.0.0-bootstrap.0") process.exit(1);
+            if (Object.hasOwn(tags, "alpha")) process.exit(1);
+            if (tags.latest !== undefined && tags.latest !== "0.0.0-bootstrap.0") process.exit(1);
+            if (Object.keys(tags).some((tag) => tag !== "bootstrap" && tag !== "latest")) process.exit(1);
+          ' "$versions" "$tags"
+      - run: pnpm audit --audit-level=high
+      - run: pnpm check
+      - run: pnpm compatibility:check
+      - run: pnpm test:postgres:docker
+      - run: pnpm package:export-public
+        env: { BETTER_REALTIME_RELEASE_EXPORT: "1" }
+      - name: Materialize immutable source inputs
+        env: { SOURCE_SHA: "${{ inputs.source_sha }}" }
+        run: |
+          set -euo pipefail
+          git show "$SOURCE_SHA:CHANGELOG.md" > approved-CHANGELOG.md
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.source_sha }}", path: release-source, persist-credentials: false }
+      - run: pnpm --dir release-source install --frozen-lockfile
+      - run: pnpm --dir release-source audit --audit-level=high
+      - run: pnpm --dir release-source package:clean-room:isolation
+      - name: Build both release artifacts once
+        id: pack
+        env: { VERSION: "${{ inputs.version }}" }
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          pnpm --dir release-source --silent package:pack > output/base-report.json
+          pnpm --dir release-source --silent package:pack:mcp > output/mcp-report.json
+          base_artifact="better-realtime-$VERSION.tgz"
+          mcp_artifact="better-realtime-mcp-$VERSION.tgz"
+          node -e 'const fs=require("fs");for(const [reportPath,version,out] of [[process.argv[1],process.argv[3],process.argv[4]],[process.argv[2],process.argv[3],process.argv[5]]]){const report=JSON.parse(fs.readFileSync(reportPath));if(report.version!==version)throw new Error("RT_RELEASE_BUNDLE_VERSION_MISMATCH");fs.copyFileSync(report.tarball,out)}' output/base-report.json output/mcp-report.json "$VERSION" "$base_artifact" "$mcp_artifact"
+          sha256sum "$base_artifact" > "$base_artifact.sha256"
+          sha256sum "$mcp_artifact" > "$mcp_artifact.sha256"
+          echo "base_artifact=$base_artifact" >> "$GITHUB_OUTPUT"
+          echo "mcp_artifact=$mcp_artifact" >> "$GITHUB_OUTPUT"
+      - name: Verify both approved artifact identities before upload
+        id: approve
+        env:
+          BASE_ARTIFACT: ${{ steps.pack.outputs.base_artifact }}
+          MCP_ARTIFACT: ${{ steps.pack.outputs.mcp_artifact }}
+          EXPECTED_BASE_SHA256: ${{ inputs.expected_base_sha256 }}
+          EXPECTED_BASE_SIZE: ${{ inputs.expected_base_size }}
+          EXPECTED_BASE_UNPACKED_SIZE: ${{ inputs.expected_base_unpacked_size }}
+          EXPECTED_BASE_FILES: ${{ inputs.expected_base_files }}
+          EXPECTED_MCP_SHA256: ${{ inputs.expected_mcp_sha256 }}
+          EXPECTED_MCP_SIZE: ${{ inputs.expected_mcp_size }}
+          EXPECTED_MCP_UNPACKED_SIZE: ${{ inputs.expected_mcp_unpacked_size }}
+          EXPECTED_MCP_FILES: ${{ inputs.expected_mcp_files }}
+        run: |
+          set -euo pipefail
+          for digest in "$EXPECTED_BASE_SHA256" "$EXPECTED_MCP_SHA256"; do [[ "$digest" =~ ^[a-f0-9]{64}$ ]]; done
+          for count in "$EXPECTED_BASE_SIZE" "$EXPECTED_BASE_UNPACKED_SIZE" "$EXPECTED_BASE_FILES" "$EXPECTED_MCP_SIZE" "$EXPECTED_MCP_UNPACKED_SIZE" "$EXPECTED_MCP_FILES"; do [[ "$count" =~ ^[1-9][0-9]*$ ]]; done
+          test "$(sha256sum "$BASE_ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_BASE_SHA256"
+          test "$(wc -c < "$BASE_ARTIFACT" | tr -d ' ')" = "$EXPECTED_BASE_SIZE"
+          test "$(cat "$BASE_ARTIFACT.sha256")" = "$EXPECTED_BASE_SHA256  $BASE_ARTIFACT"
+          test "$(jq -r .files output/base-report.json)" = "$EXPECTED_BASE_FILES"
+          test "$(jq -r .unpackedSize output/base-report.json)" = "$EXPECTED_BASE_UNPACKED_SIZE"
+          test "$(jq -r '.files | length' release/package-files.json)" = "$EXPECTED_BASE_FILES"
+          test "$(sha256sum "$MCP_ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_MCP_SHA256"
+          test "$(wc -c < "$MCP_ARTIFACT" | tr -d ' ')" = "$EXPECTED_MCP_SIZE"
+          test "$(cat "$MCP_ARTIFACT.sha256")" = "$EXPECTED_MCP_SHA256  $MCP_ARTIFACT"
+          test "$(jq -r .files output/mcp-report.json)" = "$EXPECTED_MCP_FILES"
+          test "$(jq -r .unpackedSize output/mcp-report.json)" = "$EXPECTED_MCP_UNPACKED_SIZE"
+          test "$(jq -r '.files | length' release/mcp-package-files.json)" = "$EXPECTED_MCP_FILES"
+          echo "base_sha256=$EXPECTED_BASE_SHA256" >> "$GITHUB_OUTPUT"
+          echo "base_size=$EXPECTED_BASE_SIZE" >> "$GITHUB_OUTPUT"
+          echo "base_files=$EXPECTED_BASE_FILES" >> "$GITHUB_OUTPUT"
+          echo "base_unpacked_size=$EXPECTED_BASE_UNPACKED_SIZE" >> "$GITHUB_OUTPUT"
+          echo "mcp_sha256=$EXPECTED_MCP_SHA256" >> "$GITHUB_OUTPUT"
+          echo "mcp_size=$EXPECTED_MCP_SIZE" >> "$GITHUB_OUTPUT"
+          echo "mcp_files=$EXPECTED_MCP_FILES" >> "$GITHUB_OUTPUT"
+          echo "mcp_unpacked_size=$EXPECTED_MCP_UNPACKED_SIZE" >> "$GITHUB_OUTPUT"
+      - name: Create approved bundle identity
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_NOTES: approved-CHANGELOG.md
+          RELEASE_BASE_ARTIFACT: ${{ steps.pack.outputs.base_artifact }}
+          RELEASE_BASE_CHECKSUM: ${{ steps.pack.outputs.base_artifact }}.sha256
+          RELEASE_BASE_FILE_MANIFEST: release/package-files.json
+          RELEASE_BASE_EXPECTED_SHA256: ${{ steps.approve.outputs.base_sha256 }}
+          RELEASE_BASE_EXPECTED_SIZE: ${{ steps.approve.outputs.base_size }}
+          RELEASE_BASE_EXPECTED_UNPACKED_SIZE: ${{ steps.approve.outputs.base_unpacked_size }}
+          RELEASE_MCP_ARTIFACT: ${{ steps.pack.outputs.mcp_artifact }}
+          RELEASE_MCP_CHECKSUM: ${{ steps.pack.outputs.mcp_artifact }}.sha256
+          RELEASE_MCP_FILE_MANIFEST: release/mcp-package-files.json
+          RELEASE_MCP_EXPECTED_SHA256: ${{ steps.approve.outputs.mcp_sha256 }}
+          RELEASE_MCP_EXPECTED_SIZE: ${{ steps.approve.outputs.mcp_size }}
+          RELEASE_MCP_EXPECTED_UNPACKED_SIZE: ${{ steps.approve.outputs.mcp_unpacked_size }}
+          RELEASE_BUNDLE_IDENTITY_OUTPUT: release-bundle.json
+        run: pnpm tsx scripts/create-release-bundle-identity.ts
+      - name: Observe and reject incompatible external state
+        env: { GH_TOKEN: "${{ github.token }}", RELEASE_BUNDLE_IDENTITY_FILE: release-bundle.json }
+        run: pnpm tsx scripts/release-bundle-github.ts observe
+      - name: Verify both candidate tarballs in isolated consumers
+        env:
+          BETTER_REALTIME_TARBALL: ${{ github.workspace }}/${{ steps.pack.outputs.base_artifact }}
+          BETTER_REALTIME_MCP_TARBALL: ${{ github.workspace }}/${{ steps.pack.outputs.mcp_artifact }}
+        run: pnpm package:clean-room:isolation
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ steps.identity.outputs.candidate_name }}
+          path: |
+            ${{ steps.pack.outputs.base_artifact }}
+            ${{ steps.pack.outputs.base_artifact }}.sha256
+            ${{ steps.pack.outputs.mcp_artifact }}
+            ${{ steps.pack.outputs.mcp_artifact }}.sha256
+            release-bundle.json
+            approved-CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
+  stage-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { contents: write, checks: read, id-token: none }
+    outputs:
+      release_id: ${{ steps.stage.outputs.release_id }}
+      tag_object: ${{ steps.stage.outputs.tag_object }}
+      existing_identity: ${{ steps.stage.outputs.existing_identity }}
+      bundle_name: ${{ steps.bundle.outputs.bundle_name }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", package-manager-cache: false }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.build.outputs.candidate_name }}", path: release-assets }
+      - name: Create/resume the exact tag and four-asset draft
+        id: stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BUNDLE_IDENTITY_FILE: release-assets/release-bundle.json
+          RELEASE_NOTES_FILE: release-assets/approved-CHANGELOG.md
+          RELEASE_ASSET_DIR: release-assets
+        run: pnpm tsx scripts/release-bundle-github.ts stage-github-draft
+      - name: Create public bundle identity and enrich the approved identity
+        if: steps.stage.outputs.existing_identity != 'true'
+        env:
+          RELEASE_BUNDLE_BASE_IDENTITY: release-assets/release-bundle.json
+          RELEASE_BASE_ARTIFACT: release-assets/${{ needs.build.outputs.base_artifact }}
+          RELEASE_MCP_ARTIFACT: release-assets/${{ needs.build.outputs.mcp_artifact }}
+          RELEASE_TAG_OBJECT: ${{ steps.stage.outputs.tag_object }}
+          RELEASE_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_ID: ${{ steps.stage.outputs.release_id }}
+          RELEASE_BASE_EXPECTED_LATEST: ${{ inputs.expected_base_latest }}
+          RELEASE_MCP_EXPECTED_LATEST: ${{ inputs.expected_mcp_latest }}
+          RELEASE_EVIDENCE_GENERATED_AT: ${{ needs.build.outputs.evidence_generated_at }}
+          RELEASE_PUBLIC_BUNDLE_IDENTITY_OUTPUT: release-assets/better-realtime-${{ inputs.version }}.bundle.identity.json
+          RELEASE_BUNDLE_ENRICHED_IDENTITY_OUTPUT: release-assets/release-bundle.enriched.json
+        run: pnpm tsx scripts/create-public-release-bundle-identity.ts
+      - name: Re-adopt exact public bundle identity from an existing draft or immutable Release
+        if: steps.stage.outputs.existing_identity == 'true'
+        env:
+          RELEASE_BUNDLE_BASE_IDENTITY: release-assets/release-bundle.json
+          RELEASE_PUBLIC_BUNDLE_IDENTITY: release-assets/better-realtime-${{ inputs.version }}.bundle.identity.json
+          RELEASE_TAG_OBJECT: ${{ steps.stage.outputs.tag_object }}
+          RELEASE_ID: ${{ steps.stage.outputs.release_id }}
+          RELEASE_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          RELEASE_BUNDLE_ENRICHED_IDENTITY_OUTPUT: release-assets/release-bundle.enriched.json
+        run: pnpm tsx scripts/adopt-public-release-bundle-identity.ts
+      - name: Name the identity-bound workflow artifact
+        id: bundle
+        run: echo "bundle_name=release-bundle-identity-${{ inputs.source_sha }}-${{ inputs.version }}-attempt-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ steps.bundle.outputs.bundle_name }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
+  attest-release-assets:
+    needs: [build, stage-release]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, attestations: write, id-token: write }
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: |
+            release-assets/${{ needs.build.outputs.base_artifact }}
+            release-assets/${{ needs.build.outputs.mcp_artifact }}
+            release-assets/better-realtime-${{ inputs.version }}.bundle.identity.json
+
+  finalize-release:
+    needs: [build, stage-release, attest-release-assets]
+    runs-on: ubuntu-latest
+    permissions: { attestations: read, contents: write, checks: read, id-token: none }
+    outputs: { release_id: "${{ steps.finalize.outputs.release_id }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", package-manager-cache: false }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - name: Verify three artifact attestations before immutable finalization
+        env: { GH_TOKEN: "${{ github.token }}", REVIEWED_WORKFLOW_SHA: "${{ inputs.workflow_sha }}" }
+        run: |
+          set -euo pipefail
+          for asset in "${{ needs.build.outputs.base_artifact }}" "${{ needs.build.outputs.mcp_artifact }}" "better-realtime-${{ inputs.version }}.bundle.identity.json"; do
+            gh attestation verify "release-assets/$asset" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" --signer-digest "$REVIEWED_WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$REVIEWED_WORKFLOW_SHA"
+          done
+      - name: Upload public identity and finalize/resume immutable Release
+        id: finalize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BUNDLE_IDENTITY_FILE: release-assets/release-bundle.enriched.json
+          RELEASE_NOTES_FILE: release-assets/approved-CHANGELOG.md
+          RELEASE_ASSET_DIR: release-assets
+          RELEASE_ATTESTATIONS_VERIFIED: "true"
+        run: pnpm tsx scripts/release-bundle-github.ts reconcile-github
+
+  prepare-base:
+    needs: [build, stage-release, finalize-release]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, checks: read, id-token: none }
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      release_id: ${{ steps.plan.outputs.release_id }}
+      identity_digest: ${{ steps.plan.outputs.identity_digest }}
+      publish_run_id: ${{ steps.plan.outputs.publish_run_id }}
+      publish_run_attempt: ${{ steps.plan.outputs.publish_run_attempt }}
+      publish_workflow_sha: ${{ steps.plan.outputs.publish_workflow_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", package-manager-cache: false }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BUNDLE_IDENTITY_FILE: release-assets/release-bundle.enriched.json
+          RELEASE_PACKAGE_NAME: better-realtime
+        run: pnpm tsx scripts/release-bundle-github.ts prepare-package
+
+  publish-base:
+    needs: [build, stage-release, finalize-release, prepare-base]
+    runs-on: ubuntu-latest
+    environment: npm-alpha
+    permissions: { actions: read, contents: read, checks: write, id-token: write }
+    outputs:
+      publish_workflow_sha: ${{ steps.result.outputs.publish_workflow_sha }}
+      publish_run_id: ${{ steps.result.outputs.publish_run_id }}
+      publish_run_attempt: ${{ steps.result.outputs.publish_run_attempt }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "24.18.0", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - name: Validate immutable bundle and publish better-realtime at most once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOULD_PUBLISH: ${{ needs.prepare-base.outputs.publish }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_ID: ${{ needs.prepare-base.outputs.release_id }}
+          IDENTITY_DIGEST: ${{ needs.prepare-base.outputs.identity_digest }}
+          ARTIFACT: release-assets/${{ needs.build.outputs.base_artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.base_sha256 }}
+          EXPECTED_SIZE: ${{ needs.build.outputs.base_size }}
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.18.0
+          test "$(npm --version)" = 11.16.0
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          test "$(jq -r .immutable <<<"$release_json")" = true
+          test "$(jq -r .draft <<<"$release_json")" = false
+          test "$(jq -r .target_commitish <<<"$release_json")" = "${{ inputs.source_sha }}"
+          if [ "$SHOULD_PUBLISH" = true ]; then
+            status="$(curl --silent --show-error --output registry.json --write-out '%{http_code}' "https://registry.npmjs.org/better-realtime/$VERSION")"
+            test "$status" = 404
+            marker="publish-intent/$VERSION/better-realtime/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
+            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts
+          fi
+      - id: result
+        env:
+          SHOULD_PUBLISH: ${{ needs.prepare-base.outputs.publish }}
+          ORIGINAL_RUN_ID: ${{ needs.prepare-base.outputs.publish_run_id }}
+          ORIGINAL_RUN_ATTEMPT: ${{ needs.prepare-base.outputs.publish_run_attempt }}
+          ORIGINAL_WORKFLOW_SHA: ${{ needs.prepare-base.outputs.publish_workflow_sha }}
+        run: |
+          if [ "$SHOULD_PUBLISH" = true ]; then
+            echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_workflow_sha=$ORIGINAL_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+            echo "publish_run_id=$ORIGINAL_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "publish_run_attempt=$ORIGINAL_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify-base:
+    needs: [build, stage-release, publish-base]
+    runs-on: ubuntu-latest
+    permissions: { actions: read, contents: read, id-token: none }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - name: Wait for base registry bytes and verify provenance before companion publication
+        env:
+          VERSION: ${{ inputs.version }}
+          ARTIFACT: release-assets/${{ needs.build.outputs.base_artifact }}
+          PUBLISH_WORKFLOW_SHA: ${{ needs.publish-base.outputs.publish_workflow_sha }}
+          PUBLISH_RUN_ID: ${{ needs.publish-base.outputs.publish_run_id }}
+          PUBLISH_RUN_ATTEMPT: ${{ needs.publish-base.outputs.publish_run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir registry signatures
+          for attempt in $(seq 1 20); do npm pack "better-realtime@$VERSION" --pack-destination registry >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
+          cmp "$ARTIFACT" "registry/better-realtime-$VERSION.tgz"
+          (cd signatures && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$VERSION" && npm audit signatures --json --include-attestations > audit.json)
+          pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures signatures/audit.json --tarball "registry/better-realtime-$VERSION.tgz" --package better-realtime --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-alpha --workflow-sha "$PUBLISH_WORKFLOW_SHA" --publish-run-id "$PUBLISH_RUN_ID" --publish-run-attempt "$PUBLISH_RUN_ATTEMPT"
+
+  prepare-mcp:
+    needs: [build, stage-release, finalize-release, verify-base]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, checks: read, id-token: none }
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      release_id: ${{ steps.plan.outputs.release_id }}
+      identity_digest: ${{ steps.plan.outputs.identity_digest }}
+      publish_run_id: ${{ steps.plan.outputs.publish_run_id }}
+      publish_run_attempt: ${{ steps.plan.outputs.publish_run_attempt }}
+      publish_workflow_sha: ${{ steps.plan.outputs.publish_workflow_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", package-manager-cache: false }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BUNDLE_IDENTITY_FILE: release-assets/release-bundle.enriched.json
+          RELEASE_PACKAGE_NAME: better-realtime-mcp
+          RELEASE_VERIFIED_PACKAGES: better-realtime
+        run: pnpm tsx scripts/release-bundle-github.ts prepare-package
+
+  publish-mcp:
+    needs: [build, stage-release, finalize-release, prepare-mcp]
+    runs-on: ubuntu-latest
+    environment: npm-mcp-alpha
+    permissions: { actions: read, contents: read, checks: write, id-token: write }
+    outputs:
+      publish_workflow_sha: ${{ steps.result.outputs.publish_workflow_sha }}
+      publish_run_id: ${{ steps.result.outputs.publish_run_id }}
+      publish_run_attempt: ${{ steps.result.outputs.publish_run_attempt }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "24.18.0", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - name: Validate immutable bundle and publish better-realtime-mcp at most once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOULD_PUBLISH: ${{ needs.prepare-mcp.outputs.publish }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_ID: ${{ needs.prepare-mcp.outputs.release_id }}
+          IDENTITY_DIGEST: ${{ needs.prepare-mcp.outputs.identity_digest }}
+          ARTIFACT: release-assets/${{ needs.build.outputs.mcp_artifact }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.mcp_sha256 }}
+          EXPECTED_SIZE: ${{ needs.build.outputs.mcp_size }}
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.18.0
+          test "$(npm --version)" = 11.16.0
+          test "$(sha256sum "$ARTIFACT" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          test "$(wc -c < "$ARTIFACT" | tr -d ' ')" = "$EXPECTED_SIZE"
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          test "$(jq -r .immutable <<<"$release_json")" = true
+          test "$(jq -r .draft <<<"$release_json")" = false
+          test "$(jq -r .target_commitish <<<"$release_json")" = "${{ inputs.source_sha }}"
+          if [ "$SHOULD_PUBLISH" = true ]; then
+            status="$(curl --silent --show-error --output registry.json --write-out '%{http_code}' "https://registry.npmjs.org/better-realtime-mcp/$VERSION")"
+            test "$status" = 404
+            marker="publish-intent/$VERSION/better-realtime-mcp/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
+            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts
+          fi
+      - id: result
+        env:
+          SHOULD_PUBLISH: ${{ needs.prepare-mcp.outputs.publish }}
+          ORIGINAL_RUN_ID: ${{ needs.prepare-mcp.outputs.publish_run_id }}
+          ORIGINAL_RUN_ATTEMPT: ${{ needs.prepare-mcp.outputs.publish_run_attempt }}
+          ORIGINAL_WORKFLOW_SHA: ${{ needs.prepare-mcp.outputs.publish_workflow_sha }}
+        run: |
+          if [ "$SHOULD_PUBLISH" = true ]; then
+            echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_workflow_sha=$ORIGINAL_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+            echo "publish_run_id=$ORIGINAL_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "publish_run_attempt=$ORIGINAL_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: [build, stage-release, finalize-release, publish-base, publish-mcp]
+    uses: ./.github/workflows/release-bundle-verify.yml
+    with:
+      version: ${{ inputs.version }}
+      tag: v${{ inputs.version }}
+      release_id: ${{ needs.finalize-release.outputs.release_id }}
+      source_sha: ${{ inputs.source_sha }}
+      workflow_sha: ${{ inputs.workflow_sha }}
+      evidence_generated_at: ${{ inputs.evidence_generated_at }}
+      expected_base_sha256: ${{ needs.build.outputs.base_sha256 }}
+      expected_base_size: ${{ needs.build.outputs.base_size }}
+      expected_base_unpacked_size: ${{ needs.build.outputs.base_unpacked_size }}
+      expected_base_files: ${{ needs.build.outputs.base_files }}
+      expected_mcp_sha256: ${{ needs.build.outputs.mcp_sha256 }}
+      expected_mcp_size: ${{ needs.build.outputs.mcp_size }}
+      expected_mcp_unpacked_size: ${{ needs.build.outputs.mcp_unpacked_size }}
+      expected_mcp_files: ${{ needs.build.outputs.mcp_files }}
+      base_publish_workflow_sha: ${{ needs.publish-base.outputs.publish_workflow_sha }}
+      base_publish_run_id: ${{ needs.publish-base.outputs.publish_run_id }}
+      base_publish_run_attempt: ${{ needs.publish-base.outputs.publish_run_attempt }}
+      mcp_publish_workflow_sha: ${{ needs.publish-mcp.outputs.publish_workflow_sha }}
+      mcp_publish_run_id: ${{ needs.publish-mcp.outputs.publish_run_id }}
+      mcp_publish_run_attempt: ${{ needs.publish-mcp.outputs.publish_run_attempt }}
+      expected_base_latest: ${{ inputs.expected_base_latest }}
+      expected_mcp_latest: ${{ inputs.expected_mcp_latest }}

@@ -1,8 +1,17 @@
 import { PostgresGatewayServer, type PostgresGatewayApplicationContext } from "@realtime/server-node";
 import { PostgresEventLog, postgresStorageNames, type IdentityKey } from "@realtime/store-postgres";
-import { Pool, type PoolConfig, type QueryResult, type QueryResultRow } from "pg";
+import {
+  BoundedEvidenceExporter,
+  redactEvidenceRecord,
+  redactLocalEvidenceBundle,
+  type EvidenceRecord,
+  type EvidenceRoutingContext,
+  type EvidenceSink as InternalEvidenceSink
+} from "@realtime/diagnostics";
+import { Pool, type PoolConfig } from "pg";
 import {
   contractRuntime,
+  encodeContractStreamSnapshot,
   RealtimeContractError,
   type AnyRealtimeContract,
   type CommandInput,
@@ -22,6 +31,21 @@ import { validatePreparedEvent } from "./application-adapter.js";
 
 export interface PrincipalIdentityKey { version: number; key: string | Uint8Array }
 
+/**
+ * Structural boundary for an application-supplied node-postgres pool. The
+ * package does not export node-postgres declarations into browser consumers,
+ * and command callbacks never receive this raw object.
+ */
+export interface RealtimePostgresPool {
+  connect(...arguments_: any[]): any;
+  query(...arguments_: any[]): any;
+  end(...arguments_: any[]): any;
+}
+
+export interface RealtimePostgresPoolConfig {
+  readonly [option: string]: unknown;
+}
+
 export interface WebSocketOriginPolicy {
   allowedOrigins: readonly string[];
   allowMissingOrigin?: boolean;
@@ -37,8 +61,8 @@ export interface AuthenticatedPrincipal {
 
 export interface PostgresProfileOptions {
   connectionString?: string;
-  pool?: Pool;
-  poolConfig?: Omit<PoolConfig, "connectionString">;
+  pool?: RealtimePostgresPool;
+  poolConfig?: RealtimePostgresPoolConfig;
   identityKeys: readonly PrincipalIdentityKey[];
   commandResultRetentionMs?: number;
   idempotencyRetentionMs?: number;
@@ -49,7 +73,7 @@ export interface PostgresProfileOptions {
 
 export interface PostgresRealtimeProfile {
   readonly kind: "postgres";
-  readonly pool: Pool;
+  readonly pool: RealtimePostgresPool;
   readonly ownsPool: boolean;
   readonly identityKeys: readonly PrincipalIdentityKey[];
   readonly commandResultRetentionMs?: number;
@@ -64,7 +88,7 @@ export function postgres(options: PostgresProfileOptions): PostgresRealtimeProfi
   if (options.identityKeys.length === 0 || new Set(options.identityKeys.map((entry) => entry.version)).size !== options.identityKeys.length || options.identityKeys.some((entry) => !Number.isSafeInteger(entry.version) || entry.version < 1 || keyBytes(entry.key) < 32)) throw new Error("RT_POSTGRES_IDENTITY_KEYS_INVALID");
   if (options.operationTimeoutMs !== undefined && (!Number.isSafeInteger(options.operationTimeoutMs) || options.operationTimeoutMs <= 0)) throw new Error("RT_OPERATION_TIMEOUT_INVALID");
   const schema = postgresStorageNames(options.schema).schema;
-  const pool = options.pool ?? new Pool({ connectionTimeoutMillis: 1_000, ...options.poolConfig, connectionString: options.connectionString });
+  const pool = options.pool ?? new Pool({ connectionTimeoutMillis: 1_000, ...options.poolConfig, connectionString: options.connectionString } as PoolConfig);
   const identityKeys = options.identityKeys.map((entry) => ({ version: entry.version, key: typeof entry.key === "string" ? entry.key : new Uint8Array(entry.key) }));
   return Object.freeze({
     kind: "postgres",
@@ -81,7 +105,7 @@ export function postgres(options: PostgresProfileOptions): PostgresRealtimeProfi
 
 /** Deployment-time DDL. Invoke with a migration role before starting runtime processes. */
 export async function migratePostgres<TContract extends AnyRealtimeContract>(contract: TContract, profile: PostgresRealtimeProfile): Promise<void> {
-  const store = new PostgresEventLog(profile.pool, undefined, {}, { schema: profile.schema });
+  const store = new PostgresEventLog(asNodePostgresPool(profile.pool), undefined, {}, { schema: profile.schema });
   await store.migrate(contract.identity);
 }
 
@@ -94,7 +118,29 @@ export interface ServerOperationContext {
 }
 
 export interface RealtimePostgresDatabase {
-  query<TResult extends QueryResultRow = QueryResultRow>(text: string, values?: readonly unknown[]): Promise<QueryResult<TResult>>;
+  query<TResult extends RealtimePostgresQueryResultRow = RealtimePostgresQueryResultRow>(text: string, values?: readonly unknown[]): Promise<RealtimePostgresQueryResult<TResult>>;
+}
+
+export interface RealtimePostgresQueryResultRow {
+  readonly [column: string]: unknown;
+}
+
+export interface RealtimePostgresField {
+  readonly name: string;
+  readonly tableID: number;
+  readonly columnID: number;
+  readonly dataTypeID: number;
+  readonly dataTypeSize: number;
+  readonly dataTypeModifier: number;
+  readonly format: string;
+}
+
+export interface RealtimePostgresQueryResult<TResult extends RealtimePostgresQueryResultRow = RealtimePostgresQueryResultRow> {
+  readonly command: string;
+  readonly rowCount: number | null;
+  readonly oid: number;
+  readonly fields: readonly RealtimePostgresField[];
+  readonly rows: TResult[];
 }
 
 export interface SnapshotContext<TInput> extends ServerOperationContext {
@@ -127,6 +173,27 @@ export type ContractPublish<TContract extends AnyRealtimeContract> = {
   }[StreamEventName<TContract, TStream>]
 }[StreamName<TContract>];
 
+export type ContractStreamTarget<TContract extends AnyRealtimeContract> = {
+  [TStream in StreamName<TContract>]: {
+    stream: TStream;
+    input: StreamInput<TContract, TStream>;
+  }
+}[StreamName<TContract>];
+
+export interface CommandEventReference {
+  readonly stream: string;
+  readonly sequence: number;
+  readonly eventId: string;
+}
+
+export interface CommandExecutionContext<TContract extends AnyRealtimeContract, TInput> extends ServerOperationContext {
+  readonly db: RealtimePostgresDatabase;
+  readonly commandId: string;
+  readonly input: TInput;
+  readonly targets: readonly ContractStreamTarget<TContract>[];
+  emit(event: ContractPublish<TContract>): CommandEventReference;
+}
+
 export type StreamHandlers<TContract extends AnyRealtimeContract> = {
   [TName in StreamName<TContract>]: {
     authorize(context: ServerOperationContext, input: StreamInput<TContract, TName>): boolean | Promise<boolean>;
@@ -134,17 +201,30 @@ export type StreamHandlers<TContract extends AnyRealtimeContract> = {
   }
 };
 
+type LegacyCommandHandler<TContract extends AnyRealtimeContract, TName extends CommandName<TContract>> = {
+  authorize(context: ServerOperationContext, input: CommandInput<TContract, TName>): boolean | Promise<boolean>;
+  prepare(context: ServerOperationContext, input: CommandInput<TContract, TName>): {
+    publish: ContractPublish<TContract>;
+    mutate(context: CommandMutationContext<CommandInput<TContract, TName>>): CommandResult<TContract, TName> | Promise<CommandResult<TContract, TName>>;
+  } | Promise<{
+    publish: ContractPublish<TContract>;
+    mutate(context: CommandMutationContext<CommandInput<TContract, TName>>): CommandResult<TContract, TName> | Promise<CommandResult<TContract, TName>>;
+  }>;
+  targets?: never;
+  execute?: never;
+};
+
+type TransactionCommandHandler<TContract extends AnyRealtimeContract, TName extends CommandName<TContract>> = {
+  authorize(context: ServerOperationContext, input: CommandInput<TContract, TName>): boolean | Promise<boolean>;
+  targets(input: CommandInput<TContract, TName>, context: ServerOperationContext): readonly ContractStreamTarget<TContract>[] | Promise<readonly ContractStreamTarget<TContract>[]>;
+  execute(context: ServerOperationContext, input: CommandInput<TContract, TName>, transaction: CommandExecutionContext<TContract, CommandInput<TContract, TName>>): CommandResult<TContract, TName> | Promise<CommandResult<TContract, TName>>;
+  prepare?: never;
+};
+
 export type CommandHandlers<TContract extends AnyRealtimeContract> = {
-  [TName in CommandName<TContract>]: {
-    authorize(context: ServerOperationContext, input: CommandInput<TContract, TName>): boolean | Promise<boolean>;
-    prepare(context: ServerOperationContext, input: CommandInput<TContract, TName>): {
-      publish: ContractPublish<TContract>;
-      mutate(context: CommandMutationContext<CommandInput<TContract, TName>>): CommandResult<TContract, TName> | Promise<CommandResult<TContract, TName>>;
-    } | Promise<{
-      publish: ContractPublish<TContract>;
-      mutate(context: CommandMutationContext<CommandInput<TContract, TName>>): CommandResult<TContract, TName> | Promise<CommandResult<TContract, TName>>;
-    }>;
-  }
+  [TName in CommandName<TContract>]:
+    | LegacyCommandHandler<TContract, TName>
+    | TransactionCommandHandler<TContract, TName>;
 };
 
 export interface RealtimeServerOptions<TContract extends AnyRealtimeContract> {
@@ -168,7 +248,53 @@ export interface RealtimeServerOptions<TContract extends AnyRealtimeContract> {
   authenticate(auth: JsonValue): AuthenticatedPrincipal | Promise<AuthenticatedPrincipal>;
   streams: StreamHandlers<TContract>;
   commands: CommandHandlers<TContract>;
-  diagnostics?: { defaultDoctorQuery?: DoctorQueryDefinition };
+  diagnostics?: {
+    defaultDoctorQuery?: DoctorQueryDefinition;
+    evidence?: RealtimeServerEvidenceOptions;
+  };
+}
+
+export interface RealtimeServerEvidenceSink {
+  readonly schemaVersion: "1.0";
+  readonly capabilities: {
+    readonly authoritative: boolean;
+    readonly durable: boolean;
+    readonly sampled: boolean;
+    readonly multiProducer: boolean;
+  };
+  record(evidence: {
+    readonly schemaVersion: "1.0";
+    readonly tenantId: string;
+    readonly payloadPolicy: "redacted";
+    readonly record: import("./diagnostic-types.js").SourceDiagnosticEvidenceRecord;
+  }): Promise<void>;
+  registerExpectedProducers?(instances: readonly import("./diagnostic-types.js").DiagnosticProducerInstance[]): void;
+  finalizeExpectedProducers?(): void;
+  declareExpectedProducers?(instances: readonly import("./diagnostic-types.js").DiagnosticProducerInstance[]): void;
+  closeProducer?(checkpoint: import("./diagnostic-types.js").DiagnosticProducerInstance & { readonly highWaterMark: number; readonly closed: true }): void;
+  recordExportFailure?(count?: number): void;
+}
+
+export interface RealtimeServerEvidenceOptions {
+  readonly sink: RealtimeServerEvidenceSink;
+  /**
+   * Shared mode registers this server's gateway and database producers
+   * additively. The topology owner must finalize the sink after every server
+   * is constructed and before any server is disposed.
+   */
+  readonly topology?: "exclusive" | "shared";
+  /** Secret key material used only to pseudonymize evidence before export. */
+  readonly pseudonymizationKey: string;
+  /** Tenant used for process-level records that are not attributable to an authenticated tenant. */
+  readonly systemTenantId: string;
+  readonly maxPendingRecords?: number;
+}
+
+export interface RealtimeServerEvidenceExportSnapshot {
+  readonly pendingRecords: number;
+  readonly acceptedRecords: number;
+  readonly exportFailedRecords: number;
+  readonly closed: boolean;
 }
 
 export interface RealtimeServer<TContract extends AnyRealtimeContract> {
@@ -179,15 +305,19 @@ export interface RealtimeServer<TContract extends AnyRealtimeContract> {
   start(): Promise<void>;
   gracefulDrain(reason?: string): void;
   evidenceBundle(tenantId: string, doctorQuery?: DoctorQueryDefinition): EvidenceBundleV1;
+  flushEvidence(): Promise<void>;
+  evidenceSnapshot(): RealtimeServerEvidenceExportSnapshot;
   dispose(): Promise<void>;
 }
 
 export function createRealtimeServer<TContract extends AnyRealtimeContract>(contract: TContract, options: RealtimeServerOptions<TContract>): RealtimeServer<TContract> {
   const runtime = contractRuntime(contract);
   assertHandlerMap("streams", Object.keys(contract.manifest.streams), options.streams, ["authorize", "snapshot"]);
-  assertHandlerMap("commands", Object.keys(contract.manifest.commands), options.commands, ["authorize", "prepare"]);
+  assertCommandHandlerMap(Object.keys(contract.manifest.commands), options.commands);
   const streamHandlers = options.streams as Record<string, { authorize(context: ServerOperationContext, input: JsonValue): boolean | Promise<boolean>; snapshot(context: SnapshotContext<JsonValue>): JsonValue | Promise<JsonValue> }>;
-  const commandHandlers = options.commands as Record<string, { authorize(context: ServerOperationContext, input: JsonValue): boolean | Promise<boolean>; prepare(context: ServerOperationContext, input: JsonValue): { publish: { stream: string; input: JsonValue; event: string; data: JsonValue }; mutate(context: CommandMutationContext<JsonValue>): JsonValue | Promise<JsonValue> } | Promise<{ publish: { stream: string; input: JsonValue; event: string; data: JsonValue }; mutate(context: CommandMutationContext<JsonValue>): JsonValue | Promise<JsonValue> }> }>;
+  const commandHandlers = options.commands as Record<string,
+    | { authorize(context: ServerOperationContext, input: JsonValue): boolean | Promise<boolean>; prepare(context: ServerOperationContext, input: JsonValue): { publish: { stream: string; input: JsonValue; event: string; data: JsonValue }; mutate(context: CommandMutationContext<JsonValue>): JsonValue | Promise<JsonValue> } | Promise<{ publish: { stream: string; input: JsonValue; event: string; data: JsonValue }; mutate(context: CommandMutationContext<JsonValue>): JsonValue | Promise<JsonValue> }> }
+    | { authorize(context: ServerOperationContext, input: JsonValue): boolean | Promise<boolean>; targets(input: JsonValue, context: ServerOperationContext): readonly { stream: string; input: JsonValue }[] | Promise<readonly { stream: string; input: JsonValue }[]>; execute(context: ServerOperationContext, input: JsonValue, transaction: CommandExecutionContext<TContract, JsonValue>): JsonValue | Promise<JsonValue> }>;
 
   const resolveStream = (stream: string, input: unknown) => {
     const matches = [];
@@ -200,11 +330,26 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
     if (matches.length > 1) throw new RealtimeContractError("RT_CONTRACT_INVALID", "streams", [`RT_STREAM_KEY_COLLISION:${stream}:${matches.map((match) => match.name).join(",")}`]);
     return matches[0];
   };
+  const resolveContractTarget = (target: { stream: string; input: unknown }) => {
+    const member = runtime.streams.get(target.stream);
+    if (!member) throw new RealtimeContractError("RT_CONTRACT_STREAM_UNKNOWN", target.stream);
+    const input = contract.validateStreamInput(target.stream, target.input) as JsonValue;
+    const stream = member.definition.key(input);
+    if (!nonEmpty(stream)) throw new RealtimeContractError("RT_CONTRACT_STREAM_INPUT_INVALID", target.stream, ["stream key must be a non-empty bounded string"]);
+    return { member: target.stream, input, stream };
+  };
 
   const applicationContext = (context: PostgresGatewayApplicationContext): ServerOperationContext => ({ ...context });
   const profile = options.profile;
+  if (options.diagnostics?.evidence && !nonEmpty(options.diagnostics.evidence.systemTenantId)) {
+    throw new RealtimeContractError("RT_CONTRACT_INVALID", "server.diagnostics.evidence.systemTenantId", ["expected a non-empty bounded tenant identifier"]);
+  }
+  let evidenceExporter: BoundedEvidenceExporter | undefined;
+  const exportEvidence = (record: EvidenceRecord, routing: EvidenceRoutingContext): void => {
+    evidenceExporter?.record(record, routing);
+  };
   const gateway = new PostgresGatewayServer({
-    pool: profile.pool,
+    pool: asNodePostgresPool(profile.pool),
     runtimeId: options.runtimeId,
     ...(options.runtimeBootId ? { runtimeBootId: options.runtimeBootId } : {}),
     ...(options.host ? { host: options.host } : {}),
@@ -226,6 +371,7 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
     ...(profile.idempotencyRetentionMs === undefined ? {} : { idempotencyRetentionMs: profile.idempotencyRetentionMs }),
     ...(profile.replayRetentionMs === undefined ? {} : { replayRetentionMs: profile.replayRetentionMs }),
     ...(profile.operationTimeoutMs === undefined ? {} : { transactionOptions: { operationTimeoutMs: profile.operationTimeoutMs } }),
+    ...(options.diagnostics?.evidence ? { onEvidenceRecord: exportEvidence } : {}),
     enableTestControlPlane: false,
     authenticate: async (auth) => validateAuthenticatedPrincipal(await options.authenticate(auth)),
     application: {
@@ -243,7 +389,7 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
           const resolved = resolveStream(context.stream, context.input);
           if (!resolved) throw new Error("RT_CONTRACT_STREAM_UNKNOWN");
           const state = await resolved.handler.snapshot({ tenantId: context.tenantId, principalNamespaceId: context.principalNamespaceId, permissions: context.permissions, ...(context.traceId ? { traceId: context.traceId } : {}), ...(context.sessionId ? { sessionId: context.sessionId } : {}), db: database, stream: context.stream, input: resolved.input, includedSequence: context.includedSequence });
-          return contract.validateStreamSnapshot(resolved.name, state) as JsonValue;
+          return encodeContractStreamSnapshot(contract, resolved.name, state, context.includedSequence);
         }
       },
       authorizeCommand: async (context, message) => {
@@ -256,6 +402,38 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
         const commandManifest = contract.manifest.commands[message.type];
         if (!handler || !commandManifest || commandManifest.schema !== message.schema) return null;
         const input = contract.validateCommandInput(message.type, message.input) as JsonValue;
+        if ("targets" in handler && typeof handler.targets === "function" && typeof handler.execute === "function") {
+          const operationContext = applicationContext(context);
+          const declared: unknown = await handler.targets(input, operationContext);
+          if (!Array.isArray(declared) || declared.length > 100) throw new RealtimeContractError("RT_CONTRACT_INVALID", `command:${message.type}:targets`, ["expected an array with at most 100 stream targets"]);
+          const targets = declared.map((target) => {
+            if (!isRecord(target) || typeof target.stream !== "string" || !("input" in target)) throw new RealtimeContractError("RT_CONTRACT_INVALID", `command:${message.type}:targets`, ["expected {stream,input}"]);
+            return resolveContractTarget({ stream: target.stream, input: target.input });
+          });
+          if (new Set(targets.map((target) => target.stream)).size !== targets.length) throw new RealtimeContractError("RT_CONTRACT_INVALID", `command:${message.type}:targets`, ["duplicate physical stream target"]);
+          const publicTargets = Object.freeze(targets.map((target) => Object.freeze({ stream: target.member, input: target.input }))) as readonly ContractStreamTarget<TContract>[];
+          return {
+            targets: targets.map((target) => target.stream),
+            resultSchema: commandManifest.resultSchema,
+            execute: async (database, transaction) => {
+              const result = await handler.execute(operationContext, input, {
+                ...operationContext,
+                db: database,
+                commandId: transaction.commandId,
+                input,
+                targets: publicTargets,
+                emit: (publish) => {
+                  const resolved = resolveContractTarget({ stream: publish.stream, input: publish.input });
+                  const validated = validatePreparedEvent(contract, publish.stream, publish.event, publish.data);
+                  const event = transaction.emit(resolved.stream, validated.type, validated.schema, validated.data);
+                  return { stream: event.stream, sequence: event.sequence, eventId: event.eventId };
+                }
+              });
+              return contract.validateCommandResult(message.type, result) as JsonValue;
+            }
+          };
+        }
+        if (!("prepare" in handler) || typeof handler.prepare !== "function") throw new RealtimeContractError("RT_CONTRACT_INVALID", `command:${message.type}`, ["expected prepare or targets/execute handler"]);
         const prepared: unknown = await handler.prepare(applicationContext(context), input);
         if (!isRecord(prepared) || !isRecord(prepared.publish) || typeof prepared.mutate !== "function" || typeof prepared.publish.stream !== "string" || typeof prepared.publish.event !== "string" || !("input" in prepared.publish) || !("data" in prepared.publish)) throw new RealtimeContractError("RT_CONTRACT_INVALID", `command:${message.type}:prepare`, ["expected publish {stream,input,event,data} and mutate function"]);
         const mutate = prepared.mutate as (context: CommandMutationContext<JsonValue>) => JsonValue | Promise<JsonValue>;
@@ -289,8 +467,33 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
       }
     }
   });
+  const configuredEvidence = options.diagnostics?.evidence;
+  if (configuredEvidence) {
+    evidenceExporter = new BoundedEvidenceExporter({
+      sink: configuredEvidence.sink as unknown as InternalEvidenceSink,
+      ...(configuredEvidence.topology === undefined ? {} : { topology: configuredEvidence.topology }),
+      pseudonymizationKey: configuredEvidence.pseudonymizationKey,
+      tenantId: (_record, routing) => typeof routing.tenantId === "string" && nonEmpty(routing.tenantId)
+        ? routing.tenantId
+        : configuredEvidence.systemTenantId,
+      expectedProducers: [
+        {
+          producerRole: gateway.recorder.producerRole,
+          runtimeId: gateway.recorder.runtimeId,
+          runtimeBootId: gateway.recorder.runtimeBootId
+        },
+        {
+          producerRole: gateway.store.recorder.producerRole,
+          runtimeId: gateway.store.recorder.runtimeId,
+          runtimeBootId: gateway.store.recorder.runtimeBootId
+        }
+      ],
+      redactRecord: redactEvidenceRecord,
+      ...(configuredEvidence.maxPendingRecords === undefined ? {} : { maxPendingRecords: configuredEvidence.maxPendingRecords })
+    });
+  }
 
-  let disposed = false;
+  let disposePromise: Promise<void> | undefined;
   return {
     contract,
     get webSocketUrl() { return gateway.webSocketUrl; },
@@ -306,10 +509,11 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
         [...gateway.recorder.records(), ...gateway.store.recorder.records()] as EvidenceBundleV1["records"][number]["record"][],
         tenantId
       );
-      return {
+      const sourceBundle: EvidenceBundleV1 = {
         schemaVersion: "1.0",
         tenantId,
         payloadPolicy: "redacted",
+        identifierPolicy: "source",
         // Each exported bundle is its own privacy domain. Reusing a server- or
         // tenant-stable key would make identifiers linkable across incidents.
         pseudonymizationKey: `${crypto.randomUUID()}${crypto.randomUUID()}`,
@@ -323,12 +527,56 @@ export function createRealtimeServer<TContract extends AnyRealtimeContract>(cont
         ],
         ...(resolvedDoctorQuery ? { defaultDoctorQuery: resolvedDoctorQuery } : {})
       };
+      return redactLocalEvidenceBundle(sourceBundle as Parameters<typeof redactLocalEvidenceBundle>[0]) as EvidenceBundleV1;
     },
-    dispose: async () => {
-      if (disposed) return;
-      disposed = true;
-      await gateway.dispose();
-      if (profile.ownsPool) await profile.pool.end();
+    flushEvidence: () => evidenceExporter?.flush() ?? Promise.resolve(),
+    evidenceSnapshot: () => evidenceExporter?.snapshot() ?? {
+      pendingRecords: 0,
+      acceptedRecords: 0,
+      exportFailedRecords: 0,
+      closed: false
+    },
+    dispose: () => {
+      if (disposePromise) return disposePromise;
+      disposePromise = (async () => {
+        let failure: unknown;
+        try {
+          await gateway.dispose();
+        } catch (error) {
+          failure = error;
+        }
+        if (evidenceExporter) {
+          try {
+            await evidenceExporter.close([
+              {
+                producerRole: gateway.recorder.producerRole,
+                runtimeId: gateway.recorder.runtimeId,
+                runtimeBootId: gateway.recorder.runtimeBootId,
+                highWaterMark: gateway.recorder.stats().highWaterMark,
+                closed: true
+              },
+              {
+                producerRole: gateway.store.recorder.producerRole,
+                runtimeId: gateway.store.recorder.runtimeId,
+                runtimeBootId: gateway.store.recorder.runtimeBootId,
+                highWaterMark: gateway.store.recorder.stats().highWaterMark,
+                closed: true
+              }
+            ]);
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (profile.ownsPool) {
+          try {
+            await profile.pool.end();
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (failure) throw failure;
+      })();
+      return disposePromise;
     }
   };
 }
@@ -338,9 +586,22 @@ function validateAuthenticatedPrincipal(value: AuthenticatedPrincipal): Authenti
   return { ...value, permissions: [...new Set(value.permissions)] };
 }
 
+function asNodePostgresPool(pool: RealtimePostgresPool): Pool {
+  return pool as Pool;
+}
+
 function keyBytes(value: string | Uint8Array): number { return typeof value === "string" ? new TextEncoder().encode(value).byteLength : value.byteLength; }
 function nonEmpty(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 512; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function assertHandlerMap(kind: string, expected: string[], value: unknown, methods: string[]): void {
   if (!isRecord(value) || expected.length !== Object.keys(value).length || expected.some((name) => !Object.hasOwn(value, name)) || Object.values(value).some((handler) => !isRecord(handler) || methods.some((method) => typeof handler[method] !== "function"))) throw new RealtimeContractError("RT_CONTRACT_INVALID", `server.${kind}`, [`expected exactly ${expected.join(",") || "no handlers"} with ${methods.join("/")}`]);
+}
+function assertCommandHandlerMap(expected: string[], value: unknown): void {
+  if (!isRecord(value) || expected.length !== Object.keys(value).length || expected.some((name) => !Object.hasOwn(value, name))) throw new RealtimeContractError("RT_CONTRACT_INVALID", "server.commands", [`expected exactly ${expected.join(",") || "no handlers"}`]);
+  for (const handler of Object.values(value)) {
+    if (!isRecord(handler) || typeof handler.authorize !== "function") throw new RealtimeContractError("RT_CONTRACT_INVALID", "server.commands", ["each handler requires authorize"]);
+    const legacy = typeof handler.prepare === "function" && handler.targets === undefined && handler.execute === undefined;
+    const transaction = handler.prepare === undefined && typeof handler.targets === "function" && typeof handler.execute === "function";
+    if (!legacy && !transaction) throw new RealtimeContractError("RT_CONTRACT_INVALID", "server.commands", ["expected either prepare or targets/execute"]);
+  }
 }

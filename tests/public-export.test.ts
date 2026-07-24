@@ -88,6 +88,23 @@ describe("deterministic clean-history public export", () => {
     await expect(exportPublic(join(parent, "tree"))).rejects.toThrow("RT_PUBLIC_EXPORT_FORBIDDEN_CONTENT");
   });
 
+  it("rejects the private repository identifier without embedding it in public fixtures", async () => {
+    const privatePolicy = resolve("release/.private-export-policy.json");
+    const policy = await readFile(privatePolicy, "utf8")
+      .then((source) => JSON.parse(source) as { forbiddenContentFragments?: string[][] }, () => undefined);
+    if (!policy) return;
+    const privateRepository = policy.forbiddenContentFragments
+      ?.map((fragments) => fragments.join(""))
+      .find((value) => value.includes("/") && value.includes("-"));
+    expect(privateRepository).toBeTruthy();
+    const seededReference = resolve("packages/protocol/public-export-private-repository-reference.txt");
+    await writeFile(seededReference, `${privateRepository}\n`, "utf8");
+    temporary.push(seededReference);
+    const parent = await mkdtemp(join(tmpdir(), "better-realtime-public-export-private-repository-test-"));
+    temporary.push(parent);
+    await expect(exportPublic(join(parent, "tree"))).rejects.toThrow("RT_PUBLIC_EXPORT_FORBIDDEN_CONTENT");
+  });
+
   it("requires the private overlay whenever the private repository sentinel exists", () => {
     expect(() => assertPrivateExportPolicyBoundary(true, undefined)).toThrow("RT_PUBLIC_EXPORT_PRIVATE_POLICY_REQUIRED");
     expect(() => assertPrivateExportPolicyBoundary(false, undefined)).not.toThrow();

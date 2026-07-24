@@ -1,8 +1,8 @@
 import { DatabaseError, type Pool } from "pg";
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { classifyCommitFailure, TRANSACTION_OPERATIONS, TransactionStateMachine } from "../src/transaction.ts";
-import { PostgresEventLog, TRANSACTION_ATTEMPT_RETENTION_MS } from "../src/index.ts";
+import { canonicalCommandTransactionIntent, POSTGRES_STORAGE_VERSION, PostgresEventLog, TRANSACTION_ATTEMPT_RETENTION_MS, type ExecuteCommandTransactionOptions } from "../src/index.ts";
 
 describe("PostgreSQL transaction outcome classification", () => {
   it.each([
@@ -63,6 +63,60 @@ describe("PostgreSQL transaction outcome classification", () => {
     expect(store).not.toMatch(/(?:FROM|JOIN|INTO|UPDATE|DELETE FROM) realtime_(?:transaction_attempts|principal_namespaces|principal_identity_aliases|events|commands|outbox|stream_retention)\b/);
   });
 
+  it("defines storage v2 as a data-preserving command-causality migration", async () => {
+    const schema = await readFile(new URL("../src/migration-v2.ts", import.meta.url), "utf8");
+    const store = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+    expect(POSTGRES_STORAGE_VERSION).toBe(2);
+    expect(schema).toContain("realtime_command_events");
+    expect(schema).toMatch(/ALTER COLUMN event_id DROP NOT NULL/);
+    expect(schema).toMatch(/INSERT INTO \$\{names\.commandEvents\}[\s\S]+SELECT [\s\S]+event_id/);
+    expect(schema).not.toMatch(/DROP TABLE|TRUNCATE/);
+    expect(store).toContain('schema-migration:v1');
+    expect(store).not.toContain('schema-migration:v${POSTGRES_STORAGE_VERSION}');
+    expect(store).toContain('this.#lockKey(`stream:${options.tenantId}:${stream}`)');
+    expect(store).toContain("{ duplicate: true, requireOutboxProof: false }");
+    expect(store).toContain("{ duplicate: false, requireOutboxProof: true }");
+  });
+
+  it("keeps compatibility intent overrides behind the private legacy adapter", async () => {
+    const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+    expectTypeOf<PostgresEventLog["executeCommandTransaction"]>().parameters.toEqualTypeOf<[options: ExecuteCommandTransactionOptions]>();
+    expect(source).toContain("async executeCommandTransaction(options: ExecuteCommandTransactionOptions): Promise<CommandTransactionExecution>");
+    expect(source).toContain("async #executeCommandTransaction(options: ExecuteCommandTransactionOptions, canonicalIntent: CanonicalIntent)");
+    expect(source).not.toMatch(/async executeCommandTransaction\([^)]*canonicalIntent/);
+  });
+
+  it("keeps application-visible target order in the stable command intent while sorting only locks", async () => {
+    const first = canonicalCommandTransactionIntent({
+      commandType: "move",
+      commandSchema: "move@1",
+      commandInput: { itemId: "item-1" },
+      resultSchema: "moveResult@1",
+      targets: ["room:b", "room:a"]
+    });
+    const same = canonicalCommandTransactionIntent({
+      commandType: "move",
+      commandSchema: "move@1",
+      commandInput: { itemId: "item-1" },
+      resultSchema: "moveResult@1",
+      targets: ["room:b", "room:a"]
+    });
+    const reordered = canonicalCommandTransactionIntent({
+      commandType: "move",
+      commandSchema: "move@1",
+      commandInput: { itemId: "item-1" },
+      resultSchema: "moveResult@1",
+      targets: ["room:a", "room:b"]
+    });
+    const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+
+    expect(first).toEqual(same);
+    expect(reordered.intentHash).not.toBe(first.intentHash);
+    expect(first.canonical).toContain('"targets":["room:b","room:a"]');
+    expect(source).toContain("const streamLocks = targets.map");
+    expect(source).toMatch(/const streamLocks = targets\.map\([\s\S]{0,180}\)\.sort\(\)/u);
+  });
+
   it("keeps store-postgres evidence producer metadata behind one source of truth", async () => {
     const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
     const recordCalls = source.match(/this\.#record\(\{/g) ?? [];
@@ -71,6 +125,21 @@ describe("PostgreSQL transaction outcome classification", () => {
     expect(source.match(/component:\s*"store-postgres"/g)).toHaveLength(1);
     expect(source.match(/componentVersion:\s*"[^"]+"/g)).toEqual(['componentVersion: "0.3.0"']);
     expect(metadataUses).toHaveLength(recordCalls.length);
+  });
+
+  it("routes every tenant-tagged store record through trusted context instead of payload details", async () => {
+    const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+    const recordCalls = [...source.matchAll(/this\.#record\(([\s\S]*?)\);/gu)].map((match) => match[1]!);
+    const tenantTaggedCalls = recordCalls.filter((call) =>
+      /tenantId\s*:/u.test(call) || /transactionDetails\(context/u.test(call)
+    );
+
+    expect(tenantTaggedCalls.length).toBeGreaterThan(15);
+    for (const call of tenantTaggedCalls) {
+      expect(call).toMatch(/\}\s*,\s*(?:tenantId|options\.tenantId|identity\.tenantId|event\.tenantId|row\.tenant_id|context\.tenantId|options\.context\.tenantId)\s*$/u);
+    }
+    expect(source).toContain("#record(input: RecordInput, tenantId?: string)");
+    expect(source).not.toMatch(/#record\(input:[\s\S]{0,400}input\.details/u);
   });
 
   it("keeps the reconciliation deadline inside exact-attempt marker retention", () => {

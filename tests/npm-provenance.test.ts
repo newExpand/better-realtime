@@ -23,15 +23,28 @@ describe("npm provenance identity", () => {
       [{ bundleMediaType: "application/json" }, "RT_PROVENANCE_BUNDLE_MEDIA_TYPE_MISMATCH"]
     ] as const) expect(() => verifyNpmProvenanceAttestation(attestation(override), tarball, expected)).toThrow(error);
   });
+
+  it("verifies the companion package against its independent environment without accepting base-package provenance", () => {
+    const companion = { ...expected, packageName: "better-realtime-mcp", workflowPath: ".github/workflows/release-bundle.yml", environment: "npm-mcp-alpha" };
+    expect(verifyNpmProvenanceAttestation(attestation({ packageName: "better-realtime-mcp", workflowPath: ".github/workflows/release-bundle.yml", environment: "npm-mcp-alpha" }), tarball, companion)).toMatchObject({
+      package: "better-realtime-mcp@0.1.0-alpha.4",
+      workflow: ".github/workflows/release-bundle.yml",
+      environment: "npm-mcp-alpha",
+    });
+    expect(() => verifyNpmProvenanceAttestation(attestation(), tarball, companion)).toThrow("RT_PROVENANCE_VERIFIED_PACKAGE_COUNT:0");
+  });
 });
 
-function attestation(overrides: { subjectSha512?: string; environment?: string; workflowSha?: string; invocation?: string; issuer?: string; builder?: string; trigger?: string; visibility?: string; statementType?: string; bundleMediaType?: string } = {}): Record<string, unknown> {
+function attestation(overrides: { packageName?: string; workflowPath?: string; subjectSha512?: string; environment?: string; workflowSha?: string; invocation?: string; issuer?: string; builder?: string; trigger?: string; visibility?: string; statementType?: string; bundleMediaType?: string } = {}): Record<string, unknown> {
   const repository = "newExpand/better-realtime";
   const repositoryUrl = `https://github.com/${repository}`;
   const ref = "refs/heads/main";
+  const packageName = overrides.packageName ?? "better-realtime";
+  const workflowPath = overrides.workflowPath ?? ".github/workflows/release.yml";
+  const environment = overrides.environment ?? "npm-alpha";
   const workflowSha = overrides.workflowSha ?? expected.workflowSha;
   const invocation = overrides.invocation ?? `${repositoryUrl}/actions/runs/${expected.publishRunId}/attempts/${expected.publishRunAttempt}`;
-  const workflowIdentity = `${repositoryUrl}/.github/workflows/release.yml@${ref}`;
+  const workflowIdentity = `${repositoryUrl}/${workflowPath}@${ref}`;
   const certificate = sequence([
     extension("1.3.6.1.4.1.57264.1.3", workflowSha),
     extension("1.3.6.1.4.1.57264.1.5", repository),
@@ -44,19 +57,19 @@ function attestation(overrides: { subjectSha512?: string; environment?: string; 
     extension("1.3.6.1.4.1.57264.1.20", overrides.trigger ?? "workflow_dispatch"),
     extension("1.3.6.1.4.1.57264.1.21", invocation),
     extension("1.3.6.1.4.1.57264.1.22", overrides.visibility ?? "public"),
-    extension("1.3.6.1.4.1.57264.1.23", overrides.environment ?? "npm-alpha"),
-    extension("1.3.6.1.4.1.57264.1.24", "repo:newExpand@1/better-realtime@2:environment:npm-alpha")
+    extension("1.3.6.1.4.1.57264.1.23", environment),
+    extension("1.3.6.1.4.1.57264.1.24", `repo:newExpand@1/better-realtime@2:environment:${environment}`)
   ]);
   const statement = {
     _type: overrides.statementType ?? "https://in-toto.io/Statement/v1",
-    subject: [{ name: `pkg:npm/better-realtime@${expected.version}`, digest: { sha512: overrides.subjectSha512 ?? createHash("sha512").update(tarball).digest("hex") } }],
+    subject: [{ name: `pkg:npm/${packageName}@${expected.version}`, digest: { sha512: overrides.subjectSha512 ?? createHash("sha512").update(tarball).digest("hex") } }],
     predicateType: "https://slsa.dev/provenance/v1",
     predicate: {
-      buildDefinition: { buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1", externalParameters: { workflow: { ref, repository: repositoryUrl, path: ".github/workflows/release.yml" } }, internalParameters: { github: { event_name: overrides.trigger ?? "workflow_dispatch" } }, resolvedDependencies: [{ uri: `git+${repositoryUrl}@${ref}`, digest: { gitCommit: workflowSha } }] },
+      buildDefinition: { buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1", externalParameters: { workflow: { ref, repository: repositoryUrl, path: workflowPath } }, internalParameters: { github: { event_name: overrides.trigger ?? "workflow_dispatch" } }, resolvedDependencies: [{ uri: `git+${repositoryUrl}@${ref}`, digest: { gitCommit: workflowSha } }] },
       runDetails: { builder: { id: overrides.builder ?? "https://github.com/actions/runner/github-hosted" }, metadata: { invocationId: invocation } }
     }
   };
-  return { invalid: [], missing: [], verified: [{ name: "better-realtime", version: expected.version, location: "node_modules/better-realtime", registry: "https://registry.npmjs.org/", attestations: { url: `https://registry.npmjs.org/-/npm/v1/attestations/better-realtime@${expected.version}`, provenance: { predicateType: "https://slsa.dev/provenance/v1" } }, attestationBundles: [{ predicateType: "https://slsa.dev/provenance/v1", bundle: { mediaType: overrides.bundleMediaType ?? "application/vnd.dev.sigstore.bundle.v0.3+json", verificationMaterial: { certificate: { rawBytes: certificate.toString("base64") } }, dsseEnvelope: { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify(statement)).toString("base64"), signatures: [{ sig: "verified-by-npm-audit-signatures" }] } } }] }] };
+  return { invalid: [], missing: [], verified: [{ name: packageName, version: expected.version, location: `node_modules/${packageName}`, registry: "https://registry.npmjs.org/", attestations: { url: `https://registry.npmjs.org/-/npm/v1/attestations/${packageName}@${expected.version}`, provenance: { predicateType: "https://slsa.dev/provenance/v1" } }, attestationBundles: [{ predicateType: "https://slsa.dev/provenance/v1", bundle: { mediaType: overrides.bundleMediaType ?? "application/vnd.dev.sigstore.bundle.v0.3+json", verificationMaterial: { certificate: { rawBytes: certificate.toString("base64") } }, dsseEnvelope: { payloadType: "application/vnd.in-toto+json", payload: Buffer.from(JSON.stringify(statement)).toString("base64"), signatures: [{ sig: "verified-by-npm-audit-signatures" }] } } }] }] };
 }
 
 function extension(oid: string, value: string): Buffer { return sequence([der(0x06, encodeOid(oid)), der(0x04, der(0x0c, Buffer.from(value)))]); }

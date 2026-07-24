@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "scope": "Historical release.yml single-package boundary through 0.1.x; 0.2.0-alpha.1 and later two-package candidates use release/release-bundle-boundaries.json and release-bundle.yml.",
+  "packages": {
+    "better-realtime": {
+      "manifest": "packages/runtime/package.json",
+      "artifactCommand": "package:pack",
+      "workflow": ".github/workflows/release.yml",
+      "environment": "npm-alpha",
+      "status": "active"
+    },
+    "better-realtime-mcp": {
+      "manifest": "packages/mcp/package.json",
+      "artifactCommand": "package:pack:mcp",
+      "workflow": null,
+      "environment": null,
+      "status": "future-separate-release",
+      "activationRequirements": [
+        "dedicated reviewed release workflow",
+        "dedicated npm Trusted Publisher binding and protected environment",
+        "independently approved artifact identity and provenance verification"
+      ]
+    }
+  }
+}

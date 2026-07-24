@@ -94,7 +94,7 @@ it("rejects root replacement, multiple appended commits, and merge history", asy
   await expect(checkPublicHistory(merged.directory, author, merged.root, merged.root, { baseline: baseline(merged.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_MERGE_COMMIT");
 });
 
-it("checks every commit message and author against the public identity", async () => {
+it("checks every commit message, author, and committer against the public identity", async () => {
   const nonEnglish = await repository();
   await append(nonEnglish.directory, 2, "fix: 공개 보안 업데이트", "검증된 변경을 추가합니다.");
   await expect(checkPublicHistory(nonEnglish.directory, author, nonEnglish.root, nonEnglish.root, { baseline: baseline(nonEnglish.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_SUBJECT_INVALID");
@@ -104,11 +104,59 @@ it("checks every commit message and author against the public identity", async (
   await append(mismatched.directory, 2);
   await expect(checkPublicHistory(mismatched.directory, author, mismatched.root, mismatched.root, { baseline: baseline(mismatched.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_AUTHOR_EMAIL_MISMATCH");
 
+  const mismatchedAuthorName = await repository();
+  await writeFile(join(mismatchedAuthorName.directory, "CHANGELOG.md"), "release 2\n", "utf8");
+  await exec("git", ["add", "CHANGELOG.md"], { cwd: mismatchedAuthorName.directory });
+  await exec("git", ["commit", "--no-gpg-sign", "-m", "fix: publish a compatible security update", "-m", "Append one reviewed release commit without rewriting the public root."], {
+    cwd: mismatchedAuthorName.directory,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Unexpected Author",
+      GIT_AUTHOR_EMAIL: author,
+      GIT_COMMITTER_NAME: "newExpand",
+      GIT_COMMITTER_EMAIL: author,
+    },
+  });
+  await expect(checkPublicHistory(mismatchedAuthorName.directory, author, mismatchedAuthorName.root, mismatchedAuthorName.root, { baseline: baseline(mismatchedAuthorName.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_AUTHOR_NAME_MISMATCH");
+
+  const mismatchedCommitterEmail = await repository();
+  await writeFile(join(mismatchedCommitterEmail.directory, "CHANGELOG.md"), "release 2\n", "utf8");
+  await exec("git", ["add", "CHANGELOG.md"], { cwd: mismatchedCommitterEmail.directory });
+  await exec("git", ["commit", "--no-gpg-sign", "-m", "fix: publish a compatible security update", "-m", "Append one reviewed release commit without rewriting the public root."], {
+    cwd: mismatchedCommitterEmail.directory,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "newExpand",
+      GIT_AUTHOR_EMAIL: author,
+      GIT_COMMITTER_NAME: "newExpand",
+      GIT_COMMITTER_EMAIL: "committer@example.invalid",
+    },
+  });
+  await expect(checkPublicHistory(mismatchedCommitterEmail.directory, author, mismatchedCommitterEmail.root, mismatchedCommitterEmail.root, { baseline: baseline(mismatchedCommitterEmail.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_COMMITTER_EMAIL_MISMATCH");
+
   const conduct = await repository(undefined, undefined, "support@byteloft.app");
   await expect(checkPublicHistory(conduct.directory, "support@byteloft.app", conduct.root, undefined, { baseline: baseline(conduct.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_CONDUCT_EMAIL_FORBIDDEN");
 });
 
 it("rejects non-canonical remotes, push URLs, refs, and private or lightweight tags", async () => {
+  const sharedSource = await repository();
+  const sharedClone = await mkdtemp(join(tmpdir(), "better-realtime-public-shared-"));
+  temporary.push(sharedClone);
+  await exec("git", ["clone", "--shared", sharedSource.directory, sharedClone]);
+  await expect(checkPublicHistory(sharedClone, author, sharedSource.root, undefined, { baseline: baseline(sharedSource.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_ALTERNATES_FORBIDDEN");
+
+  for (const override of ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY"]) {
+    const environmentOverride = await repository();
+    const previousValue = process.env[override];
+    process.env[override] = join(environmentOverride.directory, ".git", "objects");
+    try {
+      await expect(checkPublicHistory(environmentOverride.directory, author, environmentOverride.root, undefined, { baseline: baseline(environmentOverride.root) })).rejects.toThrow(`RT_PUBLIC_HISTORY_OBJECT_STORE_ENV_FORBIDDEN:${override}`);
+    } finally {
+      if (previousValue === undefined) delete process.env[override];
+      else process.env[override] = previousValue;
+    }
+  }
+
   const wrongRemote = await repository();
   await exec("git", ["remote", "add", "origin", "https://github.com/example/reused.git"], { cwd: wrongRemote.directory });
   await expect(checkPublicHistory(wrongRemote.directory, author, wrongRemote.root, undefined, { baseline: baseline(wrongRemote.root) })).rejects.toThrow("RT_PUBLIC_HISTORY_REMOTE_INVALID");

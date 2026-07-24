@@ -4,8 +4,17 @@
   "fixtures": [
     {
       "storageVersion": 1,
+      "publishedBaseline": "better-realtime@0.1.0-alpha.1",
       "packagePath": "compatibility/fixtures/better-realtime-0.1.0-alpha.1.tgz",
       "packageSha256": "037aeab6cb79d891135026489f6e42595e231bf623b0032b4110472adf444d33",
+      "modulePath": "compatibility/postgres/v1-fixture.ts",
+      "moduleSha256": "1196674daa39cf5fe58411aec65693a60fbe5090e3ea733c4f4f6282b29ad176"
+    },
+    {
+      "storageVersion": 1,
+      "publishedBaseline": "better-realtime@0.1.0-alpha.4",
+      "packagePath": "compatibility/fixtures/better-realtime-0.1.0-alpha.4.tgz",
+      "packageSha256": "803487cf32eca359ac85755b138119bf37c9e9afa476e55684971ed24057a6c2",
       "modulePath": "compatibility/postgres/v1-fixture.ts",
       "moduleSha256": "1196674daa39cf5fe58411aec65693a60fbe5090e3ea733c4f4f6282b29ad176"
     }
@@ -21,6 +30,18 @@
       "destructiveInPlace": false,
       "sourcePath": "packages/store-postgres/src/migrations.ts",
       "sourceSha256": "b9e17bec0d752b96efa7715b3fc52ab5b2ad9ee8585513ee5d5e327e6604dc96"
+    },
+    {
+      "version": 2,
+      "name": "multi-event-command-storage",
+      "fromVersions": [
+        1
+      ],
+      "deploymentTimeOnly": true,
+      "runtimeDdl": false,
+      "destructiveInPlace": false,
+      "sourcePath": "packages/store-postgres/src/migration-v2.ts",
+      "sourceSha256": "10887f53be90e51c0c50721a4a983c1d016a8ca4814cc47b1c936a35cd796cff"
     }
   ]
 }

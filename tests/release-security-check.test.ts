@@ -13,6 +13,7 @@ import {
   assertReleaseArtifactApproval,
   assertReleaseIntegrityIdentityBoundary,
   assertReleaseBuildAuditOrder,
+  assertReleasePackageBoundary,
   assertPublishOidcBoundary,
   assertReleaseProvenanceVerification,
   assertReleaseRecoveryContract,
@@ -73,7 +74,15 @@ jobs:
       - run: pnpm --dir release-source install --frozen-lockfile
       - run: pnpm --dir release-source audit --audit-level=high
       - name: Build the release artifact once
-        run: pnpm --dir release-source --silent package:pack
+        env:
+          RELEASE_PACKAGE_NAME: better-realtime
+          RELEASE_PACKAGE_MANIFEST: packages/runtime/package.json
+          RELEASE_ARTIFACT_COMMAND: package:pack
+          RELEASE_WORKFLOW_PATH: .github/workflows/release.yml
+          RELEASE_NPM_ENVIRONMENT: npm-alpha
+        run: |
+          pnpm --dir release-source release:single-package:check
+          pnpm --dir release-source --silent package:pack
       - name: Verify the approved release artifact identity
         id: approved
         env:
@@ -312,6 +321,20 @@ describe("release-security contract modes", () => {
       .replace("      - run: pnpm --dir release-source audit --audit-level=high\n", "")
       .replace("      - name: Build the release artifact once\n", "      - name: Build the release artifact once\n        run: pnpm --dir release-source --silent package:pack\n      - run: pnpm --dir release-source audit --audit-level=high\n");
     expect(() => assertReleaseBuildAuditOrder(sourceAuditAfterPack)).toThrow("RT_RELEASE_BUILD_AUDIT_GATE_ORDER");
+  });
+
+  it("fails closed when the base workflow can select or build the companion package", async () => {
+    const publish = await readFile(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+    expect(() => assertReleasePackageBoundary(publish)).not.toThrow();
+    for (const mutation of [
+      publish.replace("          RELEASE_PACKAGE_NAME: better-realtime\n", ""),
+      publish.replace("          RELEASE_PACKAGE_MANIFEST: packages/runtime/package.json\n", "          RELEASE_PACKAGE_MANIFEST: packages/mcp/package.json\n"),
+      publish.replace("          RELEASE_ARTIFACT_COMMAND: package:pack\n", "          RELEASE_ARTIFACT_COMMAND: package:pack:mcp\n"),
+      publish.replace("          RELEASE_WORKFLOW_PATH: .github/workflows/release.yml\n", "          RELEASE_WORKFLOW_PATH: .github/workflows/release-mcp.yml\n"),
+      publish.replace("          RELEASE_NPM_ENVIRONMENT: npm-alpha\n", "          RELEASE_NPM_ENVIRONMENT: npm-mcp-alpha\n"),
+      publish.replace("          pnpm --dir release-source release:single-package:check\n", ""),
+      publish.replace("          pnpm --dir release-source --silent package:pack > output/package-report.json\n", "          pnpm --dir release-source --silent package:pack:mcp > output/package-report.json\n")
+    ]) expect(() => assertReleasePackageBoundary(mutation)).toThrow("RT_RELEASE_PACKAGE_BOUNDARY_DRIFT");
   });
 
   it("fails closed when approved artifact identity or byte checks drift", async () => {

@@ -74,6 +74,8 @@ export interface EvidenceBundleV1 {
   schemaVersion: "1.0";
   tenantId: string;
   payloadPolicy: "redacted";
+  /** Absent only on alpha.4-compatible legacy source bundles. */
+  identifierPolicy?: "source" | "pseudonymized";
   /** Source-only secret used to pseudonymize identifiers; it is never returned by query results. */
   pseudonymizationKey: string;
   records: Array<{ tenantId: string; record: SourceDiagnosticEvidenceRecord }>;

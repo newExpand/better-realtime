@@ -1,17 +1,26 @@
 # Quickstart
 
-Better Realtime `0.1.0-alpha.4` supports React Web clients and Node.js servers using PostgreSQL.
+This source tree is the release candidate for Better Realtime `0.2.0-alpha.1`. The version is not available from npm until the approval-gated release completes. Until then, use the exact candidate tarballs produced by `pnpm package:pack` and `pnpm package:pack:mcp`; an npm `E404` is expected and does not reserve either package name.
+
+Install only the profile the process runs:
 
 ```sh
-npm install better-realtime@alpha react pg ws
+# Browser/React application
+npm install better-realtime@0.2.0-alpha.1 react
+
+# Node/PostgreSQL gateway
+npm install better-realtime@0.2.0-alpha.1 pg ws
+
+# Local read-only stdio analyzer
+npm install better-realtime-mcp@0.2.0-alpha.1
 ```
 
-Alpha releases use the npm `alpha` dist-tag. Run the command only after `0.1.0-alpha.4` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions); an `E404` means the approval-gated publication has not completed.
+The browser-capable base package has no package-wide Node engine constraint. The Node-only companion requires Node.js 22 or newer, and a Node gateway must run on Node.js 22 or newer. `pg`, `ws`, and React are optional peers of the base package so a browser-only install does not receive server or MCP dependencies.
 
-Define one shared contract with explicit Draft 2020-12 payload identities in `contract.ts`. This example is complete; every identifier used by the reducer is declared here:
+Define one shared contract with explicit Draft 2020-12 payload identities. `stateStream()` keeps transport sequence metadata outside domain state and infers the event payload at its reducer:
 
 ```ts
-import { command, defineRealtimeContract, jsonSchema, stream } from "better-realtime"
+import { command, defineRealtimeContract, jsonSchema, stateStream } from "better-realtime"
 
 const notification = jsonSchema("example.notification@1", {
   type: "object", additionalProperties: false, required: ["id", "title", "read"],
@@ -21,17 +30,13 @@ const inboxInput = jsonSchema("example.inbox.input@1", {
   type: "object", additionalProperties: false, required: ["userId"],
   properties: { userId: { type: "string" } },
 })
-const inboxState = jsonSchema("example.inbox.state@1", {
-  type: "object", additionalProperties: false, required: ["items", "sequence"],
-  properties: { items: { type: "array", items: notification.schema }, sequence: { type: "integer", minimum: 0 } },
+const inboxState = jsonSchema("example.inbox.state@2", {
+  type: "object", additionalProperties: false, required: ["items"],
+  properties: { items: { type: "array", items: notification.schema } },
 })
 const markReadInput = jsonSchema("example.mark-read.input@1", {
   type: "object", additionalProperties: false, required: ["userId", "notificationId"],
   properties: { userId: { type: "string" }, notificationId: { type: "string" } },
-})
-const notificationRead = jsonSchema("example.notification-read@1", {
-  type: "object", additionalProperties: false, required: ["id"],
-  properties: { id: { type: "string" } },
 })
 const markReadResult = jsonSchema("example.mark-read.result@1", {
   type: "object", additionalProperties: false, required: ["changed"],
@@ -40,22 +45,30 @@ const markReadResult = jsonSchema("example.mark-read.result@1", {
 
 export const contract = defineRealtimeContract({
   contractId: "example.notifications",
-  manifestVersion: "1.0.0",
-  streams: { inbox: stream({
-    input: inboxInput,
-    snapshot: inboxState,
-    events: { notificationAdded: notification, notificationRead },
-    key: ({ userId }) => `inbox:${userId}`,
-    initial: () => ({ items: [], sequence: 0 }),
-    applyEvent: (state, event) => event.type === "notificationAdded"
-      ? { items: [...state.items, event.data], sequence: event.sequence }
-      : {
-          items: state.items.map((item) => item.id === event.data.id ? { ...item, read: true } : item),
-          sequence: event.sequence,
+  manifestVersion: "2.0.0",
+  streams: {
+    inbox: stateStream({
+      input: inboxInput,
+      state: inboxState,
+      key: ({ userId }) => `inbox:${userId}`,
+      initial: () => ({ items: [] }),
+      events: {
+        notificationAdded: {
+          data: notification,
+          reduce: (state, item) => ({ items: [...state.items, item] }),
         },
-    snapshotSequence: (state) => state.sequence,
-  }) },
-  commands: { markRead: command({ input: markReadInput, result: markReadResult }) },
+        notificationRead: {
+          data: notification,
+          reduce: (state, changed) => ({
+            items: state.items.map((item) => item.id === changed.id ? changed : item),
+          }),
+        },
+      },
+    }),
+  },
+  commands: {
+    markRead: command({ input: markReadInput, result: markReadResult }),
+  },
 })
 ```
 
@@ -71,24 +84,33 @@ const client = createRealtimeClient(contract, {
   auth: () => ({ accessToken: sessionStorage.getItem("access-token") }),
 })
 export const realtime = createRealtimeReact(client)
-await client.connect()
+// Streams and commands connect on demand. Use client.connect() only for
+// deliberate warm-up/readiness.
 ```
 
-Components acquire logical subscriptions, not physical connections:
+Components acquire logical subscriptions and command-scoped activity:
 
 ```tsx
 function NotificationAction({ userId }: { userId: string }) {
-  const inbox = realtime.useStream("inbox", { userId })
-  const markRead = realtime.useCommand("markRead")
-  const submit = async () => {
-    const attempt = markRead.execute({ userId, notificationId: "notification-7" })
-    await attempt.completed
-    await attempt.observed
-  }
-  return <button onClick={submit}>Mark read ({inbox.data.items.length})</button>
+  const unread = realtime.useStream("inbox", { userId }, {
+    select: (snapshot) => snapshot.data.items.filter((item) => !item.read).length,
+  })
+  const markRead = realtime.useCommand("markRead", { pendingUntil: "observed" })
+  return (
+    <button
+      disabled={markRead.isPending}
+      onClick={() => void markRead.executeAsync({ userId, notificationId: "notification-7" })}
+    >
+      Mark read ({unread} unread)
+    </button>
+  )
 }
 ```
 
-Deploy the PostgreSQL migration before server startup. Continue with the [server](server.md) and [PostgreSQL](postgres.md) guides.
+`completed` means the durable command result exists; `observed` additionally means this client has applied all causal events. Every `execute()` remains a distinct user intent and receives a distinct stable command identity.
 
-For a complete application with contract, migration, server handlers, React UI, two gateways, PostgreSQL 18.4, ACK-loss recovery, and CLI/MCP diagnosis, use the public [`fixtures/external-consumer`](../../fixtures/external-consumer) source. `pnpm e2e:consumer` packs `better-realtime`, installs only that tarball outside the workspace, builds the fixture, and runs the full browser journey.
+Run storage v2 migration with the migration role before starting any `0.2` gateway. Do not roll `0.2` runtime instances against storage v1 or run alpha.4 and `0.2` gateways against one namespace. Continue with the [server](server.md), [PostgreSQL](postgres.md), and [0.2 migration](migration-0.2.md) guides.
+
+`pnpm migration:verify` installs the exact published alpha.4 fixture and both exact candidate tarballs in isolated consumers, then typechecks, builds, and runs the before/after application surfaces. `pnpm compatibility:matrix` independently verifies wire-v1 compatible combinations and explicit exact-contract rejection.
+
+This candidate does not support an existing HTTP/Fastify/Nest attach mode, React Native, Socket.IO, Go, a durable hosted evidence backend, or production remote MCP. `better-realtime-mcp` is a local read-only stdio analyzer over an explicitly selected evidence file. TanStack Query interoperability is future, optional, demand-gated work—not a feature or required next step of this release.

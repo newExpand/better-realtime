@@ -1,0 +1,102 @@
+{
+  "manifest": {
+    "protocol": "1.0",
+    "schemaDialect": "https://json-schema.org/draft/2020-12/schema",
+    "contractId": "conformance.state-stream",
+    "manifestVersion": "1.0.0",
+    "streams": {
+      "room": {
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["roomId"],
+          "properties": { "roomId": { "type": "string" } },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "inputSchema": "conformance.room.input@1",
+        "snapshot": {
+          "type": "object",
+          "required": ["includedSequence", "state"],
+          "properties": {
+            "includedSequence": { "type": "integer", "minimum": 0 },
+            "state": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["messages"],
+              "properties": {
+                "messages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "text"],
+                    "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
+                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                  }
+                }
+              },
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+            }
+          },
+          "additionalProperties": false,
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "snapshotSchema": "better-realtime.state-snapshot.ec79a9a99abcb465fff72942b826aabf0ba01e8e46fdb82809249b505a831bf7@1",
+        "ordering": "per_stream",
+        "materialization": "state_reducer_v1",
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["messages"],
+          "properties": {
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "text"],
+                "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
+                "$schema": "https://json-schema.org/draft/2020-12/schema"
+              }
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "stateSchema": "conformance.room.state@1",
+        "events": {
+          "messageAdded": {
+            "schema": "conformance.message@1",
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "text"],
+              "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+            }
+          }
+        }
+      }
+    },
+    "commands": {
+      "send": {
+        "schema": "conformance.message@1",
+        "resultSchema": "conformance.send.result@1",
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "text"],
+          "properties": { "id": { "type": "string" }, "text": { "type": "string" } },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accepted"],
+          "properties": { "accepted": { "type": "boolean" } },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        }
+      }
+    }
+  },
+  "manifestDigest": "sha256:744455cbce247f2becd0479c4c84d6ce10a733d62c329007281315a8f1b1f9ef"
+}

@@ -18,12 +18,41 @@ describe("published alpha compatibility policy", () => {
     expect(manifest).toMatchObject({ checksumPinned: true, preservationBaseline: true, githubReleaseImmutable: false });
   });
 
+  it("keeps alpha.1 and exact alpha.4 as independent storage-v1 migration fixtures", async () => {
+    const [manifestSource, harness] = await Promise.all([
+      readFile(resolve(root, "compatibility/postgres-migrations.json"), "utf8"),
+      readFile(resolve(root, "scripts/verify-postgres-compatibility.ts"), "utf8")
+    ]);
+    const manifest = JSON.parse(manifestSource) as {
+      fixtures: Array<{ storageVersion: number; publishedBaseline: string; packagePath: string; packageSha256: string }>;
+    };
+    expect(manifest.fixtures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        storageVersion: 1,
+        publishedBaseline: "better-realtime@0.1.0-alpha.1",
+        packagePath: "compatibility/fixtures/better-realtime-0.1.0-alpha.1.tgz",
+        packageSha256: "037aeab6cb79d891135026489f6e42595e231bf623b0032b4110472adf444d33"
+      }),
+      expect.objectContaining({
+        storageVersion: 1,
+        publishedBaseline: "better-realtime@0.1.0-alpha.4",
+        packagePath: "compatibility/fixtures/better-realtime-0.1.0-alpha.4.tgz",
+        packageSha256: "803487cf32eca359ac85755b138119bf37c9e9afa476e55684971ed24057a6c2"
+      })
+    ]));
+    expect(harness).toContain("manifest.fixtures.filter");
+    expect(harness).toContain("for (const [fixtureIndex, fixture] of edgeFixtures.entries())");
+    expect(harness).toContain("publishedBaseline");
+    expect(harness).toContain("RT_COMPAT_POSTGRES_FIXTURE_PACKAGE_IDENTITY");
+    expect(harness).not.toContain("manifest.fixtures.find((entry) => entry.storageVersion");
+  });
+
   it("accepts only the three explicit change classifications and independent version boundaries", async () => {
     const changes = JSON.parse(await readFile(resolve(root, "compatibility/changes.json"), "utf8")) as { changes: Array<{ id: string; classification: string; minimumVersion: string }> };
     for (const change of changes.changes) {
       expect(["compatible", "deprecated", "intentionally_breaking"]).toContain(change.classification);
-      expect(change.id).toMatch(/^alpha4-/u);
-      expect(change.minimumVersion).toBe("0.1.0-alpha.4");
+      expect(change.id).toMatch(/^(?:candidate|alpha4)-/u);
+      expect(change.minimumVersion).toBe(change.classification === "intentionally_breaking" ? "0.2.0-alpha.1" : "0.1.0-alpha.4");
     }
     const stability = await readFile(resolve(root, "docs/public/stability.md"), "utf8");
     expect(stability).toContain("`0.1.0-alpha.2`");

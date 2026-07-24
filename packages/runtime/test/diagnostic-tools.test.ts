@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runRealtimeCli } from "../src/cli.ts";
 import { openLocalDiagnosticSource } from "../src/diagnostic-io.ts";
 import { createReadOnlyDiagnosticMcp } from "../src/mcp.ts";
+import { createReadOnlyDiagnosticMcp as createCompanionDiagnosticMcp } from "../../mcp/src/index.ts";
 
 const temporaryDirectories: string[] = [];
 const exec = promisify(execFile);
@@ -85,7 +86,7 @@ describe("read-only diagnostic CLI and MCP", () => {
     const invalid = await client.callTool({ name: "realtime_doctor", arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     const invalidContent = invalid.content as Array<{ type: string; text?: string }>;
-    expect(JSON.parse(invalidContent[0]?.type === "text" ? invalidContent[0].text ?? "null" : "null")).toEqual({ product: "Better Realtime", productVersion: "0.1.0-alpha.4", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_QUERY_INVALID", message: "RT_DIAGNOSTIC_QUERY_INVALID" });
+    expect(JSON.parse(invalidContent[0]?.type === "text" ? invalidContent[0].text ?? "null" : "null")).toEqual({ product: "Better Realtime", productVersion: "0.2.0-alpha.1", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_QUERY_INVALID", message: "RT_DIAGNOSTIC_QUERY_INVALID" });
     await client.close();
     await server.close();
   });
@@ -95,6 +96,16 @@ describe("read-only diagnostic CLI and MCP", () => {
     const output: string[] = [];
     expect(await runRealtimeCli({ argv: ["doctor", "--source", source, "--tenant", "tenant-a"], env: {}, writeStdout: (value) => output.push(value), writeStderr: () => undefined })).toBe(0);
     expect(JSON.parse(output.join(""))).toMatchObject({ completeness: { status: "partial" }, report: { verdict: "indeterminate" } });
+
+    const server = await createCompanionDiagnosticMcp({ sourcePath: source, tenantId: "tenant-a" });
+    const client = new Client({ name: "diagnostic-incomplete-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const response = await client.callTool({ name: "realtime_doctor", arguments: {} });
+    const content = response.content as Array<{ type: string; text?: string }>;
+    expect(JSON.parse(content[0]?.type === "text" ? content[0].text ?? "null" : "null")).toMatchObject({ completeness: { status: "partial" }, report: { verdict: "indeterminate" } });
+    await client.close();
+    await server.close();
 
     const errors: string[] = [];
     expect(await runRealtimeCli({ argv: ["trace", "command", "cmd-42", "--source", source, "--tenant", "tenant-b"], env: {}, writeStdout: () => undefined, writeStderr: (value) => errors.push(value) })).toBe(1);
@@ -137,7 +148,7 @@ describe("read-only diagnostic CLI and MCP", () => {
     const missing = join(dirname(source), "private-customer-evidence.json");
     const missingErrors: string[] = [];
     expect(await runRealtimeCli({ argv: ["doctor", "--source", missing, "--tenant", "tenant-a"], env: {}, writeStdout: () => undefined, writeStderr: (value) => missingErrors.push(value) })).toBe(1);
-    expect(JSON.parse(missingErrors.join(""))).toEqual({ product: "Better Realtime", productVersion: "0.1.0-alpha.4", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_SOURCE_UNAVAILABLE", message: "RT_DIAGNOSTIC_SOURCE_UNAVAILABLE" });
+    expect(JSON.parse(missingErrors.join(""))).toEqual({ product: "Better Realtime", productVersion: "0.2.0-alpha.1", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_SOURCE_UNAVAILABLE", message: "RT_DIAGNOSTIC_SOURCE_UNAVAILABLE" });
     expect(missingErrors.join("")).not.toContain(missing);
 
     const oversized = join(dirname(source), "oversized.json");
@@ -172,7 +183,7 @@ describe("read-only diagnostic CLI and MCP", () => {
     const response = await client.callTool({ name: "realtime_trace_command", arguments: { commandId: "cmd-42" } });
     expect(response.isError).toBe(true);
     const content = response.content as Array<{ type: string; text?: string }>;
-    expect(JSON.parse(content[0]?.type === "text" ? content[0].text ?? "null" : "null")).toEqual({ product: "Better Realtime", productVersion: "0.1.0-alpha.4", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_SCOPE_AMBIGUOUS", message: "RT_DIAGNOSTIC_SCOPE_AMBIGUOUS" });
+    expect(JSON.parse(content[0]?.type === "text" ? content[0].text ?? "null" : "null")).toEqual({ product: "Better Realtime", productVersion: "0.2.0-alpha.1", component: "better-realtime", schemaVersion: "1.0", kind: "diagnostic_error", code: "RT_DIAGNOSTIC_SCOPE_AMBIGUOUS", message: "RT_DIAGNOSTIC_SCOPE_AMBIGUOUS" });
     await client.close();
     await server.close();
   });

@@ -1,0 +1,200 @@
+name: Verify published Better Realtime package bundle
+
+on:
+  workflow_call:
+    inputs:
+      version: { required: true, type: string }
+      tag: { required: true, type: string }
+      release_id: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      workflow_sha: { required: true, type: string }
+      evidence_generated_at: { required: true, type: string }
+      expected_base_sha256: { required: true, type: string }
+      expected_base_size: { required: true, type: string }
+      expected_base_unpacked_size: { required: true, type: string }
+      expected_base_files: { required: true, type: string }
+      expected_mcp_sha256: { required: true, type: string }
+      expected_mcp_size: { required: true, type: string }
+      expected_mcp_unpacked_size: { required: true, type: string }
+      expected_mcp_files: { required: true, type: string }
+      base_publish_workflow_sha: { required: true, type: string }
+      base_publish_run_id: { required: true, type: string }
+      base_publish_run_attempt: { required: true, type: string }
+      mcp_publish_workflow_sha: { required: true, type: string }
+      mcp_publish_run_id: { required: true, type: string }
+      mcp_publish_run_attempt: { required: true, type: string }
+      expected_base_latest: { required: true, type: string }
+      expected_mcp_latest: { required: true, type: string }
+  workflow_dispatch:
+    inputs:
+      version: { required: true, type: string }
+      tag: { required: true, type: string }
+      release_id: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      workflow_sha: { required: true, type: string }
+      evidence_generated_at: { required: true, type: string }
+      expected_base_sha256: { required: true, type: string }
+      expected_base_size: { required: true, type: string }
+      expected_base_unpacked_size: { required: true, type: string }
+      expected_base_files: { required: true, type: string }
+      expected_mcp_sha256: { required: true, type: string }
+      expected_mcp_size: { required: true, type: string }
+      expected_mcp_unpacked_size: { required: true, type: string }
+      expected_mcp_files: { required: true, type: string }
+      base_publish_workflow_sha: { required: true, type: string }
+      base_publish_run_id: { required: true, type: string }
+      base_publish_run_attempt: { required: true, type: string }
+      mcp_publish_workflow_sha: { required: true, type: string }
+      mcp_publish_run_id: { required: true, type: string }
+      mcp_publish_run_attempt: { required: true, type: string }
+      expected_base_latest: { required: true, type: string }
+      expected_mcp_latest: { required: true, type: string }
+
+permissions:
+  actions: read
+  attestations: read
+  contents: read
+  id-token: none
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable Release and download exact bundle assets before repository code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BASE_SHA256: ${{ inputs.expected_base_sha256 }}
+          BASE_SIZE: ${{ inputs.expected_base_size }}
+          MCP_SHA256: ${{ inputs.expected_mcp_sha256 }}
+          MCP_SIZE: ${{ inputs.expected_mcp_size }}
+          ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
+        run: |
+          set -euo pipefail
+          test "$TAG" = "v$VERSION"
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          for digest in "$BASE_SHA256" "$MCP_SHA256"; do [[ "$digest" =~ ^[a-f0-9]{64}$ ]]; done
+          for size in "$BASE_SIZE" "$MCP_SIZE"; do [[ "$size" =~ ^[1-9][0-9]*$ ]]; done
+          mkdir -p "$ROOT/release" "$ROOT/registry" "$ROOT/signatures"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          test "$(jq -r .tag_name <<<"$release")" = "$TAG"
+          test "$(jq -r .target_commitish <<<"$release")" = "$SOURCE_SHA"
+          test "$(jq -r .draft <<<"$release")" = false
+          test "$(jq -r .prerelease <<<"$release")" = true
+          test "$(jq -r .immutable <<<"$release")" = true
+          tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
+          test "$(jq -r .object.type <<<"$tag_ref")" = tag
+          tag_object="$(jq -r .object.sha <<<"$tag_ref")"
+          [[ "$tag_object" =~ ^[a-f0-9]{40}$ ]]
+          tag_record="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
+          test "$(jq -r .tag <<<"$tag_record")" = "$TAG"
+          test "$(jq -r .message <<<"$tag_record")" = "Better Realtime $VERSION"
+          test "$(jq -r .object.type <<<"$tag_record")" = commit
+          test "$(jq -r .object.sha <<<"$tag_record")" = "$SOURCE_SHA"
+          echo "RELEASE_TAG_OBJECT=$tag_object" >> "$GITHUB_ENV"
+          expected_names="$(printf '%s\n' "better-realtime-$VERSION.tgz" "better-realtime-$VERSION.tgz.sha256" "better-realtime-mcp-$VERSION.tgz" "better-realtime-mcp-$VERSION.tgz.sha256" "better-realtime-$VERSION.bundle.identity.json" | sort)"
+          test "$(jq -r '.assets[].name' <<<"$release" | sort)" = "$expected_names"
+          for name in $expected_names; do
+            id="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .id' <<<"$release")"
+            [[ "$id" =~ ^[1-9][0-9]*$ ]]
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$ROOT/release/$name"
+          done
+          test "$(sha256sum "$ROOT/release/better-realtime-$VERSION.tgz" | cut -d' ' -f1)" = "$BASE_SHA256"
+          test "$(wc -c < "$ROOT/release/better-realtime-$VERSION.tgz" | tr -d ' ')" = "$BASE_SIZE"
+          test "$(sha256sum "$ROOT/release/better-realtime-mcp-$VERSION.tgz" | cut -d' ' -f1)" = "$MCP_SHA256"
+          test "$(wc -c < "$ROOT/release/better-realtime-mcp-$VERSION.tgz" | tr -d ' ')" = "$MCP_SIZE"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: "22.x", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - run: corepack enable
+      - run: npm install --global npm@11.18.0
+      - run: pnpm install --frozen-lockfile
+      - name: Verify public identity, checksum, manifest and artifact attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          EVIDENCE_GENERATED_AT: ${{ inputs.evidence_generated_at }}
+          BASE_SHA256: ${{ inputs.expected_base_sha256 }}
+          BASE_SIZE: ${{ inputs.expected_base_size }}
+          BASE_UNPACKED_SIZE: ${{ inputs.expected_base_unpacked_size }}
+          BASE_FILES: ${{ inputs.expected_base_files }}
+          MCP_SHA256: ${{ inputs.expected_mcp_sha256 }}
+          MCP_SIZE: ${{ inputs.expected_mcp_size }}
+          MCP_UNPACKED_SIZE: ${{ inputs.expected_mcp_unpacked_size }}
+          MCP_FILES: ${{ inputs.expected_mcp_files }}
+          BASE_LATEST: ${{ inputs.expected_base_latest }}
+          MCP_LATEST: ${{ inputs.expected_mcp_latest }}
+          ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
+        run: |
+          set -euo pipefail
+          pnpm tsx scripts/verify-public-release-bundle.ts \
+            --identity "$ROOT/release/better-realtime-$VERSION.bundle.identity.json" \
+            --version "$VERSION" --source-sha "$SOURCE_SHA" --workflow-sha "$WORKFLOW_SHA" \
+            --tag "$TAG" --tag-object "$RELEASE_TAG_OBJECT" --release-id "$RELEASE_ID" \
+            --evidence-generated-at "$EVIDENCE_GENERATED_AT" \
+            --base-artifact "$ROOT/release/better-realtime-$VERSION.tgz" \
+            --base-checksum "$ROOT/release/better-realtime-$VERSION.tgz.sha256" \
+            --base-manifest release/package-files.json --base-sha256 "$BASE_SHA256" \
+            --base-size "$BASE_SIZE" --base-unpacked-size "$BASE_UNPACKED_SIZE" --base-files "$BASE_FILES" --base-latest "$BASE_LATEST" \
+            --mcp-artifact "$ROOT/release/better-realtime-mcp-$VERSION.tgz" \
+            --mcp-checksum "$ROOT/release/better-realtime-mcp-$VERSION.tgz.sha256" \
+            --mcp-manifest release/mcp-package-files.json --mcp-sha256 "$MCP_SHA256" \
+            --mcp-size "$MCP_SIZE" --mcp-unpacked-size "$MCP_UNPACKED_SIZE" --mcp-files "$MCP_FILES" --mcp-latest "$MCP_LATEST"
+          for asset in "better-realtime-$VERSION.tgz" "better-realtime-mcp-$VERSION.tgz" "better-realtime-$VERSION.bundle.identity.json"; do
+            gh attestation verify "$ROOT/release/$asset" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" \
+              --signer-digest "$WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$WORKFLOW_SHA"
+          done
+      - name: Wait for both registry artifacts and compare every byte
+        env:
+          VERSION: ${{ inputs.version }}
+          ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
+        run: |
+          set -euo pipefail
+          for package in better-realtime better-realtime-mcp; do
+            for attempt in $(seq 1 20); do npm pack "$package@$VERSION" --pack-destination "$ROOT/registry" >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
+            cmp "$ROOT/release/$package-$VERSION.tgz" "$ROOT/registry/$package-$VERSION.tgz"
+          done
+          BETTER_REALTIME_TARBALL="$ROOT/registry/better-realtime-$VERSION.tgz" BETTER_REALTIME_MCP_TARBALL="$ROOT/registry/better-realtime-mcp-$VERSION.tgz" pnpm package:clean-room:isolation
+      - name: Verify both package signatures and independent OIDC provenance
+        env:
+          VERSION: ${{ inputs.version }}
+          ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
+          BASE_WORKFLOW_SHA: ${{ inputs.base_publish_workflow_sha }}
+          BASE_RUN_ID: ${{ inputs.base_publish_run_id }}
+          BASE_RUN_ATTEMPT: ${{ inputs.base_publish_run_attempt }}
+          MCP_WORKFLOW_SHA: ${{ inputs.mcp_publish_workflow_sha }}
+          MCP_RUN_ID: ${{ inputs.mcp_publish_run_id }}
+          MCP_RUN_ATTEMPT: ${{ inputs.mcp_publish_run_attempt }}
+          EXPECTED_BASE_LATEST: ${{ inputs.expected_base_latest }}
+          EXPECTED_MCP_LATEST: ${{ inputs.expected_mcp_latest }}
+        run: |
+          set -euo pipefail
+          (cd "$ROOT/signatures" && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$VERSION" "better-realtime-mcp@$VERSION" && npm audit signatures --json --include-attestations > audit.json)
+          pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-$VERSION.tgz" --package better-realtime --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-alpha --workflow-sha "$BASE_WORKFLOW_SHA" --publish-run-id "$BASE_RUN_ID" --publish-run-attempt "$BASE_RUN_ATTEMPT"
+          pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-mcp-$VERSION.tgz" --package better-realtime-mcp --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-mcp-alpha --workflow-sha "$MCP_WORKFLOW_SHA" --publish-run-id "$MCP_RUN_ID" --publish-run-attempt "$MCP_RUN_ATTEMPT"
+          verify_tags() {
+            package="$1"
+            expected_latest="$2"
+            tags="$(npm view "$package" dist-tags --json)"
+            node -e '
+              const tags = JSON.parse(process.argv[1]);
+              const version = process.argv[2];
+              const expectedLatest = process.argv[3];
+              if (!tags || typeof tags !== "object" || Array.isArray(tags) || tags.alpha !== version) process.exit(1);
+              if (expectedLatest === "absent") {
+                if (Object.hasOwn(tags, "latest")) process.exit(1);
+              } else if (tags.latest !== expectedLatest) process.exit(1);
+            ' "$tags" "$VERSION" "$expected_latest"
+          }
+          verify_tags better-realtime "$EXPECTED_BASE_LATEST"
+          verify_tags better-realtime-mcp "$EXPECTED_MCP_LATEST"

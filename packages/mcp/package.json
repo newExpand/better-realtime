@@ -1,0 +1,33 @@
+{
+  "name": "better-realtime-mcp",
+  "version": "0.2.0-alpha.1",
+  "description": "Read-only MCP diagnostics companion for Better Realtime",
+  "license": "MIT",
+  "author": "ByteLoft",
+  "keywords": ["realtime", "diagnostics", "mcp"],
+  "repository": { "type": "git", "url": "git+https://github.com/newExpand/better-realtime.git" },
+  "homepage": "https://github.com/newExpand/better-realtime#readme",
+  "bugs": { "url": "https://github.com/newExpand/better-realtime/issues" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": ["./dist/bin.js", "./dist/node-runtime.js"],
+  "files": ["dist"],
+  "engines": { "node": ">=22.0.0" },
+  "bin": {
+    "better-realtime-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.json && chmod +x dist/bin.js",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "better-realtime": "workspace:*"
+  },
+  "publishConfig": { "access": "public", "tag": "alpha", "provenance": true }
+}

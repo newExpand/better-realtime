@@ -4,6 +4,10 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "better-realtime": ["./packages/runtime/src/index.ts"],
+      "better-realtime/diagnostics": ["./packages/runtime/src/diagnostic-io.ts"]
+    },
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "strict": true,

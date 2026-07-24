@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface ExpectedProvenance {
+  packageName?: string;
   version: string;
   workflowSha: string;
   publishRunId: string;
@@ -22,6 +23,7 @@ const githubOidcIssuer = "https://token.actions.githubusercontent.com";
 const githubHostedBuilder = "https://github.com/actions/runner/github-hosted";
 
 export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarball: Uint8Array, expected: ExpectedProvenance): Record<string, string> {
+  const packageName = expected.packageName ?? "better-realtime";
   const repository = expected.repository ?? "newExpand/better-realtime";
   const workflowPath = expected.workflowPath ?? ".github/workflows/release.yml";
   const environment = expected.environment ?? "npm-alpha";
@@ -30,12 +32,12 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
   if (!/^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$/u.test(expected.version) || !/^[a-f0-9]{40}$/u.test(expected.workflowSha) || !/^[1-9][0-9]*$/u.test(expected.publishRunId) || !/^[1-9][0-9]*$/u.test(expected.publishRunAttempt)) throw new Error("RT_PROVENANCE_EXPECTATION_INVALID");
   const root = requireRecord(attestationsValue, "RT_PROVENANCE_AUDIT_RESPONSE_INVALID");
   if (!Array.isArray(root.invalid) || root.invalid.length !== 0 || !Array.isArray(root.missing) || root.missing.length !== 0 || !Array.isArray(root.verified)) throw new Error("RT_PROVENANCE_AUDIT_NOT_CLEAN");
-  const packageEntries = root.verified.filter((entry) => { const record = requireRecord(entry, "RT_PROVENANCE_AUDIT_ENTRY_INVALID"); return record.name === "better-realtime" && record.version === expected.version && record.location === "node_modules/better-realtime" && record.registry === "https://registry.npmjs.org/"; });
+  const packageEntries = root.verified.filter((entry) => { const record = requireRecord(entry, "RT_PROVENANCE_AUDIT_ENTRY_INVALID"); return record.name === packageName && record.version === expected.version && record.location === `node_modules/${packageName}` && record.registry === "https://registry.npmjs.org/"; });
   if (packageEntries.length !== 1) throw new Error(`RT_PROVENANCE_VERIFIED_PACKAGE_COUNT:${packageEntries.length}`);
   const packageEntry = requireRecord(packageEntries[0], "RT_PROVENANCE_AUDIT_ENTRY_INVALID");
   const attestationMetadata = requireRecord(packageEntry.attestations, "RT_PROVENANCE_AUDIT_ATTESTATIONS_MISSING");
   const provenanceMetadata = requireRecord(attestationMetadata.provenance, "RT_PROVENANCE_AUDIT_ATTESTATIONS_MISSING");
-  if (attestationMetadata.url !== `https://registry.npmjs.org/-/npm/v1/attestations/better-realtime@${expected.version}` || provenanceMetadata.predicateType !== slsaPredicate) throw new Error("RT_PROVENANCE_AUDIT_ATTESTATIONS_MISMATCH");
+  if (attestationMetadata.url !== `https://registry.npmjs.org/-/npm/v1/attestations/${packageName}@${expected.version}` || provenanceMetadata.predicateType !== slsaPredicate) throw new Error("RT_PROVENANCE_AUDIT_ATTESTATIONS_MISMATCH");
   const attestations = Array.isArray(packageEntry.attestationBundles) ? packageEntry.attestationBundles : [];
   const matches = attestations.filter((entry) => requireRecord(entry, "RT_PROVENANCE_ENTRY_INVALID").predicateType === slsaPredicate);
   if (matches.length !== 1) throw new Error(`RT_PROVENANCE_SLSA_COUNT:${matches.length}`);
@@ -49,7 +51,7 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
   const subject = subjects.length === 1 ? requireRecord(subjects[0], "RT_PROVENANCE_SUBJECT_INVALID") : undefined;
   const subjectDigest = subject ? requireRecord(subject.digest, "RT_PROVENANCE_SUBJECT_INVALID") : {};
   const sha512 = createHash("sha512").update(tarball).digest("hex");
-  if (subject?.name !== `pkg:npm/better-realtime@${expected.version}` || subjectDigest.sha512 !== sha512) throw new Error("RT_PROVENANCE_SUBJECT_MISMATCH");
+  if (subject?.name !== `pkg:npm/${packageName}@${expected.version}` || subjectDigest.sha512 !== sha512) throw new Error("RT_PROVENANCE_SUBJECT_MISMATCH");
   if (statement.predicateType !== slsaPredicate) throw new Error("RT_PROVENANCE_PREDICATE_MISMATCH");
   const predicate = requireRecord(statement.predicate, "RT_PROVENANCE_PREDICATE_INVALID");
   const buildDefinition = requireRecord(predicate.buildDefinition, "RT_PROVENANCE_BUILD_INVALID");
@@ -96,7 +98,7 @@ export function verifyNpmProvenanceAttestation(attestationsValue: unknown, tarba
     const actual = extensions.get(oid);
     if (oid.endsWith(".24") ? !actual?.startsWith(value) || !actual.endsWith(`:environment:${environment}`) : actual !== value) throw new Error(`RT_PROVENANCE_CERTIFICATE_IDENTITY_MISMATCH:${oid}`);
   }
-  return { package: `better-realtime@${expected.version}`, sha512, repository, workflow: workflowPath, environment, workflowSha: expected.workflowSha, invocation };
+  return { package: `${packageName}@${expected.version}`, sha512, repository, workflow: workflowPath, environment, workflowSha: expected.workflowSha, invocation };
 }
 
 interface DerNode { tag: number; valueStart: number; end: number; children: DerNode[] }
@@ -160,7 +162,15 @@ async function main(): Promise<void> {
   const required = (name: string) => { const value = argumentsMap.get(name); if (!value) throw new Error(`RT_PROVENANCE_ARGUMENT_MISSING:${name}`); return value; };
   const attestations = JSON.parse(await readFile(resolve(required("audit-signatures")), "utf8"));
   const tarball = await readFile(resolve(required("tarball")));
-  const result = verifyNpmProvenanceAttestation(attestations, tarball, { version: required("version"), workflowSha: required("workflow-sha"), publishRunId: required("publish-run-id"), publishRunAttempt: required("publish-run-attempt") });
+  const result = verifyNpmProvenanceAttestation(attestations, tarball, {
+    packageName: argumentsMap.get("package") ?? "better-realtime",
+    version: required("version"),
+    workflowSha: required("workflow-sha"),
+    publishRunId: required("publish-run-id"),
+    publishRunAttempt: required("publish-run-attempt"),
+    ...(argumentsMap.has("workflow-path") ? { workflowPath: argumentsMap.get("workflow-path")! } : {}),
+    ...(argumentsMap.has("environment") ? { environment: argumentsMap.get("environment")! } : {}),
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

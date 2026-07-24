@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import Ajv2020 from "ajv/dist/2020.js";
 import { stateMachineInventory, validateWireValue } from "../packages/protocol/src/index.ts";
 import { diagnosticQueryResultSchemaV1, localEvidenceBundleSchemaV1, transactionOperations } from "../packages/diagnostics/src/index.ts";
 import { diagnosticTransactionOperations } from "../packages/runtime/src/diagnostic-types.ts";
@@ -27,6 +29,11 @@ for (const [name, machine] of Object.entries(stateMachineInventory.machines)) {
 
 const scenarios = JSON.parse(await readFile(new URL("../conformance/v1/scenarios.json", import.meta.url), "utf8")) as { scenarios: Array<{ id: string; then: string[]; diagnostics: string[] }> };
 const diagnosticQuerySchema = JSON.parse(await readFile(new URL("../spec/diagnostics/v1/query-result.schema.json", import.meta.url), "utf8"));
+const contractManifestSchema = JSON.parse(await readFile(new URL("../spec/contract/v1/manifest.schema.json", import.meta.url), "utf8"));
+const contractManifestFixture = JSON.parse(await readFile(new URL("../conformance/v1/fixtures/state-stream-manifest.json", import.meta.url), "utf8")) as { manifest: unknown; manifestDigest: string };
+const manifestValidator = new Ajv2020({ strict: true }).compile(contractManifestSchema);
+if (!manifestValidator(contractManifestFixture.manifest)) throw new Error(`contract manifest fixture invalid: ${JSON.stringify(manifestValidator.errors)}`);
+if (`sha256:${createHash("sha256").update(canonicalJson(contractManifestFixture.manifest)).digest("hex")}` !== contractManifestFixture.manifestDigest) throw new Error("contract manifest digest fixture drift");
 if (canonicalJson(diagnosticQuerySchema) !== canonicalJson(diagnosticQueryResultSchemaV1)) throw new Error("diagnostic query schema drift");
 const bundleTransactionOperations = (localEvidenceBundleSchemaV1.$defs.evidenceRecord.properties.transactionOperation as { enum: readonly string[] }).enum;
 const resultTransactionOperations = (diagnosticQueryResultSchemaV1.$defs.evidenceRecord.properties.transactionOperation as { enum: readonly string[] }).enum;
@@ -39,7 +46,7 @@ for (const scenario of scenarios.scenarios) {
   if (scenario.then.length === 0 || scenario.diagnostics.length === 0) throw new Error(`${scenario.id}: incomplete contract`);
 }
 
-console.log(JSON.stringify({ schemaDraft: "2020-12", schemaFixturesValidated: fixtures.length, stateMachineInventoryValidated: Object.keys(stateMachineInventory.machines).length, scenarioInventoryEntriesValidated: ids.size, behavioralScenariosExecuted: 0, diagnosticQuerySchemaValidated: "1.0", inventoryStatus: "valid" }));
+console.log(JSON.stringify({ schemaDraft: "2020-12", schemaFixturesValidated: fixtures.length, contractManifestFixtureValidated: "state_reducer_v1", stateMachineInventoryValidated: Object.keys(stateMachineInventory.machines).length, scenarioInventoryEntriesValidated: ids.size, behavioralScenariosExecuted: 0, diagnosticQuerySchemaValidated: "1.0", inventoryStatus: "valid" }));
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);

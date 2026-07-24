@@ -1,6 +1,7 @@
 import { NodeWebSocketTransport } from "../packages/transport-reference/src/index.ts";
 import type { EventMessage, JsonValue } from "../packages/protocol/src/index.ts";
 import { RealtimeClient, type StreamDefinition } from "../packages/core/src/index.ts";
+import { doctor } from "../packages/diagnostics/src/index.ts";
 import { ReferenceServer } from "../packages/server-node/src/index.ts";
 
 interface RoomState { messages: JsonValue[]; sequence: number }
@@ -17,5 +18,15 @@ server.stopGateway(); await waitFor(() => client.connectionState === "backing_of
 await waitFor(() => stream.getSnapshot().status === "live" && stream.getSnapshot().sequence >= 6);
 const replay = server.recorder.records().filter((record) => record.boundary === "replay.selected" && record.stream === "room:42").at(-1);
 if (!replay?.traceId) throw new Error("server replay evidence did not expose a correlation trace");
-console.log(JSON.stringify(client.doctor({ producerRecords: server.recorder.records(), producerStats: server.recorder.stats(), scope: { traceId: replay.traceId, stream: "room:42" } }), null, 2));
+const clientStats = client.recorder.stats();
+const serverStats = server.recorder.stats();
+console.log(JSON.stringify(doctor({
+  records: [...client.recorder.records(), ...server.recorder.records()],
+  expectedBoundaries: [{ producerRole: "server", boundary: "replay.selected" }, { producerRole: "server", boundary: "event.delivery_attempted" }, { producerRole: "client", boundary: "client.event_applied" }, { producerRole: "client", boundary: "replay.completed" }],
+  expectedProducers: ["client", "server"],
+  scope: { traceId: replay.traceId, stream: "room:42" },
+  droppedRecords: clientStats.droppedRecords + serverStats.droppedRecords,
+  evictedRecords: clientStats.evictedRecords + serverStats.evictedRecords,
+  expectedOutcome: "subscribed application state converges through the declared recovery head"
+}), null, 2));
 release(); await client.dispose(); await server.dispose();

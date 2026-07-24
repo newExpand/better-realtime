@@ -2,15 +2,42 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { DatabaseError, type Notification, type Pool, type PoolClient } from "pg";
 import type { ContractIdentity, JsonValue } from "@realtime/protocol";
 import { FlightRecorder, type RecordInput } from "@realtime/diagnostics";
-import { DEFAULT_POSTGRES_SCHEMA, POSTGRES_STORAGE_VERSION, frameworkMigrationSql, postgresStorageNames, quoteIdentifier, type PostgresStorageNames } from "./migrations.ts";
+import { DEFAULT_POSTGRES_SCHEMA, quoteIdentifier } from "./migrations.ts";
+import {
+  POSTGRES_STORAGE_VERSION,
+  PREVIOUS_POSTGRES_STORAGE_VERSION,
+  frameworkMigrationSql,
+  postgresStorageNames,
+  storageV1ToV2MigrationSql,
+  type PostgresStorageNamesV2 as PostgresStorageNames
+} from "./migration-v2.ts";
 import { demoApplicationMigrationSql } from "./demo-migration.ts";
 import { classifyCommitFailure, CommitAttemptError, TransactionOutcomeError, TransactionRolledBackError, TransactionStateMachine, type PostgresTransactionOptions, type TransactionContext, type TransactionResolution } from "./transaction.ts";
 
 export * from "./transaction.ts";
-export * from "./migrations.ts";
+export {
+  DEFAULT_POSTGRES_SCHEMA,
+  quoteIdentifier,
+  type PostgresStorageBinding,
+  type PostgresStorageNames as PostgresStorageNamesV1
+} from "./migrations.ts";
+export {
+  POSTGRES_STORAGE_VERSION,
+  PREVIOUS_POSTGRES_STORAGE_VERSION,
+  frameworkMigrationSql,
+  postgresStorageNames,
+  storageV1ToV2MigrationSql,
+  type PostgresStorageNamesV2
+} from "./migration-v2.ts";
 
 const guardedPoolClients = new WeakSet<PoolClient>();
 const poolClientErrorSink = () => undefined;
+
+/** @internal Exposed so fault-injection tests can contend on the exact framework lock. */
+export function structuredTransactionLockKey(storageNamespace: string, kind: "command" | "stream", parts: readonly string[]): string {
+  const hash = createHash("sha256").update(canonicalJson({ kind, parts: [...parts], storageNamespace })).digest("hex");
+  return `${storageNamespace}:${kind}:sha256:${hash}`;
+}
 
 export interface PostgresStoredEvent {
   tenantId: string;
@@ -53,7 +80,7 @@ export interface AppendIntent {
 }
 
 export interface CanonicalIntent {
-  intentHashVersion: 1;
+  intentHashVersion: 1 | 2;
   intentHash: `sha256:${string}`;
   canonical: string;
 }
@@ -63,7 +90,7 @@ export type CommandExecution =
   | { status: "expired"; duplicate: true };
 
 export type CommandStatus =
-  | { state: "completed"; result: JsonValue; resultSchema: string; eventId: string; eventStream: string; eventSequence: number }
+  | { state: "completed"; result: JsonValue; resultSchema: string; events: PostgresStoredEvent[]; eventId?: string; eventStream?: string; eventSequence?: number }
   | { state: "expired" }
   | { state: "unknown" };
 
@@ -83,6 +110,40 @@ export interface ExecuteCommandOptions {
   idempotencyRetentionMs: number;
   mutate(client: PoolClient, sequence: number, eventId: string, operation: TransactionOperationLease): Promise<JsonValue>;
 }
+
+export interface CommandEventReservation {
+  readonly tenantId: string;
+  readonly stream: string;
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly schema: string;
+  readonly data: JsonValue;
+}
+
+export interface CommandTransaction {
+  readonly operation: TransactionOperationLease;
+  emit(stream: string, eventType: string, schema: string, data: JsonValue): CommandEventReservation;
+}
+
+export interface ExecuteCommandTransactionOptions {
+  tenantId: string;
+  principalNamespaceId: string;
+  commandId: string;
+  commandType: string;
+  commandSchema: string;
+  commandInput: JsonValue;
+  resultSchema: string;
+  /** Complete potential stream set, determined and validated before BEGIN. */
+  targets: readonly string[];
+  commandResultRetentionMs: number;
+  idempotencyRetentionMs: number;
+  execute(client: PoolClient, transaction: CommandTransaction): Promise<JsonValue>;
+}
+
+export type CommandTransactionExecution =
+  | { status: "completed"; duplicate: boolean; result: JsonValue; resultSchema: string; events: PostgresStoredEvent[] }
+  | { status: "expired"; duplicate: true };
 
 /** Transaction-owned absolute deadline shared with outward application ports. */
 export interface TransactionOperationLease {
@@ -107,12 +168,10 @@ interface CommandDurableRow {
   result: JsonValue | null;
   result_available: boolean;
   result_schema: string;
-  event_id: string;
   intent_hash_version: number;
   intent_hash: string;
   result_retained: boolean;
   idempotency_retained: boolean;
-  outbox_present: boolean;
 }
 
 export interface AtomicSnapshotContext {
@@ -148,7 +207,9 @@ const STORE_POSTGRES_EVIDENCE_COMPONENT = {
   componentVersion: "0.3.0"
 } as const;
 export const TRANSACTION_ATTEMPT_RETENTION_MS = 300_000;
-const FRAMEWORK_TABLES = ["realtime_schema_metadata", "realtime_transaction_attempts", "realtime_principal_namespaces", "realtime_principal_identity_aliases", "realtime_events", "realtime_commands", "realtime_outbox", "realtime_stream_retention"] as const;
+const FRAMEWORK_TABLES_V1 = ["realtime_schema_metadata", "realtime_transaction_attempts", "realtime_principal_namespaces", "realtime_principal_identity_aliases", "realtime_events", "realtime_commands", "realtime_outbox", "realtime_stream_retention"] as const;
+export const POSTGRES_FRAMEWORK_TABLES = Object.freeze([...FRAMEWORK_TABLES_V1, "realtime_command_events"] as const);
+const FRAMEWORK_TABLES = POSTGRES_FRAMEWORK_TABLES;
 
 const cursor = (tenantId: string, stream: string, sequence: number) =>
   Buffer.from(JSON.stringify({ v: 1, t: tenantId, s: stream, q: sequence })).toString("base64url");
@@ -192,6 +253,20 @@ export function canonicalCommandIntent(intent: CommandIntent): CanonicalIntent {
   return { intentHashVersion: INTENT_HASH_VERSION, intentHash: `sha256:${createHash("sha256").update(canonical).digest("hex")}`, canonical };
 }
 
+export function canonicalCommandTransactionIntent(options: Pick<ExecuteCommandTransactionOptions, "commandType" | "commandSchema" | "commandInput" | "resultSchema" | "targets">): CanonicalIntent {
+  const canonical = canonicalJson({
+    input: options.commandInput,
+    resultSchema: options.resultSchema,
+    schema: options.commandSchema,
+    // Target order is application-visible through CommandExecutionContext.
+    // Keep that exact order in the stable intent; lock acquisition is sorted
+    // independently below and must not erase an effect-relevant distinction.
+    targets: [...options.targets],
+    type: options.commandType
+  });
+  return { intentHashVersion: 2, intentHash: `sha256:${createHash("sha256").update(canonical).digest("hex")}`, canonical };
+}
+
 export function canonicalAppendIntent(intent: AppendIntent): CanonicalIntent {
   const canonical = canonicalJson({ data: intent.data, effect: intent.effect, effectSchema: intent.effectSchema, eventType: intent.eventType, schema: intent.schema, stream: intent.stream });
   return { intentHashVersion: APPEND_INTENT_HASH_VERSION, intentHash: `sha256:${createHash("sha256").update(canonical).digest("hex")}`, canonical };
@@ -232,9 +307,63 @@ export class PostgresEventLog {
     if (!Number.isSafeInteger(connectionTimeoutMs) || Number(connectionTimeoutMs) <= 0 || Number(connectionTimeoutMs) > this.transactionOptions.reconciliationTimeoutMs) throw new Error("RT_POOL_CONNECTION_TIMEOUT_UNBOUNDED");
   }
 
+  async #assertStorageV2Shape(queryable: Pool | PoolClient): Promise<void> {
+    const columns = await queryable.query<{ table_name: string; column_name: string; data_type: string; is_nullable: "YES" | "NO" }>(
+      "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND ((table_name = 'realtime_commands' AND column_name = 'event_id') OR table_name = 'realtime_command_events') ORDER BY table_name, ordinal_position",
+      [this.storage.schema]
+    );
+    const columnSignature = columns.rows.map(({ table_name, column_name, data_type, is_nullable }) => `${table_name}.${column_name}:${data_type}:${is_nullable}`);
+    const expectedColumns = [
+      "realtime_command_events.tenant_id:text:NO",
+      "realtime_command_events.principal_namespace_id:uuid:NO",
+      "realtime_command_events.command_id:text:NO",
+      "realtime_command_events.ordinal:integer:NO",
+      "realtime_command_events.event_id:text:NO",
+      "realtime_commands.event_id:text:YES"
+    ];
+    if (columnSignature.length !== expectedColumns.length || columnSignature.some((value, index) => value !== expectedColumns[index])) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+
+    const constraints = await queryable.query<{ type: "c" | "f" | "p" | "u"; validated: boolean; definition: string }>(
+      "SELECT contype AS type, convalidated AS validated, pg_get_constraintdef(oid, TRUE) AS definition FROM pg_constraint WHERE conrelid = to_regclass($1) ORDER BY contype, definition",
+      [this.storage.commandEvents]
+    );
+    if (constraints.rows.some(({ validated }) => validated !== true)) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+    const definitions = constraints.rows.map(({ type, definition }) => `${type}:${definition.replaceAll('"', "").replace(/\\s+/gu, " ").toLowerCase()}`);
+    const exact = (type: string, definition: string) => definitions.includes(`${type}:${definition}`);
+    const matches = (type: string, pattern: RegExp) => definitions.some((definition) => definition.startsWith(`${type}:`) && pattern.test(definition));
+    if (
+      !exact("p", "primary key (tenant_id, principal_namespace_id, command_id, ordinal)")
+      || !exact("u", "unique (tenant_id, principal_namespace_id, command_id, event_id)")
+      || !matches("c", /check .*ordinal >= 0.*ordinal < 100/u)
+      || !matches("f", /foreign key \(tenant_id, event_id\) references (?:[a-z0-9_]+\.)?realtime_events\(tenant_id, event_id\)/u)
+      || !matches("f", /foreign key \(tenant_id, principal_namespace_id, command_id\) references (?:[a-z0-9_]+\.)?realtime_commands\(tenant_id, principal_namespace_id, command_id\) on delete cascade/u)
+    ) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+
+    const eventIndex = await queryable.query<{ valid: boolean; ready: boolean; is_unique: boolean; is_primary: boolean; no_predicate: boolean; no_expressions: boolean; access_method: string; key_count: number; attribute_count: number; columns: string }>(
+      "SELECT i.indisvalid AS valid, i.indisready AS ready, i.indisunique AS is_unique, i.indisprimary AS is_primary, i.indpred IS NULL AS no_predicate, i.indexprs IS NULL AS no_expressions, access_method.amname AS access_method, i.indnkeyatts AS key_count, i.indnatts AS attribute_count, string_agg(a.attname, ',' ORDER BY keys.ordinality) AS columns FROM pg_index i JOIN pg_class relation ON relation.oid = i.indrelid JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace JOIN pg_class index_relation ON index_relation.oid = i.indexrelid JOIN pg_am access_method ON access_method.oid = index_relation.relam CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ordinality) LEFT JOIN pg_attribute a ON a.attrelid = relation.oid AND a.attnum = keys.attnum WHERE namespace.nspname = $1 AND relation.relname = 'realtime_command_events' AND i.indexrelid = to_regclass($2) GROUP BY i.indisvalid, i.indisready, i.indisunique, i.indisprimary, i.indpred, i.indexprs, access_method.amname, i.indnkeyatts, i.indnatts",
+      [this.storage.schema, `${quoteIdentifier(this.storage.schema)}.${quoteIdentifier("realtime_command_events_event_idx")}`]
+    );
+    const index = eventIndex.rows[0];
+    if (
+      eventIndex.rowCount !== 1
+      || index?.valid !== true
+      || index.ready !== true
+      || index.is_unique !== false
+      || index.is_primary !== false
+      || index.no_predicate !== true
+      || index.no_expressions !== true
+      || index.access_method !== "btree"
+      || index.key_count !== 2
+      || index.attribute_count !== 2
+      || index.columns !== "tenant_id,event_id"
+    ) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+  }
+
   async migrate(contract: ContractIdentity): Promise<void> {
     validateStorageContract(contract);
-    const lockKey = `${this.storage.namespace}:schema-migration:v${POSTGRES_STORAGE_VERSION}`;
+    // The lock protocol version is intentionally independent from the storage
+    // version so v1 and v2 migrators cannot mutate the same namespace concurrently.
+    const lockKey = `${this.storage.namespace}:schema-migration:v1`;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const context = transactionContext(this.storage.namespace, "schema_migration", { operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "schema_migration", lockKey }) });
       const transaction = new TransactionStateMachine();
@@ -248,13 +377,20 @@ export class PostgresEventLog {
         if (existing.rowCount) {
           const metadata = await client.query<{ storage_version: number; storage_namespace: string; contract_id: string; manifest_version: string; manifest_digest: string }>(`SELECT storage_version, storage_namespace, contract_id, manifest_version, manifest_digest FROM ${this.storage.metadata} WHERE singleton = TRUE`);
           const row = metadata.rows[0];
-          const requiredTables = new Set<string>(FRAMEWORK_TABLES);
-          for (const { table_name } of existing.rows) requiredTables.delete(table_name);
-          if (requiredTables.size !== 0 || !row || row.storage_version !== POSTGRES_STORAGE_VERSION || row.storage_namespace !== this.storage.namespace || !sameStorageContract(row, contract)) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+          if (!row || row.storage_namespace !== this.storage.namespace || !sameStorageContract(row, contract)) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+          const expectedTables = row.storage_version === PREVIOUS_POSTGRES_STORAGE_VERSION ? FRAMEWORK_TABLES_V1 : row.storage_version === POSTGRES_STORAGE_VERSION ? FRAMEWORK_TABLES : [];
+          const existingTables = new Set(existing.rows.map(({ table_name }) => table_name));
+          if (expectedTables.length === 0 || expectedTables.some((table) => !existingTables.has(table))) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+          if (row.storage_version === PREVIOUS_POSTGRES_STORAGE_VERSION) {
+            await client.query(storageV1ToV2MigrationSql(this.storage));
+            const updated = await client.query(`UPDATE ${this.storage.metadata} SET storage_version = $1 WHERE singleton = TRUE AND storage_version = $2`, [POSTGRES_STORAGE_VERSION, PREVIOUS_POSTGRES_STORAGE_VERSION]);
+            if (updated.rowCount !== 1) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+          }
         } else {
           await client.query(frameworkMigrationSql(this.storage));
           await client.query(`INSERT INTO ${this.storage.metadata} (storage_version, storage_namespace, contract_id, manifest_version, manifest_digest) VALUES ($1,$2,$3,$4,$5)`, [POSTGRES_STORAGE_VERSION, this.storage.namespace, contract.contractId, contract.manifestVersion, contract.manifestDigest]);
         }
+        await this.#assertStorageV2Shape(client);
         await this.#insertTransactionAttempt(client, context);
         await this.#commit(client, transaction, context);
         break;
@@ -289,6 +425,7 @@ export class PostgresEventLog {
       const tables = await this.pool.query<{ table_name: string }>("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = ANY($2::text[])", [this.storage.schema, FRAMEWORK_TABLES]);
       const row = metadata.rows[0];
       if (metadata.rowCount !== 1 || tables.rowCount !== FRAMEWORK_TABLES.length || !row || row.storage_version !== POSTGRES_STORAGE_VERSION || row.storage_namespace !== this.storage.namespace || !sameStorageContract(row, contract)) throw new Error("RT_POSTGRES_STORAGE_BINDING_MISMATCH");
+      await this.#assertStorageV2Shape(this.pool);
     } catch (error) {
       if (error instanceof Error && error.message === "RT_POSTGRES_STORAGE_BINDING_MISMATCH") throw error;
       throw new Error("RT_POSTGRES_MIGRATION_REQUIRED", { cause: error });
@@ -395,18 +532,49 @@ export class PostgresEventLog {
   }
 
   async executeCommand(options: ExecuteCommandOptions): Promise<CommandExecution> {
+    const execution = await this.#executeCommandTransaction({
+      tenantId: options.tenantId,
+      principalNamespaceId: options.principalNamespaceId,
+      commandId: options.commandId,
+      commandType: options.commandType,
+      commandSchema: options.commandSchema,
+      commandInput: options.commandInput,
+      resultSchema: options.resultSchema ?? `${options.commandType}Result@1`,
+      targets: [options.stream],
+      commandResultRetentionMs: options.commandResultRetentionMs,
+      idempotencyRetentionMs: options.idempotencyRetentionMs,
+      execute: async (client, transaction) => {
+        const event = transaction.emit(options.stream, options.eventType, options.schema, options.data);
+        return options.mutate(client, event.sequence, event.eventId, transaction.operation);
+      }
+    }, canonicalCommandIntent({ type: options.commandType, schema: options.commandSchema, input: options.commandInput }));
+    if (execution.status === "expired") return execution;
+    const event = execution.events[0];
+    if (!event || execution.events.length !== 1) throw new Error("RT_LEGACY_COMMAND_EVENT_CARDINALITY");
+    return { status: "completed", duplicate: execution.duplicate, result: execution.result, resultSchema: execution.resultSchema, event };
+  }
+
+  async executeCommandTransaction(options: ExecuteCommandTransactionOptions): Promise<CommandTransactionExecution> {
+    return this.#executeCommandTransaction(options, canonicalCommandTransactionIntent(options));
+  }
+
+  async #executeCommandTransaction(options: ExecuteCommandTransactionOptions, canonicalIntent: CanonicalIntent): Promise<CommandTransactionExecution> {
     positiveRetention(options.commandResultRetentionMs, options.idempotencyRetentionMs);
-    const intent = canonicalCommandIntent({ type: options.commandType, schema: options.commandSchema, input: options.commandInput });
-    const commandLock = this.#lockKey(`command:${options.tenantId}:${options.principalNamespaceId}:${options.commandId}`);
+    const targets = validateCommandTargets(options.targets);
+    const commandLock = this.#structuredLockKey("command", [options.tenantId, options.principalNamespaceId, options.commandId]);
+    // Preserve the v1 stream-lock identity so command events serialize with
+    // appendEvent while sorting the complete target set prevents deadlocks.
+    const streamLocks = targets.map((stream) => this.#lockKey(`stream:${options.tenantId}:${stream}`)).sort();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const operationDeadline = Date.now() + this.transactionOptions.operationTimeoutMs;
-      const context = transactionContext(this.storage.namespace, "command", { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, stream: options.stream, commandId: options.commandId });
+      const context = transactionContext(this.storage.namespace, "command", { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, commandId: options.commandId });
       const transaction = new TransactionStateMachine();
       let client: PoolClient;
       try { client = await this.#connectBefore(operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT"); }
       catch (error) { this.#recordPreCommitRollback(transaction, context, error); throw new TransactionRolledBackError(context, error); }
       let released = false;
       let releaseError: unknown | undefined;
+      let events: PostgresStoredEvent[] = [];
       try {
         await this.#beforeDeadline(client.query("BEGIN"), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
         await this.#beforeDeadline(client.query("SELECT set_config('statement_timeout', $1, true)", [String(remainingMs(operationDeadline))]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
@@ -415,32 +583,61 @@ export class PostgresEventLog {
         if (existing) {
           if (!existing.idempotency_retained) await this.#beforeDeadline(client.query(`DELETE FROM ${this.storage.commands} WHERE tenant_id = $1 AND principal_namespace_id = $2 AND command_id = $3`, [options.tenantId, options.principalNamespaceId, options.commandId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
           else {
-            this.#assertCommandIntent(options, intent, existing);
-            const duplicate = await this.#beforeDeadline(this.#commandExecutionFromRow(client, options, existing, true), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+            this.#assertCommandIntent(options, canonicalIntent, existing);
+            const duplicate = await this.#beforeDeadline(this.#commandTransactionExecutionFromRow(client, options, existing, { duplicate: true, requireOutboxProof: false }), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
             releaseError = await this.#rollbackCleanup(client, context);
             return duplicate;
           }
         }
-        await this.#beforeDeadline(client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [this.#lockKey(`stream:${options.tenantId}:${options.stream}`)]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+        for (const lock of streamLocks) await this.#beforeDeadline(client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lock]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
         await this.#beforeDeadline(this.#insertTransactionAttempt(client, context), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
-        const next = await this.#beforeDeadline(client.query<{ sequence: string }>(`SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM ${this.storage.events} WHERE tenant_id = $1 AND stream = $2`, [options.tenantId, options.stream]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
-        const sequence = Number(next.rows[0]!.sequence);
-        const eventId = `evt_${randomUUID()}`;
-        context.eventId = eventId;
+        const nextSequence = new Map<string, number>();
+        for (const stream of targets) {
+          const next = await this.#beforeDeadline(client.query<{ sequence: string }>(`SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM ${this.storage.events} WHERE tenant_id = $1 AND stream = $2`, [options.tenantId, stream]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+          nextSequence.set(stream, Number(next.rows[0]!.sequence));
+        }
         const operation = operationLease(operationDeadline);
+        const staged: CommandEventReservation[] = [];
+        const declared = new Set(targets);
+        const commandTransaction: CommandTransaction = Object.freeze({
+          operation,
+          emit: (stream: string, eventType: string, schema: string, data: JsonValue): CommandEventReservation => {
+            if (!operation.isActive()) throw new Error("RT_APPLICATION_DATABASE_SCOPE_CLOSED");
+            if (!declared.has(stream)) throw new Error("RT_COMMAND_TARGET_UNDECLARED");
+            if (staged.length >= 100) throw new Error("RT_COMMAND_EVENT_LIMIT_EXCEEDED");
+            if (!eventType || !schema || !isJsonValue(data)) throw new Error("RT_COMMAND_EVENT_INVALID");
+            const sequence = nextSequence.get(stream);
+            if (sequence === undefined) throw new Error("RT_COMMAND_TARGET_UNDECLARED");
+            nextSequence.set(stream, sequence + 1);
+            const event = Object.freeze({ tenantId: options.tenantId, stream, sequence, eventId: `evt_${randomUUID()}`, eventType, schema, data });
+            staged.push(event);
+            return event;
+          }
+        });
         let result: JsonValue;
         try {
-          result = await this.#beforeDeadline(options.mutate(client, sequence, eventId, operation), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT", () => operation.revoke());
+          result = await this.#beforeDeadline(options.execute(client, commandTransaction), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT", () => operation.revoke());
         } finally { operation.revoke(); }
-        const inserted = await this.#beforeDeadline(client.query<{ occurred_at: Date }>(`INSERT INTO ${this.storage.events} (tenant_id, stream, sequence, event_id, event_type, schema_name, data, command_principal_namespace_id, command_id) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) RETURNING occurred_at`, [options.tenantId, options.stream, sequence, eventId, options.eventType, options.schema, JSON.stringify(options.data), options.principalNamespaceId, options.commandId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
-        await this.#beforeDeadline(client.query(`INSERT INTO ${this.storage.outbox} (tenant_id, event_id) VALUES ($1,$2)`, [options.tenantId, eventId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
-        const resultSchema = options.resultSchema ?? `${options.commandType}Result@1`;
-        await this.#beforeDeadline(client.query(`INSERT INTO ${this.storage.commands} (tenant_id, principal_namespace_id, command_id, state, intent_hash_version, intent_hash, result, result_schema, event_id, result_expires_at, idempotency_expires_at) VALUES ($1,$2,$3,'completed',$4,$5,$6::jsonb,$7,$8,clock_timestamp() + ($9::bigint * interval '1 millisecond'),clock_timestamp() + ($10::bigint * interval '1 millisecond'))`, [options.tenantId, options.principalNamespaceId, options.commandId, intent.intentHashVersion, intent.intentHash, JSON.stringify(result), resultSchema, eventId, options.commandResultRetentionMs, options.idempotencyRetentionMs]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+        if (!isJsonValue(result)) throw new Error("RT_COMMAND_RESULT_INVALID");
+        events = [];
+        for (const event of staged) {
+          const inserted = await this.#beforeDeadline(client.query<{ occurred_at: Date }>(`INSERT INTO ${this.storage.events} (tenant_id, stream, sequence, event_id, event_type, schema_name, data, command_principal_namespace_id, command_id) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) RETURNING occurred_at`, [options.tenantId, event.stream, event.sequence, event.eventId, event.eventType, event.schema, JSON.stringify(event.data), options.principalNamespaceId, options.commandId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+          await this.#beforeDeadline(client.query(`INSERT INTO ${this.storage.outbox} (tenant_id, event_id) VALUES ($1,$2)`, [options.tenantId, event.eventId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+          events.push({ tenantId: options.tenantId, stream: event.stream, sequence: event.sequence, cursor: cursor(options.tenantId, event.stream, event.sequence), eventId: event.eventId, type: event.eventType, schema: event.schema, data: event.data, commandPrincipalNamespaceId: options.principalNamespaceId, commandId: options.commandId, occurredAt: inserted.rows[0]!.occurred_at.toISOString() });
+        }
+        const legacyEventId = events[0]?.eventId ?? null;
+        if (events[0]) {
+          context.eventId = events[0].eventId;
+          context.stream = events[0].stream;
+        }
+        await this.#beforeDeadline(client.query(`INSERT INTO ${this.storage.commands} (tenant_id, principal_namespace_id, command_id, state, intent_hash_version, intent_hash, result, result_schema, event_id, result_expires_at, idempotency_expires_at) VALUES ($1,$2,$3,'completed',$4,$5,$6::jsonb,$7,$8,clock_timestamp() + ($9::bigint * interval '1 millisecond'),clock_timestamp() + ($10::bigint * interval '1 millisecond'))`, [options.tenantId, options.principalNamespaceId, options.commandId, canonicalIntent.intentHashVersion, canonicalIntent.intentHash, JSON.stringify(result), options.resultSchema, legacyEventId, options.commandResultRetentionMs, options.idempotencyRetentionMs]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+        for (let ordinal = 0; ordinal < events.length; ordinal += 1) {
+          await this.#beforeDeadline(client.query(`INSERT INTO ${this.storage.commandEvents} (tenant_id, principal_namespace_id, command_id, ordinal, event_id) VALUES ($1,$2,$3,$4,$5)`, [options.tenantId, options.principalNamespaceId, options.commandId, ordinal, events[ordinal]!.eventId]), operationDeadline, "RT_COMMAND_OPERATION_TIMEOUT");
+        }
         if (Date.now() >= operationDeadline) throw new Error("RT_COMMAND_OPERATION_TIMEOUT");
         await this.#commit(client, transaction, context);
-        const event: PostgresStoredEvent = { tenantId: options.tenantId, stream: options.stream, sequence, cursor: cursor(options.tenantId, options.stream, sequence), eventId, type: options.eventType, schema: options.schema, data: options.data, commandPrincipalNamespaceId: options.principalNamespaceId, commandId: options.commandId, occurredAt: inserted.rows[0]!.occurred_at.toISOString() };
-        this.#recordCommandCommitted(options, intent, context, "commit_acknowledgement");
-        return { status: "completed", duplicate: false, result, resultSchema, event };
+        this.#recordCommandTransactionCommitted(options, canonicalIntent, context, events, "commit_acknowledgement");
+        return { status: "completed", duplicate: false, result, resultSchema: options.resultSchema, events };
       } catch (error) {
         const deadline = Date.now() + this.transactionOptions.reconciliationTimeoutMs;
         const cleanupError = await this.#rollbackCleanup(client, context, deadline);
@@ -452,18 +649,17 @@ export class PostgresEventLog {
         if (error.classification.state === "rolled_back") throw new TransactionRolledBackError(context, error.originalError);
         client.release(cleanupError instanceof Error ? cleanupError : true);
         released = true;
-        const reconciled = await this.#withAdvisoryReconciliation<CommandExecution>({ context, transaction, lockKey: commandLock, deadline, inspect: async (database) => {
+        this.#recordCommandTransactionLinks(events, context, "database.transaction_outcome_indeterminate", "unknown");
+        const reconciled = await this.#withAdvisoryReconciliation<CommandTransactionExecution>({ context, transaction, lockKey: commandLock, deadline, inspect: async (database) => {
           const row = await this.#commandRow(database, options);
           if (!row) return { resolution: "rolled_back" };
-          this.#assertCommandIntent(options, intent, row);
-          const value = await this.#commandExecutionFromRow(database, options, row, false, true);
-          if (value.status === "completed") context.eventId = value.event.eventId;
+          this.#assertCommandIntent(options, canonicalIntent, row);
+          const value = await this.#commandTransactionExecutionFromRow(database, options, row, { duplicate: false, requireOutboxProof: true });
           return { resolution: "committed", value };
         } });
         if (reconciled.resolution === "committed" && reconciled.value) {
           const committed = reconciled.value;
-          if (committed.status === "completed") context.eventId = committed.event.eventId;
-          this.#recordCommandCommitted(options, intent, context, "durable_transaction_attempt_marker");
+          this.#recordCommandTransactionCommitted(options, canonicalIntent, context, committed.status === "completed" ? committed.events : [], "durable_transaction_attempt_marker");
           return committed;
         }
         if (attempt === 0) continue;
@@ -540,14 +736,18 @@ export class PostgresEventLog {
       client = await this.#connectBefore(deadline);
       await this.#beforeDeadline(client.query("BEGIN"), deadline, "RT_RECONCILIATION_TIMEOUT");
       await this.#beforeDeadline(client.query("SELECT set_config('statement_timeout', $1, true)", [String(remainingMs(deadline))]), deadline, "RT_RECONCILIATION_TIMEOUT");
-      await this.#beforeDeadline(client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [this.#lockKey(`command:${tenantId}:${principalNamespaceId}:${commandId}`)]), deadline, "RT_RECONCILIATION_TIMEOUT");
-      const result = await this.#beforeDeadline(client.query<{ result: JsonValue | null; result_available: boolean; result_schema: string; event_id: string; event_stream: string; event_sequence: string; result_retained: boolean; idempotency_retained: boolean }>(`SELECT command.result, command.result IS NOT NULL AS result_available, command.result_schema, command.event_id, event.stream AS event_stream, event.sequence AS event_sequence, command.result_expires_at > clock_timestamp() AS result_retained, command.idempotency_expires_at > clock_timestamp() AS idempotency_retained FROM ${this.storage.commands} AS command JOIN ${this.storage.events} AS event ON event.tenant_id = command.tenant_id AND event.event_id = command.event_id WHERE command.tenant_id = $1 AND command.principal_namespace_id = $2 AND command.command_id = $3`, [tenantId, principalNamespaceId, commandId]), deadline, "RT_RECONCILIATION_TIMEOUT");
-      if (!result.rowCount || !result.rows[0]!.idempotency_retained) { this.#record({ kind: "command.outcome_unknown", boundary: "command.outcome_unknown", outcome: "unknown", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, commandId, details: { tenantId, principalNamespaceId, serialization: "command_advisory_lock" } }); return { state: "unknown" }; }
+      await this.#beforeDeadline(client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [this.#structuredLockKey("command", [tenantId, principalNamespaceId, commandId])]), deadline, "RT_RECONCILIATION_TIMEOUT");
+      const result = await this.#beforeDeadline(client.query<{ result: JsonValue | null; result_available: boolean; result_schema: string; result_retained: boolean; idempotency_retained: boolean }>(`SELECT command.result, command.result IS NOT NULL AS result_available, command.result_schema, command.result_expires_at > clock_timestamp() AS result_retained, command.idempotency_expires_at > clock_timestamp() AS idempotency_retained FROM ${this.storage.commands} AS command WHERE command.tenant_id = $1 AND command.principal_namespace_id = $2 AND command.command_id = $3`, [tenantId, principalNamespaceId, commandId]), deadline, "RT_RECONCILIATION_TIMEOUT");
+      if (!result.rowCount || !result.rows[0]!.idempotency_retained) { this.#record({ kind: "command.outcome_unknown", boundary: "command.outcome_unknown", outcome: "unknown", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, commandId, details: { tenantId, principalNamespaceId, serialization: "command_advisory_lock" } }, tenantId); return { state: "unknown" }; }
       const row = result.rows[0]!;
       if (!row.result_retained || !row.result_available) return { state: "expired" };
-      return { state: "completed", result: row.result, resultSchema: row.result_schema, eventId: row.event_id, eventStream: row.event_stream, eventSequence: Number(row.event_sequence) };
+      const causal = await this.#beforeDeadline(client.query(`SELECT event.tenant_id, event.stream, event.sequence, event.event_id, event.event_type, event.schema_name, event.data, event.command_principal_namespace_id, event.command_id, event.occurred_at FROM ${this.storage.commandEvents} AS command_event JOIN ${this.storage.events} AS event ON event.tenant_id = command_event.tenant_id AND event.event_id = command_event.event_id WHERE command_event.tenant_id = $1 AND command_event.principal_namespace_id = $2 AND command_event.command_id = $3 ORDER BY command_event.ordinal`, [tenantId, principalNamespaceId, commandId]), deadline, "RT_RECONCILIATION_TIMEOUT");
+      if ((causal.rowCount ?? 0) > 100) throw new Error("RT_COMMAND_DURABLE_STATE_INCOMPLETE");
+      const events = causal.rows.map((event) => rowToEvent(event));
+      const first = events[0];
+      return { state: "completed", result: row.result, resultSchema: row.result_schema, events, ...(first ? { eventId: first.eventId, eventStream: first.stream, eventSequence: first.sequence } : {}) };
     } catch (error) {
-      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, commandId, ...transactionCorrelation(context), details: { tenantId, principalNamespaceId, operation: "command_status", timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } });
+      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, commandId, ...transactionCorrelation(context), details: { tenantId, principalNamespaceId, operation: "command_status", timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } }, tenantId);
       throw new TransactionOutcomeError(context, error);
     } finally {
       if (client) {
@@ -668,7 +868,7 @@ export class PostgresEventLog {
         const fenceDeadline = Date.now() + this.transactionOptions.reconciliationTimeoutMs;
         if (installLiveFence) await this.#beforeDeadline(installLiveFence(), fenceDeadline, "RT_SNAPSHOT_FENCE_TIMEOUT");
         const headSequence = await this.#headSequenceBefore(tenantId, stream, fenceDeadline);
-        this.#record({ kind: "snapshot.created", boundary: "snapshot.created", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { tenantId, cursorSequence, headSequence, isolation: "repeatable_read_read_only", snapshotBytes, ...stateDetails(state), proofSource: "commit_acknowledgement" } });
+        this.#record({ kind: "snapshot.created", boundary: "snapshot.created", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { tenantId, cursorSequence, headSequence, isolation: "repeatable_read_read_only", snapshotBytes, ...stateDetails(state), proofSource: "commit_acknowledgement" } }, tenantId);
         return { state, cursor: cursor(tenantId, stream, cursorSequence), cursorSequence, head: cursor(tenantId, stream, headSequence), headSequence };
       } catch (error) {
         if (transaction.state === "committed") throw error;
@@ -713,7 +913,7 @@ export class PostgresEventLog {
         rows = claimed.rows;
         context.operationCorrelationId = rows.length === 1 ? operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(rows[0]!.outbox_id) }) : operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxIds: rows.map((row) => Number(row.outbox_id)) });
         if (rows.length === 1) context.eventId = rows[0]!.event_id;
-        for (const row of rows) this.#record({ kind: "outbox.claimed", boundary: "outbox.claimed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { tenantId: row.tenant_id, outboxId: Number(row.outbox_id) } });
+        for (const row of rows) this.#record({ kind: "outbox.claimed", boundary: "outbox.claimed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { tenantId: row.tenant_id, outboxId: Number(row.outbox_id) } }, row.tenant_id);
         if (rows.length === 0) { releaseError = await this.#rollbackCleanup(client, context); return 0; }
         await this.#insertTransactionAttempt(client, context);
         if (options.crashPoint === "after_claim") throw new Error("INJECTED_OUTBOX_AFTER_CLAIM");
@@ -803,49 +1003,69 @@ export class PostgresEventLog {
       await this.#beforeDeadline(client.query(`UPDATE ${this.storage.transactionAttempts} SET marker_written_at = clock_timestamp() WHERE transaction_id = $1`, [context.transactionId]).then(() => undefined), deadline, "RT_COMMIT_PREPARATION_TIMEOUT");
     }
     transaction.transition("commit_in_flight");
-    this.#record({ kind: "database.transaction_commit_invoked", boundary: "database.transaction_commit_invoked", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state }) });
+    this.#record({ kind: "database.transaction_commit_invoked", boundary: "database.transaction_commit_invoked", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state }) }, context.tenantId);
     try {
       const commit = this.transactionOptions.commit ? this.transactionOptions.commit(client, context) : client.query("COMMIT").then(() => undefined);
       await this.#beforeDeadline(commit, deadline, "RT_COMMIT_ACK_TIMEOUT");
       transaction.transition("committed");
-      this.#record({ kind: "database.transaction_commit_acknowledged", boundary: "database.transaction_commit_acknowledged", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: "commit_acknowledgement" }) });
+      this.#record({ kind: "database.transaction_commit_acknowledged", boundary: "database.transaction_commit_acknowledged", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: "commit_acknowledgement" }) }, context.tenantId);
     } catch (error) {
       const classification = classifyCommitFailure(error);
       transaction.transition(classification.state);
       if (classification.state === "rolled_back") {
-        this.#record({ kind: "database.transaction_rolled_back", boundary: "db.rolled_back", outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: classification.proofSource, sqlstate: classification.sqlstate ?? null, error: errorMessage(error) }) });
+        this.#record({ kind: "database.transaction_rolled_back", boundary: "db.rolled_back", outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: classification.proofSource, sqlstate: classification.sqlstate ?? null, error: errorMessage(error) }) }, context.tenantId);
       } else {
-        this.#record({ kind: "database.transaction_outcome_indeterminate", boundary: "database.transaction_outcome_indeterminate", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: classification.proofSource, sqlstate: classification.sqlstate ?? null, error: errorMessage(error) }) });
+        this.#record({ kind: "database.transaction_outcome_indeterminate", boundary: "database.transaction_outcome_indeterminate", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: classification.proofSource, sqlstate: classification.sqlstate ?? null, error: errorMessage(error) }) }, context.tenantId);
       }
       throw new CommitAttemptError(classification, error);
     }
   }
 
   async #commandRow(client: PoolClient, options: Pick<ExecuteCommandOptions, "tenantId" | "principalNamespaceId" | "commandId">): Promise<CommandDurableRow | undefined> {
-    const result = await client.query<CommandDurableRow>(`SELECT command.result, command.result IS NOT NULL AS result_available, command.result_schema, command.event_id, command.intent_hash_version, command.intent_hash, command.result_expires_at > clock_timestamp() AS result_retained, command.idempotency_expires_at > clock_timestamp() AS idempotency_retained, EXISTS (SELECT 1 FROM ${this.storage.outbox} AS outbox WHERE outbox.tenant_id = command.tenant_id AND outbox.event_id = command.event_id) AS outbox_present FROM ${this.storage.commands} AS command WHERE command.tenant_id = $1 AND command.principal_namespace_id = $2 AND command.command_id = $3`, [options.tenantId, options.principalNamespaceId, options.commandId]);
+    const result = await client.query<CommandDurableRow>(`SELECT command.result, command.result IS NOT NULL AS result_available, command.result_schema, command.intent_hash_version, command.intent_hash, command.result_expires_at > clock_timestamp() AS result_retained, command.idempotency_expires_at > clock_timestamp() AS idempotency_retained FROM ${this.storage.commands} AS command WHERE command.tenant_id = $1 AND command.principal_namespace_id = $2 AND command.command_id = $3`, [options.tenantId, options.principalNamespaceId, options.commandId]);
     return result.rowCount ? result.rows[0] : undefined;
   }
 
   #assertCommandIntent(options: Pick<ExecuteCommandOptions, "tenantId" | "principalNamespaceId" | "commandId">, intent: CanonicalIntent, row: CommandDurableRow): void {
     const matches = row.intent_hash_version === intent.intentHashVersion && row.intent_hash === intent.intentHash;
-    this.#record({ kind: "command.intent_compared", boundary: "command.intent_compared", outcome: matches ? "success" : "failure", ...(matches ? {} : { reasonCode: "RT_COMMAND_INTENT_CONFLICT" }), ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, intentHashVersion: intent.intentHashVersion } });
+    this.#record({ kind: "command.intent_compared", boundary: "command.intent_compared", outcome: matches ? "success" : "failure", ...(matches ? {} : { reasonCode: "RT_COMMAND_INTENT_CONFLICT" }), ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, intentHashVersion: intent.intentHashVersion } }, options.tenantId);
     if (!matches) throw new Error("RT_COMMAND_INTENT_CONFLICT");
   }
 
-  async #commandExecutionFromRow(client: PoolClient, options: ExecuteCommandOptions, row: CommandDurableRow, duplicate: boolean, requireOutboxProof = false): Promise<CommandExecution> {
-    if (requireOutboxProof && !row.outbox_present) throw new Error("RT_COMMAND_DURABLE_STATE_INCOMPLETE");
+  async #commandTransactionExecutionFromRow(client: PoolClient, options: ExecuteCommandTransactionOptions, row: CommandDurableRow, policy: { duplicate: boolean; requireOutboxProof: boolean }): Promise<CommandTransactionExecution> {
     if (!row.result_retained || !row.result_available) {
-      this.#record({ kind: "command.retention_checked", boundary: "command.retention_checked", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, result: "expired", idempotency: "retained" } });
+      this.#record({ kind: "command.retention_checked", boundary: "command.retention_checked", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, result: "expired", idempotency: "retained" } }, options.tenantId);
       return { status: "expired", duplicate: true };
     }
-    const event = await this.#eventById(client, options.tenantId, row.event_id);
-    this.#record({ kind: "command.reconciled", boundary: "command.reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, eventId: event.eventId, stream: options.stream, details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, duplicate, intentHashVersion: row.intent_hash_version } });
-    return { status: "completed", duplicate, result: row.result, resultSchema: row.result_schema, event };
+    const result = await client.query(`SELECT event.tenant_id, event.stream, event.sequence, event.event_id, event.event_type, event.schema_name, event.data, event.command_principal_namespace_id, event.command_id, event.occurred_at, EXISTS (SELECT 1 FROM ${this.storage.outbox} AS outbox WHERE outbox.tenant_id = event.tenant_id AND outbox.event_id = event.event_id) AS outbox_present FROM ${this.storage.commandEvents} AS command_event JOIN ${this.storage.events} AS event ON event.tenant_id = command_event.tenant_id AND event.event_id = command_event.event_id WHERE command_event.tenant_id = $1 AND command_event.principal_namespace_id = $2 AND command_event.command_id = $3 ORDER BY command_event.ordinal`, [options.tenantId, options.principalNamespaceId, options.commandId]);
+    if ((result.rowCount ?? 0) > 100) throw new Error("RT_COMMAND_DURABLE_STATE_INCOMPLETE");
+    if (policy.requireOutboxProof && result.rows.some((event) => event.outbox_present !== true)) throw new Error("RT_COMMAND_DURABLE_STATE_INCOMPLETE");
+    const events = result.rows.map((event) => rowToEvent(event));
+    this.#record({ kind: "command.reconciled", boundary: "command.reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, commandId: options.commandId, ...(events[0] ? { eventId: events[0].eventId, stream: events[0].stream } : {}), details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, duplicate: policy.duplicate, eventCount: events.length, intentHashVersion: row.intent_hash_version } }, options.tenantId);
+    return { status: "completed", duplicate: policy.duplicate, result: row.result, resultSchema: row.result_schema, events };
   }
 
-  #recordCommandCommitted(options: ExecuteCommandOptions, intent: CanonicalIntent, context: TransactionContext, proofSource: "commit_acknowledgement" | "durable_transaction_attempt_marker"): void {
-    this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), ...(context.eventId ? { causalHandoffId: `event:${context.eventId}` } : {}), details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, intentHashVersion: intent.intentHashVersion, proofSource } });
-    if (context.eventId) this.#record({ kind: "outbox.appended", boundary: "outbox.appended", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), causalHandoffId: `event:${context.eventId}`, details: { tenantId: options.tenantId, proofSource } });
+  #recordCommandTransactionCommitted(options: ExecuteCommandTransactionOptions, intent: CanonicalIntent, context: TransactionContext, events: readonly PostgresStoredEvent[], proofSource: "commit_acknowledgement" | "durable_transaction_attempt_marker"): void {
+    this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), ...(events[0] ? { eventId: events[0].eventId, stream: events[0].stream, causalHandoffId: `event:${events[0].eventId}` } : {}), details: { tenantId: options.tenantId, principalNamespaceId: options.principalNamespaceId, eventCount: events.length, intentHashVersion: intent.intentHashVersion, proofSource } }, options.tenantId);
+    for (const event of events) this.#record({ kind: "outbox.appended", boundary: "outbox.appended", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), eventId: event.eventId, stream: event.stream, causalHandoffId: `event:${event.eventId}`, details: { tenantId: options.tenantId, proofSource } }, options.tenantId);
+  }
+
+  #recordCommandTransactionLinks(events: readonly PostgresStoredEvent[], context: TransactionContext, boundary: "database.transaction_outcome_indeterminate", outcome: "unknown"): void {
+    for (const event of events) {
+      this.#record({
+        kind: boundary,
+        boundary,
+        outcome,
+        reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE",
+        ...STORE_POSTGRES_EVIDENCE_COMPONENT,
+        transactionId: context.transactionId,
+        ...transactionCorrelation(context),
+        eventId: event.eventId,
+        stream: event.stream,
+        causalHandoffId: `event:${event.eventId}`,
+        details: { tenantId: event.tenantId, commandEvent: true }
+      }, event.tenantId);
+    }
   }
 
   async #appendEventByOperation(client: PoolClient, tenantId: string, appendId: string, intent: CanonicalIntent, requireOutboxProof = false): Promise<PostgresStoredEvent | undefined> {
@@ -858,8 +1078,8 @@ export class PostgresEventLog {
   }
 
   #recordAppendCommitted(options: AppendEventOptions, context: TransactionContext, proofSource: "commit_acknowledgement" | "durable_transaction_attempt_marker"): void {
-    this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), ...(context.eventId ? { causalHandoffId: `event:${context.eventId}` } : {}), details: { tenantId: options.tenantId, appendId: options.appendId, effectSchema: options.effectSchema, proofSource } });
-    if (context.eventId) this.#record({ kind: "outbox.appended", boundary: "outbox.appended", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), causalHandoffId: `event:${context.eventId}`, details: { tenantId: options.tenantId, appendId: options.appendId, proofSource } });
+    this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), ...(context.eventId ? { causalHandoffId: `event:${context.eventId}` } : {}), details: { tenantId: options.tenantId, appendId: options.appendId, effectSchema: options.effectSchema, proofSource } }, options.tenantId);
+    if (context.eventId) this.#record({ kind: "outbox.appended", boundary: "outbox.appended", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), causalHandoffId: `event:${context.eventId}`, details: { tenantId: options.tenantId, appendId: options.appendId, proofSource } }, options.tenantId);
   }
 
   async #resolvedPrincipalNamespace(database: Pick<PoolClient, "query">, tenantId: string, aliases: Array<{ keyVersion: number; fingerprint: string }>): Promise<string | undefined> {
@@ -874,16 +1094,16 @@ export class PostgresEventLog {
   #recordPrincipalResolved(identity: PrincipalIdentity, aliases: Array<{ keyVersion: number; fingerprint: string }>, principalNamespaceId: string, context: TransactionContext, proofSource: string, aliasUpserted = true): void {
     const details = { tenantId: identity.tenantId, principalNamespaceId, identityTupleVersion: IDENTITY_TUPLE_VERSION, keyVersions: aliases.map((alias) => alias.keyVersion), proofSource };
     const transactionCorrelationFields = aliasUpserted ? { transactionId: context.transactionId, ...transactionCorrelation(context) } : {};
-    if (aliasUpserted) this.#record({ kind: "principal.alias_upserted", boundary: "principal.alias_upserted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details });
-    this.#record({ kind: "security.identity_redacted", boundary: "security.identity_redacted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, ...transactionCorrelationFields, details: { tenantId: identity.tenantId, rawIssuerCaptured: false, rawSubjectCaptured: false } });
-    this.#record({ kind: "principal.identity_resolved", boundary: "principal.identity_resolved", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, ...transactionCorrelationFields, details: { ...details, rawIdentityCaptured: false } });
+    if (aliasUpserted) this.#record({ kind: "principal.alias_upserted", boundary: "principal.alias_upserted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details }, identity.tenantId);
+    this.#record({ kind: "security.identity_redacted", boundary: "security.identity_redacted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, ...transactionCorrelationFields, details: { tenantId: identity.tenantId, rawIssuerCaptured: false, rawSubjectCaptured: false } }, identity.tenantId);
+    this.#record({ kind: "principal.identity_resolved", boundary: "principal.identity_resolved", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, ...transactionCorrelationFields, details: { ...details, rawIdentityCaptured: false } }, identity.tenantId);
   }
 
   #recordReadOnlyDiscardReconciled(context: TransactionContext, transaction: TransactionStateMachine): void {
     transaction.transition("reconciling");
-    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, serialization: "fresh_repeatable_read_read_only_attempt" } });
+    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, serialization: "fresh_repeatable_read_read_only_attempt" } }, context.tenantId);
     transaction.transition("reconciled", "no_durable_effect");
-    this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, resolution: "no_durable_effect", proofSource: "repeatable_read_read_only_discard_and_retry", serialization: "fresh_repeatable_read_read_only_attempt" } });
+    this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, resolution: "no_durable_effect", proofSource: "repeatable_read_read_only_discard_and_retry", serialization: "fresh_repeatable_read_read_only_attempt" } }, context.tenantId);
   }
 
   async #reconcileOutbox(context: TransactionContext, transaction: TransactionStateMachine, rows: Array<{ outbox_id: string; tenant_id: string; event_id: string }>, deadline: number): Promise<"committed" | "rolled_back"> {
@@ -920,11 +1140,11 @@ export class PostgresEventLog {
   }
 
   #recordOutboxTransactionLinks(rows: Array<{ outbox_id: string; tenant_id: string; event_id: string }>, context: TransactionContext, boundary: "database.transaction_outcome_indeterminate" | "database.transaction_reconciled", outcome: "unknown" | "success", details: Record<string, unknown> = {}): void {
-    for (const row of rows) this.#record({ kind: boundary, boundary, outcome, ...(outcome === "unknown" ? { reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE" } : {}), ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { operation: context.operation, tenantId: row.tenant_id, outboxId: Number(row.outbox_id), ...details } });
+    for (const row of rows) this.#record({ kind: boundary, boundary, outcome, ...(outcome === "unknown" ? { reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE" } : {}), ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { operation: context.operation, tenantId: row.tenant_id, outboxId: Number(row.outbox_id), ...details } }, row.tenant_id);
   }
 
   #recordOutboxCommitted(rows: Array<{ outbox_id: string; tenant_id: string; event_id: string }>, context: TransactionContext, proofSource: "commit_acknowledgement" | "durable_transaction_attempt_marker"): void {
-    for (const row of rows) this.#record({ kind: "outbox.notify_committed", boundary: "outbox.notify_committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { tenantId: row.tenant_id, outboxId: Number(row.outbox_id), listenerDeliveryClaimed: false, proofSource } });
+    for (const row of rows) this.#record({ kind: "outbox.notify_committed", boundary: "outbox.notify_committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), operationCorrelationId: operationCorrelation(this.storage.namespace, { operation: "outbox_publish", outboxId: Number(row.outbox_id) }), eventId: row.event_id, details: { tenantId: row.tenant_id, outboxId: Number(row.outbox_id), listenerDeliveryClaimed: false, proofSource } }, row.tenant_id);
   }
 
   #recordOutboxRolledBack(rows: Array<{ outbox_id: string; tenant_id: string; event_id: string }>, context: TransactionContext, crashPoint: OutboxCrashPoint | null, proofSource: string): void {
@@ -934,10 +1154,10 @@ export class PostgresEventLog {
   async #rollbackCleanup(client: PoolClient, context: TransactionContext, deadline = Date.now() + this.transactionOptions.reconciliationTimeoutMs): Promise<unknown | undefined> {
     try {
       await this.#beforeDeadline(this.transactionOptions.rollback ? this.transactionOptions.rollback(client, context) : client.query("ROLLBACK").then(() => undefined), deadline, "RT_TRANSACTION_CLEANUP_TIMEOUT");
-      this.#record({ kind: "database.transaction_cleanup_attempted", boundary: "database.transaction_cleanup_attempted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, action: "rollback", outcomeProof: false }) });
+      this.#record({ kind: "database.transaction_cleanup_attempted", boundary: "database.transaction_cleanup_attempted", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, action: "rollback", outcomeProof: false }) }, context.tenantId);
       return undefined;
     } catch (error) {
-      this.#record({ kind: "database.transaction_cleanup_attempted", boundary: "database.transaction_cleanup_attempted", outcome: "failure", reasonCode: "RT_TRANSACTION_CLEANUP_FAILED", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, action: "rollback", outcomeProof: false, error: errorMessage(error) }) });
+      this.#record({ kind: "database.transaction_cleanup_attempted", boundary: "database.transaction_cleanup_attempted", outcome: "failure", reasonCode: "RT_TRANSACTION_CLEANUP_FAILED", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, action: "rollback", outcomeProof: false, error: errorMessage(error) }) }, context.tenantId);
       return error;
     }
   }
@@ -945,7 +1165,7 @@ export class PostgresEventLog {
   #recordPreCommitRollback(transaction: TransactionStateMachine, context: TransactionContext, error: unknown): void {
     transaction.transition("rolled_back");
     const sqlstate = postgresSqlstate(error);
-    this.#record({ kind: "database.transaction_rolled_back", boundary: "db.rolled_back", outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: "commit_not_invoked", ...(sqlstate ? { sqlstate } : {}), error: errorMessage(error) }) });
+    this.#record({ kind: "database.transaction_rolled_back", boundary: "db.rolled_back", outcome: "failure", reasonCode: "RT_TRANSACTION_ROLLED_BACK", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: transactionDetails(context, { operation: context.operation, state: transaction.state, proofSource: "commit_not_invoked", ...(sqlstate ? { sqlstate } : {}), error: errorMessage(error) }) }, context.tenantId);
   }
 
   async #withAdvisoryReconciliation<T>(options: {
@@ -957,7 +1177,7 @@ export class PostgresEventLog {
     inspect(client: PoolClient, markerResult: JsonValue | null): Promise<{ resolution: TransactionResolution; value?: T }>;
   }): Promise<{ resolution: TransactionResolution; value?: T }> {
     options.transaction.transition("reconciling");
-    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, serialization: "pg_advisory_xact_lock" } });
+    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, serialization: "pg_advisory_xact_lock" } }, options.context.tenantId);
     let client: PoolClient | undefined;
     let cleanupError: unknown | undefined;
     try {
@@ -973,11 +1193,11 @@ export class PostgresEventLog {
       const result = marker ? await this.#beforeDeadline(options.inspect(client, marker.result), options.deadline, "RT_RECONCILIATION_TIMEOUT") : { resolution: "rolled_back" as const };
       if (marker && result.resolution !== "committed") throw new Error("RT_TRANSACTION_MARKER_DURABLE_STATE_INCOMPLETE");
       options.transaction.transition("reconciled", result.resolution);
-      this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, resolution: result.resolution, proofSource: "durable_transaction_attempt_marker", serialization: "pg_advisory_xact_lock" } });
+      this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, resolution: result.resolution, proofSource: "durable_transaction_attempt_marker", serialization: "pg_advisory_xact_lock" } }, options.context.tenantId);
       return result;
     } catch (error) {
       if (options.transaction.state === "reconciling") options.transaction.transition("indeterminate");
-      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } });
+      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: options.context.transactionId, ...transactionCorrelation(options.context), details: { operation: options.context.operation, state: options.transaction.state, timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } }, options.context.tenantId);
       throw new TransactionOutcomeError(options.context, error);
     } finally {
       if (client) {
@@ -1006,7 +1226,7 @@ export class PostgresEventLog {
 
   async #reconcileTransactionMarker(context: TransactionContext, transaction: TransactionStateMachine, lockKey: string, deadline: number, allowMissingTable = false): Promise<"committed" | "rolled_back"> {
     transaction.transition("reconciling");
-    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, serialization: "pg_advisory_xact_lock" } });
+    this.#record({ kind: "database.transaction_reconciliation_started", boundary: "database.transaction_reconciliation_started", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, serialization: "pg_advisory_xact_lock" } }, context.tenantId);
     let client: PoolClient | undefined;
     let cleanupError: unknown | undefined;
     try {
@@ -1017,11 +1237,11 @@ export class PostgresEventLog {
       const marker = await this.#transactionAttempt(client, context, allowMissingTable, deadline);
       const resolution = marker ? "committed" : "rolled_back";
       transaction.transition("reconciled", resolution);
-      this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, resolution, proofSource: "durable_transaction_attempt_marker", serialization: "pg_advisory_xact_lock" } });
+      this.#record({ kind: "database.transaction_reconciled", boundary: "database.transaction_reconciled", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, resolution, proofSource: "durable_transaction_attempt_marker", serialization: "pg_advisory_xact_lock" } }, context.tenantId);
       return resolution;
     } catch (error) {
       if (transaction.state === "reconciling") transaction.transition("indeterminate");
-      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } });
+      this.#record({ kind: "database.transaction_reconciliation_unresolved", boundary: "database.transaction_reconciliation_unresolved", outcome: "unknown", reasonCode: "RT_TRANSACTION_OUTCOME_INDETERMINATE", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation: context.operation, state: transaction.state, timeoutMs: this.transactionOptions.reconciliationTimeoutMs, error: errorMessage(error) } }, context.tenantId);
       throw new TransactionOutcomeError(context, error);
     } finally {
       if (client) {
@@ -1045,7 +1265,7 @@ export class PostgresEventLog {
         const value = await work(client);
         await this.#insertTransactionAttempt(client, context, value as JsonValue);
         await this.#commit(client, transaction, context);
-        this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation, proofSource: "commit_acknowledgement" } });
+        this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation, proofSource: "commit_acknowledgement" } }, context.tenantId);
         return value;
       } catch (error) {
         const deadline = Date.now() + this.transactionOptions.reconciliationTimeoutMs;
@@ -1059,7 +1279,7 @@ export class PostgresEventLog {
         released = true;
         const reconciled = await this.#withAdvisoryReconciliation<T>({ context, transaction, lockKey, deadline, inspect: async (_database, markerResult) => ({ resolution: "committed", value: markerResult as T }) });
         if (reconciled.resolution === "committed") {
-          this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation, proofSource: "durable_transaction_attempt_marker" } });
+          this.#record({ kind: "database.transaction_committed", boundary: "db.committed", outcome: "success", ...STORE_POSTGRES_EVIDENCE_COMPONENT, transactionId: context.transactionId, ...transactionCorrelation(context), details: { operation, proofSource: "durable_transaction_attempt_marker" } }, context.tenantId);
           return reconciled.value as T;
         }
         if (attempt === 1) throw new Error(`RT_${operation.toUpperCase()}_RECONCILED_ROLLBACK`);
@@ -1071,6 +1291,10 @@ export class PostgresEventLog {
   }
 
   #lockKey(value: string): string { return `${this.storage.namespace}:${value}`; }
+
+  #structuredLockKey(kind: "command" | "stream", parts: readonly string[]): string {
+    return structuredTransactionLockKey(this.storage.namespace, kind, parts);
+  }
 
   #connectBefore(deadline: number, code = "RT_RECONCILIATION_TIMEOUT"): Promise<PoolClient> {
     return new Promise((resolve, reject) => {
@@ -1117,12 +1341,6 @@ export class PostgresEventLog {
     }
   }
 
-  async #eventById(client: PoolClient, tenantId: string, eventId: string): Promise<PostgresStoredEvent> {
-    const result = await client.query(`SELECT tenant_id, stream, sequence, event_id, event_type, schema_name, data, append_operation_id, command_principal_namespace_id, command_id, occurred_at FROM ${this.storage.events} WHERE tenant_id = $1 AND event_id = $2`, [tenantId, eventId]);
-    if (!result.rowCount) throw new Error("command points to a missing event");
-    return rowToEvent(result.rows[0]);
-  }
-
   async #headSequenceBefore(tenantId: string, stream: string, deadline: number): Promise<number> {
     const client = await this.#connectBefore(deadline);
     let releaseError: unknown | undefined;
@@ -1137,8 +1355,8 @@ export class PostgresEventLog {
     }
   }
 
-  #record(input: RecordInput): void {
-    try { this.recorder.record(input); }
+  #record(input: RecordInput, tenantId?: string): void {
+    try { this.recorder.record(input, tenantId ? { tenantId } : {}); }
     catch { /* stats retain explicit loss without changing an already committed database outcome */ }
   }
 }
@@ -1162,6 +1380,21 @@ function rowToEvent(row: Record<string, unknown>): PostgresStoredEvent {
 function validateLimit(limit: number): void { if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new Error("RT_READ_LIMIT_INVALID"); }
 function remainingMs(deadline: number): number { return Math.max(1, deadline - Date.now()); }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((item) => isJsonValue(item, seen));
+  if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+  return Object.values(value as Record<string, unknown>).every((item) => isJsonValue(item, seen));
+}
+function validateCommandTargets(targets: readonly string[]): string[] {
+  if (!Array.isArray(targets) || targets.length > 100 || targets.some((target) => typeof target !== "string" || target.length < 1 || target.length > 256)) throw new Error("RT_COMMAND_TARGETS_INVALID");
+  const unique = [...new Set(targets)].sort();
+  if (unique.length !== targets.length) throw new Error("RT_COMMAND_TARGETS_DUPLICATE");
+  return unique;
+}
 function errorCode(error: unknown, fallback: string): string { return error instanceof Error && typeof (error as Error & { code?: unknown }).code === "string" ? String((error as Error & { code: string }).code) : error instanceof Error && error.message.startsWith("RT_") ? error.message : fallback; }
 function postgresSqlstate(error: unknown): string | undefined { return error instanceof DatabaseError && typeof error.code === "string" && /^[0-9A-Z]{5}$/u.test(error.code) ? error.code : undefined; }
 function transactionDetails(context: TransactionContext, details: Record<string, unknown>): Record<string, unknown> { return { ...(context.tenantId ? { tenantId: context.tenantId } : {}), ...details }; }

@@ -14,7 +14,7 @@ if (!databaseUrl) throw new Error("POSTGRES_URL is required");
 const work = await mkdtemp(join(tmpdir(), "better-realtime-postgres-compat-"));
 
 interface MigrationManifest {
-  fixtures: Array<{ storageVersion: number; packagePath: string; modulePath: string }>;
+  fixtures: Array<{ storageVersion: number; publishedBaseline: string; packagePath: string; modulePath: string }>;
   migrations: Array<{ version: number; fromVersions: number[] }>;
 }
 interface FixtureModule {
@@ -44,26 +44,29 @@ try {
   const candidateServer = await importPackage<ServerApi>(candidateDirectory, "dist/server.js");
   const results = [];
 
-  for (const fromStorageVersion of edgeVersions) {
-    const fixture = manifest.fixtures.find((entry) => entry.storageVersion === fromStorageVersion);
-    if (!fixture) throw new Error(`RT_COMPAT_POSTGRES_EDGE_FIXTURE_MISSING:${fromStorageVersion}`);
-    const predecessorDirectory = join(work, `predecessor-${fromStorageVersion}`);
+  const edgeFixtures = manifest.fixtures.filter((entry) => edgeVersions.includes(entry.storageVersion));
+  for (const fromStorageVersion of edgeVersions) if (!edgeFixtures.some((fixture) => fixture.storageVersion === fromStorageVersion)) throw new Error(`RT_COMPAT_POSTGRES_EDGE_FIXTURE_MISSING:${fromStorageVersion}`);
+  for (const [fixtureIndex, fixture] of edgeFixtures.entries()) {
+    const fromStorageVersion = fixture.storageVersion;
+    const predecessorDirectory = join(work, `predecessor-${fromStorageVersion}-${fixtureIndex}`);
     await install(join(root, fixture.packagePath), predecessorDirectory);
+    const predecessorManifest = JSON.parse(await readFile(join(predecessorDirectory, "node_modules/better-realtime/package.json"), "utf8")) as { name?: string; version?: string };
+    if (`${String(predecessorManifest.name)}@${String(predecessorManifest.version)}` !== fixture.publishedBaseline) throw new Error(`RT_COMPAT_POSTGRES_FIXTURE_PACKAGE_IDENTITY:${fixture.publishedBaseline}`);
     const predecessorRuntime = await importPackage<FixtureRuntimeApi>(predecessorDirectory, "dist/index.js");
     const predecessorServer = await importPackage<ServerApi>(predecessorDirectory, "dist/server.js");
     const fixtureModule = await import(pathToFileURL(join(root, fixture.modulePath)).href) as FixtureModule;
     const predecessorContract = fixtureModule.createContract(predecessorRuntime);
     const candidateContract = fixtureModule.createContract(candidateRuntime);
-    if (JSON.stringify(predecessorContract.identity) !== JSON.stringify(candidateContract.identity)) throw new Error(`RT_COMPAT_POSTGRES_CONTRACT_IDENTITY_DRIFT:${fromStorageVersion}`);
-    const result = await verifyEdge({ fromStorageVersion, targetStorageVersion, schema: `compat_v${fromStorageVersion}_${process.pid}`, predecessorServer, candidateServer, predecessorContract, candidateContract, fixture: fixtureModule });
+    if (JSON.stringify(predecessorContract.identity) !== JSON.stringify(candidateContract.identity)) throw new Error(`RT_COMPAT_POSTGRES_CONTRACT_IDENTITY_DRIFT:${fixture.publishedBaseline}`);
+    const result = await verifyEdge({ publishedBaseline: fixture.publishedBaseline, fromStorageVersion, targetStorageVersion, schema: `compat_v${fromStorageVersion}_${fixtureIndex}_${process.pid}`, predecessorServer, candidateServer, predecessorContract, candidateContract, fixture: fixtureModule });
     results.push(result);
   }
 
-  process.stdout.write(`${JSON.stringify({ schemaVersion: "1.0", baseline: "better-realtime@0.1.0-alpha.1", candidate: `${candidate.package}@${candidate.version}`, targetStorageVersion, declaredEdges: edgeVersions, verifiedEdges: results })}\n`);
+  process.stdout.write(`${JSON.stringify({ schemaVersion: "1.0", baselines: edgeFixtures.map(({ publishedBaseline }) => publishedBaseline), candidate: `${candidate.package}@${candidate.version}`, targetStorageVersion, declaredEdges: edgeVersions, verifiedEdges: results })}\n`);
 } finally { await rm(work, { recursive: true, force: true }); }
 
-async function verifyEdge(options: { fromStorageVersion: number; targetStorageVersion: number; schema: string; predecessorServer: ServerApi; candidateServer: ServerApi; predecessorContract: unknown; candidateContract: unknown; fixture: FixtureModule }): Promise<Record<string, unknown>> {
-  const { fromStorageVersion, targetStorageVersion, schema, predecessorServer, candidateServer, predecessorContract, candidateContract, fixture } = options;
+async function verifyEdge(options: { publishedBaseline: string; fromStorageVersion: number; targetStorageVersion: number; schema: string; predecessorServer: ServerApi; candidateServer: ServerApi; predecessorContract: unknown; candidateContract: unknown; fixture: FixtureModule }): Promise<Record<string, unknown>> {
+  const { publishedBaseline, fromStorageVersion, targetStorageVersion, schema, predecessorServer, candidateServer, predecessorContract, candidateContract, fixture } = options;
   const identityKeys = [{ version: 1, key: "postgres-compatibility-identity-key-32-bytes" }];
   const predecessorProfile = predecessorServer.postgres({ connectionString: databaseUrl, identityKeys, schema });
   const candidateProfile = candidateServer.postgres({ connectionString: databaseUrl, identityKeys, schema });
@@ -94,7 +97,7 @@ async function verifyEdge(options: { fromStorageVersion: number; targetStorageVe
     const unsupportedAfter = await fixture.snapshot(candidateProfile.pool, schema);
     if (!unsupportedError.includes("RT_POSTGRES_STORAGE_BINDING_MISMATCH") || await storageVersion(candidateProfile.pool, schema) !== unsupportedVersion || JSON.stringify(unsupportedBefore) !== JSON.stringify(unsupportedAfter)) throw new Error(`RT_COMPAT_POSTGRES_UNSUPPORTED_VERSION_NOT_FAIL_CLOSED:${unsupportedError}`);
     await candidateProfile.pool.query(`UPDATE "${schema}".realtime_schema_metadata SET storage_version=$1`, [targetStorageVersion]);
-    return { fromStorageVersion, targetStorageVersion, dataPreserved: true, allPublishedColumnsCompared: true, targetRerunIdempotent: true, candidateRuntimeReady: true, unsupportedVersionFailClosed: true, migrationEvidenceAppended: { transition: attemptsAfter - attemptsBefore, targetRerun: attemptsRerun - attemptsAfter } };
+    return { publishedBaseline, fromStorageVersion, targetStorageVersion, dataPreserved: true, allPublishedColumnsCompared: true, targetRerunIdempotent: true, candidateRuntimeReady: true, unsupportedVersionFailClosed: true, migrationEvidenceAppended: { transition: attemptsAfter - attemptsBefore, targetRerun: attemptsRerun - attemptsAfter } };
   } finally {
     await candidateProfile.pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
     await Promise.all([predecessorProfile.pool.end(), candidateProfile.pool.end()]);
@@ -116,5 +119,9 @@ async function verifyRuntimeReadiness(serverApi: ServerApi, candidateContract: u
 
 async function storageVersion(pool: PoolLike, schema: string): Promise<number> { return Number((await pool.query<{ storage_version: number }>(`SELECT storage_version FROM "${schema}".realtime_schema_metadata`)).rows[0]?.storage_version); }
 async function migrationAttemptCount(pool: PoolLike, schema: string): Promise<number> { return Number((await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM "${schema}".realtime_transaction_attempts WHERE operation='schema_migration'`)).rows[0]?.count ?? -1); }
-async function install(tarball: string, directory: string): Promise<void> { await mkdir(directory, { recursive: true }); await writeFile(join(directory, "package.json"), `${JSON.stringify({ private: true, type: "module" })}\n`, "utf8"); await exec("npm", ["install", "--ignore-scripts", tarball], { cwd: directory, maxBuffer: 20 * 1024 * 1024 }); }
+async function install(tarball: string, directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "package.json"), `${JSON.stringify({ private: true, type: "module" })}\n`, "utf8");
+  await exec("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, "pg@8.22.0", "ws@8.21.1"], { cwd: directory, maxBuffer: 20 * 1024 * 1024 });
+}
 async function importPackage<T>(directory: string, path: string): Promise<T> { return import(pathToFileURL(join(directory, "node_modules/better-realtime", path)).href) as Promise<T>; }

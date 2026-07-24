@@ -1,29 +1,250 @@
 {
   "schemaVersion": "1.0",
   "baseline": "better-realtime@0.1.0-alpha.1",
-  "candidateLine": "0.1.x-alpha",
+  "candidateLine": "0.2.x-alpha",
   "changes": [
     {
-      "id": "alpha4-release-declaration",
+      "id": "candidate-01-packagemanifest-sideeffects",
+      "surface": "packageManifest",
+      "path": "sideEffects",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "01d7a7751d17808f832b60bc963f5fe66dc0bd5823e91299b6636ee1d062c636",
+      "candidateSha256": "a8cd598b016464e94f7f1baea3cba08b8a48ea2cf4d124c960443bd97e102206",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Marks the explicit Node-only entrypoint initializers while preserving browser root tree shaking."
+    },
+    {
+      "id": "candidate-02-packagemanifest-engines",
+      "surface": "packageManifest",
+      "path": "engines",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "182a4ca48f1814b35d872e339a87a1d265d046cdd46cdc399634475125c20f66",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Removes the package-wide Node engine so browser-only consumers are not rejected by an irrelevant server constraint."
+    },
+    {
+      "id": "candidate-03-packagemanifest-bin",
+      "surface": "packageManifest",
+      "path": "bin",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "c592c8d09311d99c070f27e9c2a8e7f064d248c86e5249d441b1d9ad7bdb6dd7",
+      "candidateSha256": "7da56284050e8b683cf9547d56db88e6ab207a43bc7a80f98872aacacb21f820",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Moves the better-realtime-mcp executable out of the browser-capable base package.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-04-packagemanifest-dependencies",
+      "surface": "packageManifest",
+      "path": "dependencies",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "fdc03cc81e3bfd6a099e3935b9c1f55411beb1e9ec75b17e7e6863e4ec98ab7a",
+      "candidateSha256": "f8e9c6901ea7946eb66d7c3f6edcd61b469d2b999bb65a1f149ce7e0cc99c683",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Moves Node server and MCP dependencies out of the base installation; server peers and the MCP companion must now be installed explicitly.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-05-packagemanifest-peerdependenciesmeta",
+      "surface": "packageManifest",
+      "path": "peerDependenciesMeta",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "1d5deadc725d8ee5c54b9ec16331f11630259be495acae0598b8de44b0c72f91",
+      "candidateSha256": "d6eaf061a675fecc6ebd7739580dab533e00c8009c184083a6f8a23fb395cbd0",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Stops auto-installing the PostgreSQL and WebSocket peers for browser-only consumers; server consumers must install the peers they use.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-06-packageexports-mcp",
+      "surface": "packageExports",
+      "path": "./mcp",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "e4c7d2b23edc990264a8e024045e6fa82303c14fabc0f4dcf7cc5a5e0a5c8a99",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Moves the Node-only MCP surface to the independently installable better-realtime-mcp companion package.",
+      "migrationGuide": "docs/public/migration-0.2.md",
+      "expectedTypeScriptDiagnostics": {
+        "react18": [
+          "TS2307"
+        ],
+        "react19": [
+          "TS2307"
+        ]
+      }
+    },
+    {
+      "id": "candidate-07-typescriptdeclarations-dist-contract-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/contract.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "60b2deb95052d0d1e9b9b4661c70246a2280c00774028e749d2f797279067053",
+      "candidateSha256": "a4e8378118e46e15d32ba8305e9904548df1967e2fa3ec924272f68cb75cfcf3",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-08-typescriptdeclarations-dist-diagnostic-boundary-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/diagnostic-boundary.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "6e9adc94ddde300065789090b1891b6e4960131592de7ee30007373ea0b43486",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-09-typescriptdeclarations-dist-diagnostic-io-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/diagnostic-io.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "b084d0ebf2c33e48b80e8bc47f63255d91e05203f38bb645bed0101367d881ba",
+      "candidateSha256": "fbf9e45d4923057823f9cb3ccfffbe09844ad0be447d5d0f22db0060be548cb7",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-10-typescriptdeclarations-dist-diagnostic-types-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/diagnostic-types.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "9ff9f4c2fa8192961a713957b105c6e0cc46b2c6911e07615bcce76bf1bfbaef",
+      "candidateSha256": "cec29a5075ff2c6d3e239fff9b485667df7f7f430bbf34a1dbe9006b549224ef",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-typescript-diagnostics-entry-add",
+      "surface": "typescriptDeclarations",
+      "path": "dist/diagnostics-entry.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "13c434eb0dfbbbddfd5181d04234337aae8e70bedd838bc1faf8204ed8e099d8",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-12-typescriptdeclarations-dist-index-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/index.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "b9f8c777f6be52cb0c656865534ec570b3d065706482024e25ebe3135eb8c73d",
+      "candidateSha256": "e509e0a654dbc71551ae73e5a19a91c38af4155123dd3c4763e2ae828341bdf5",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-typescript-mcp-stdio-remove",
+      "surface": "typescriptDeclarations",
+      "path": "dist/mcp-stdio.d.ts",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "43e818adf60173644896298637f47b01d5819b17eda46eaa32d0c7d64724d012",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the legacy base-package MCP artifact in favor of the versioned companion package.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-12-typescriptdeclarations-dist-mcp-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/mcp.d.ts",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "1653bce7cfa5c15e1bcd631e3e0a726d08e53f1c16c2df1c7e8bf993c53682c8",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the legacy base-package MCP artifact in favor of the versioned companion package.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-13-typescriptdeclarations-dist-node-runtime-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/node-runtime.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "3a0a7da5d4b12d68aff218265db0dcaf6a77c17a29e3d3b0ebe5b737d3e0fd4f",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the Node runtime assertion declaration used by explicit Node-only entrypoints."
+    },
+    {
+      "id": "candidate-15-typescriptdeclarations-dist-react-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/react.d.ts",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "e96c99340e8fd1f7c3245d53c7b22353b71899f3dcc48a796f830eccbd5704ba",
+      "candidateSha256": "faa940f635f787bcd1dd57708b645a97c81c63113ec8f4e0d39fec21a07f836e",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the alpha.4 runtime-wide totalPendingCount command-hook field while adding command-scoped pending state.",
+      "migrationGuide": "docs/public/migration-0.2.md",
+      "expectedTypeScriptDiagnostics": {
+        "react18": [
+          "TS2551"
+        ],
+        "react19": [
+          "TS2551"
+        ]
+      }
+    },
+    {
+      "id": "candidate-typescript-release-identity-update",
       "surface": "typescriptDeclarations",
       "path": "dist/release.d.ts",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "a18e30484a4be510f1c396d8660317947bec35f01b747a100b54c17c3b0b24ab",
-      "candidateSha256": "2ee9f3443234f41596ec8b62ba27a19e43925bafee6fb3e2356338ba648876d3",
+      "candidateSha256": "734662fec23ebb95250c80b8683d43224b1d9cf48d77bd4b45000519b1965602",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Advances the private candidate identity without removing or narrowing any public API."
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
     },
     {
-      "id": "alpha4-cli-chunk-add",
-      "surface": "runtimeJavaScript",
-      "path": "dist/cli-MtupX74y.js",
+      "id": "candidate-16-typescriptdeclarations-dist-server-entry-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/server-entry.d.ts",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "a6911dd9590a82c29f5f17e55e897168514119eac7e6c956ae152439363192e4",
+      "candidateSha256": "5a7f215f4a8f2ccb0b0b3295dbc4802e8285bb606a7cf52711061a05559c5a3d",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Rebuilds the CLI chunk for the patched dependency and alpha.4 fix-forward identity."
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-19-typescriptdeclarations-dist-server-d-ts",
+      "surface": "typescriptDeclarations",
+      "path": "dist/server.d.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "71ff0ccf845d9198a362c9ed764b06681cc57939548bdcb80922cea9eb01e9ac",
+      "candidateSha256": "c8f4aa44220124083045f90969d2307891ee898d09bba7dc0299eb3e97e5b5ed",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Publishes the typed state-stream, React, server transaction, and diagnostics boundaries for the candidate."
+    },
+    {
+      "id": "candidate-20-runtimejavascript-dist-2020-trth-i19-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/2020-trtH_i19.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "71f9edf054a502dc673e168d8ae9b0273b18b58206480941a85486f63da85168",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
       "id": "alpha4-cli-chunk-remove",
@@ -37,37 +258,37 @@
       "rationale": "Replaces the content-addressed alpha.1 CLI chunk without changing its public behavior."
     },
     {
-      "id": "alpha4-cli-bin-runtime",
+      "id": "candidate-22-runtimejavascript-dist-cli-drrp4pjx-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/cli-DrRp4pjx.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "06db9a0675f6e8bfc3fbd3221ba097f90fc402c2c54758edcd0985a8b43ed776",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-23-runtimejavascript-dist-cli-bin-js",
       "surface": "runtimeJavaScript",
       "path": "dist/cli-bin.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "c2b3eaeda3d24dea81e4eeee9452a0def924dc376cbba381f01c7ece0d90a681",
-      "candidateSha256": "f1a269a950cd793bc5d22985d35208e4917e7ed40a16409f411025d7566dfb55",
+      "candidateSha256": "5badad5a7b19bcc303cb0dbe0db7a0c286ee2c3eb4f217f0d6e7f248fd965b5e",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Updates the CLI entrypoint to the compatible rebuilt chunk and alpha.4 identity."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
-      "id": "alpha4-cli-runtime",
+      "id": "candidate-24-runtimejavascript-dist-cli-js",
       "surface": "runtimeJavaScript",
       "path": "dist/cli.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "01477c55020e92ce9a379e0f62ed241c84cdab3496d8cb55aad80780df5faf52",
-      "candidateSha256": "198390a6a96804188cf1583a3a2705aa8d8988a16d8a0399d44c13a55413ef3d",
+      "candidateSha256": "e1550f0531f2ce7d3bb0448a4625fc54a8c8297f7406275ea564aa31a8172345",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Updates the CLI export to the compatible rebuilt chunk and alpha.4 identity."
-    },
-    {
-      "id": "alpha4-contract-chunk-add",
-      "surface": "runtimeJavaScript",
-      "path": "dist/contract-C3h7ZEM3.js",
-      "classification": "compatible",
-      "axis": "package",
-      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "19ce5fbaeafa24e0b96f8eaba1ffbe0d25928e07b84f8406d6373a076562e401",
-      "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Bundles patched fast-uri parsing while preserving the published contract API and semantics."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
       "id": "alpha4-contract-chunk-remove",
@@ -81,6 +302,28 @@
       "rationale": "Replaces the content-addressed alpha.1 contract chunk with its patched equivalent."
     },
     {
+      "id": "candidate-26-runtimejavascript-dist-contract-h9lsetih-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/contract-h9lSeTiH.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "8273bd9428854d2b73b59d009172f434b71eafc0026d5168238dbd842813d346",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-27-runtimejavascript-dist-diagnostic-io-b-xy7nt-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/diagnostic-io-B-xy7Nt_.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "1931a20bbec3e4f1ad96473bea2baf02c842ee5c49b6e8468502f3f3c9e766b5",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
       "id": "alpha4-diagnostic-chunk-remove",
       "surface": "runtimeJavaScript",
       "path": "dist/diagnostic-io-EaFgIJeZ.js",
@@ -92,48 +335,26 @@
       "rationale": "Replaces the content-addressed alpha.1 diagnostics chunk without semantic weakening."
     },
     {
-      "id": "alpha4-diagnostic-chunk-add",
-      "surface": "runtimeJavaScript",
-      "path": "dist/diagnostic-io-C-0cBdWd.js",
-      "classification": "compatible",
-      "axis": "package",
-      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "44bdf554f97ef8e89d3d8b39fbb94d4adab1d7f19a83b938541fad8d1b836321",
-      "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Rebuilds diagnostics for the compatible alpha.4 identity without changing verdict semantics."
-    },
-    {
-      "id": "alpha4-diagnostic-runtime",
+      "id": "candidate-29-runtimejavascript-dist-diagnostic-io-js",
       "surface": "runtimeJavaScript",
       "path": "dist/diagnostic-io.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "deceb99a6e814fdaf2850e1397ff18fc46a81e46595e419c8176ae9872a6996c",
-      "candidateSha256": "85c66dd52d213eae5b739fb1a2bb6fa50e9e489a85b67b2980b497e12055b07b",
+      "candidateSha256": "1bd50a2c5aeae5f69e2885ae0db7598dcb07b6b19f3fc23aa907dcad5f769bbc",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Updates the diagnostics entrypoint to the compatible rebuilt chunk and identity."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
-      "id": "alpha4-root-runtime",
+      "id": "candidate-30-runtimejavascript-dist-index-js",
       "surface": "runtimeJavaScript",
       "path": "dist/index.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "57a49f128c02350d3f967c0ebecedd77b8be570de2ce04bb5e2bd30f76dfef1e",
-      "candidateSha256": "2d8ba4f551b989890612c6c7c185e7237b04916db36af65e3fc6ffa5086f0676",
+      "candidateSha256": "22294019d8e50d20a187e3578067b507abc86ec94a913e82bf4ba9b8a364f9df",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Rebuilds the root runtime with patched fast-uri while retaining alpha.1 public behavior."
-    },
-    {
-      "id": "alpha4-mcp-chunk-add",
-      "surface": "runtimeJavaScript",
-      "path": "dist/mcp-B8XmPEbY.js",
-      "classification": "compatible",
-      "axis": "package",
-      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "ba7140f202f6ba15b6eeae52d5c7fb24ed2541c5efcd2eb3e796e3411a5c0e0d",
-      "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Rebuilds the stdio MCP chunk for the compatible alpha.4 candidate identity."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
       "id": "alpha4-mcp-chunk-remove",
@@ -147,26 +368,51 @@
       "rationale": "Replaces the content-addressed alpha.1 stdio MCP chunk without adding HTTP exposure."
     },
     {
-      "id": "alpha4-mcp-stdio-runtime",
+      "id": "candidate-29-runtimejavascript-dist-mcp-stdio-js",
       "surface": "runtimeJavaScript",
       "path": "dist/mcp-stdio.js",
-      "classification": "compatible",
+      "classification": "intentionally_breaking",
       "axis": "package",
       "baselineSha256": "24fe7ff13eb582c0e8aba38938dc0b7e990389920fbe3e218888f69d3b665320",
-      "candidateSha256": "0b77df45f8adf974962d10a226a01f53d0bc061acb91ba65e414b5e0f9686b67",
-      "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Updates the stdio MCP executable to the compatible rebuilt chunk and identity."
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the legacy base-package MCP artifact in favor of the versioned companion package.",
+      "migrationGuide": "docs/public/migration-0.2.md"
     },
     {
-      "id": "alpha4-mcp-runtime",
+      "id": "candidate-30-runtimejavascript-dist-mcp-js",
       "surface": "runtimeJavaScript",
       "path": "dist/mcp.js",
-      "classification": "compatible",
+      "classification": "intentionally_breaking",
       "axis": "package",
       "baselineSha256": "7fc9c73b5f4494727ff51b798dabd4314dea4c8f40bc8dcdba1b86633f36c143",
-      "candidateSha256": "7aefdad75f083ce4b819ed7e148e71ba064c8a09687885fd58d500769a5df8d0",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the legacy base-package MCP artifact in favor of the versioned companion package.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-31-runtimejavascript-dist-node-runtime-b8zrgacv-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/node-runtime-B8zRgaCV.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "10029c034cdcb40f34ef4273bdeb75f99b62dbfe1fe9f4991d6c616452986932",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Updates the MCP export to the compatible rebuilt stdio implementation and identity."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-33-runtimejavascript-dist-react-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/react.js",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "014da4a62cf7e13e256af123b006d019dd5652247108b37474bd74d59abb0cd9",
+      "candidateSha256": "727388bd193014ba0b62625b22f4be498940f99e6585fccf68280a786296dd87",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Changes command-hook runtime behavior to command-scoped activity and makes executeAsync inherit the configured settlement boundary.",
+      "migrationGuide": "docs/public/migration-0.2.md"
     },
     {
       "id": "alpha4-release-chunk-remove",
@@ -180,37 +426,37 @@
       "rationale": "Replaces the alpha.1 identity chunk at the additive alpha.4 fix-forward boundary."
     },
     {
-      "id": "alpha4-release-chunk-add",
+      "id": "candidate-34-runtimejavascript-dist-release-vedtzuuy-js",
       "surface": "runtimeJavaScript",
-      "path": "dist/release-CQ4hEVeB.js",
+      "path": "dist/release-vEDTZUuY.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "876459bc76b11c12ba423ea2e3daa99dfe16b7ac986076803ee40096f982dd25",
+      "candidateSha256": "66de25cfb6dea801e8b441203f8a467249726c09e0c8c983969fc091c65e4d31",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Introduces the private alpha.4 candidate identity without publishing or changing alpha.1."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
-      "id": "alpha4-server-runtime",
+      "id": "candidate-38-runtimejavascript-dist-rolldown-runtime-b1bri-d7-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/rolldown-runtime-B1bRi_D7.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "047e86d7deab1db5d32b72495ade04d30b55737d4d67806c45e28b82f658f85c",
+      "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-39-runtimejavascript-dist-server-js",
       "surface": "runtimeJavaScript",
       "path": "dist/server.js",
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "fe63e215d5b8508d890021903fec67d0b3a79c435556e24be51e5b8a78ec1e31",
-      "candidateSha256": "748afdd2601ee0ca547bd87856e80d9eeecc865e7e77454906e7cb940a4795e3",
+      "candidateSha256": "132a6f2607bc5d535c800198036f5bf12b8379a6b99ee6b5e885f485ee5e8120",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Rebuilds the Node server bundle with patched fast-uri and unchanged server semantics."
-    },
-    {
-      "id": "alpha4-shared-chunk-add",
-      "surface": "runtimeJavaScript",
-      "path": "dist/src-Bb75A8FQ.js",
-      "classification": "compatible",
-      "axis": "package",
-      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
-      "candidateSha256": "3b3728ef7bf0017e7d334baf971bbe560937c0bfc4a35332609288c42696257d",
-      "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Bundles the patched URI parser in the shared runtime chunk without API changes."
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
     },
     {
       "id": "alpha4-shared-chunk-remove",
@@ -222,6 +468,142 @@
       "candidateSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
       "minimumVersion": "0.1.0-alpha.4",
       "rationale": "Replaces the alpha.1 shared runtime chunk with the patched alpha.4 equivalent."
+    },
+    {
+      "id": "candidate-41-runtimejavascript-dist-src-i3skoc2s-js",
+      "surface": "runtimeJavaScript",
+      "path": "dist/src-i3Skoc2s.js",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "a4d0f0eb87fed960b9f1819efda1cd7935b4f665fdd3872149260986d11e96da",
+      "candidateSha256": "50cb846ecb39150c4e8b9b4d2b90740ccd692fd254c1b347ef6f88ee5161c7b7",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-40-diagnostictypes-packages-runtime-src-diagnostic-types-ts",
+      "surface": "diagnosticTypes",
+      "path": "packages/runtime/src/diagnostic-types.ts",
+      "classification": "compatible",
+      "axis": "diagnostics",
+      "baselineSha256": "77547cac522019d0f0c75ac2b57bdb756c4e43c5a61e1ce762a3350219729f76",
+      "candidateSha256": "cdd45d37753942b70d7968543d15f83f9048fc70943a532f899b0793eb32ac09",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-43-runtimeclient-packages-runtime-src-index-ts",
+      "surface": "runtimeClient",
+      "path": "packages/runtime/src/index.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "d846362c875b74223b1b16d4ff4e49905774b7752d61262fba6a8f2239653e5c",
+      "candidateSha256": "93788711b6ba23193b65dbc805fd76d07806f7766f4834405f0776003e575381",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Adds state-stream snapshot metadata and bounded command activity without changing wire-v1 recovery semantics."
+    },
+    {
+      "id": "candidate-40-runtimereact-packages-runtime-src-react-ts",
+      "surface": "runtimeReact",
+      "path": "packages/runtime/src/react.ts",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "824e7d8064d036d18f9334a289da27af186c71c978e3cd4851f30ec154628516",
+      "candidateSha256": "1228043ae285075da011e86157491393affe201a2206cf5591f99de5242c43ca",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Removes the runtime-wide pending alias from command hooks while preserving explicit runtime activity through useRuntime().",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-45-runtimeserver-packages-runtime-src-server-ts",
+      "surface": "runtimeServer",
+      "path": "packages/runtime/src/server.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "393c16b92b7ed9a3c86bc1d7f5f6edaf30e467f7b6272b924b7a46ddcfdbd028",
+      "candidateSha256": "6b1cdd2f9a9362ab6c4c2456f1fec2782f99dee599ab9155df5bf860cc4645e1",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Adds the target-declared framework-owned transaction API while retaining the legacy prepare adapter."
+    },
+    {
+      "id": "candidate-46-coreclient-packages-core-src-client-ts",
+      "surface": "coreClient",
+      "path": "packages/core/src/client.ts",
+      "classification": "compatible",
+      "axis": "package",
+      "baselineSha256": "6dc51c47788a25428a2eb0694752f23ba5d23ebb9585cc68d9dfd814d826dba9",
+      "candidateSha256": "69161fdfdf1fbc2e6792be5e9dd7ddc11ec63ba2f6e533e2bedec0a5bf0213d8",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Adds state-stream snapshot metadata and bounded command activity without changing wire-v1 recovery semantics."
+    },
+    {
+      "id": "candidate-47-postgresgateway-packages-server-node-src-postgres-gateway-ts",
+      "surface": "postgresGateway",
+      "path": "packages/server-node/src/postgres-gateway.ts",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "59bb13800fb6fdaf8e3b18845b8a717b6bb6414bfd67d977b74ad188435be87c",
+      "candidateSha256": "0e61c23611b12f3436e86e6af57cd3fb2f2294c252e1a4a8a7130c9ff175e3c8",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Introduces deployment-only PostgreSQL storage v2 for atomic zero-to-many event command causality while preserving v1 data.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-48-postgresmigrationexecutor-packages-store-postgres-src-index-ts",
+      "surface": "postgresMigrationExecutor",
+      "path": "packages/store-postgres/src/index.ts",
+      "classification": "intentionally_breaking",
+      "axis": "postgres",
+      "baselineSha256": "934158abbf706fa5eb82e99227a19a953d797f8cfafdb9b3012f40c2ed8c0ef2",
+      "candidateSha256": "1c71cf1d7c5dd4d9264ecfa4a0ab9696919ab32b5fc33b5b60bb420959b9ae41",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Introduces deployment-only PostgreSQL storage v2 for atomic zero-to-many event command causality, preserves v1 data, and rejects malformed or partially installed v2 shapes.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-47-diagnosticqueryruntime-packages-diagnostics-src-query-ts",
+      "surface": "diagnosticQueryRuntime",
+      "path": "packages/diagnostics/src/query.ts",
+      "classification": "compatible",
+      "axis": "diagnostics",
+      "baselineSha256": "b9334abb457a99d949a8b0ddca6e277d2286671a1de8816ee4063be422dbbdac",
+      "candidateSha256": "720779236032c59b55ac66a1d0748024cc0e8a60924625e62372b059febabb16",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Rebuilds the candidate artifact for the reviewed API and dependency-boundary changes."
+    },
+    {
+      "id": "candidate-typescript-api-compatibility",
+      "surface": "typescriptApiCompatibility",
+      "path": "all-alpha1-named-exports-and-assignability",
+      "classification": "intentionally_breaking",
+      "axis": "package",
+      "baselineSha256": "1ce4a98c7586d73b5572668d5c17031e567fb5d65912ee6c8fe066b552fb7b52",
+      "candidateSha256": "e7bd48048deb48300a8b645bd4c60c10f7874717977fdcbf28c1b10725081bad",
+      "minimumVersion": "0.2.0-alpha.1",
+      "rationale": "Records the intentional React command-state and package-boundary API changes while preserving documented migration paths.",
+      "migrationGuide": "docs/public/migration-0.2.md"
+    },
+    {
+      "id": "candidate-diagnostic-semantics",
+      "surface": "diagnosticSemantics",
+      "path": "cli-help-and-doctor",
+      "classification": "compatible",
+      "axis": "diagnostics",
+      "baselineSha256": "d799efc487d85d0c7037349b57088ee12c01a110dcf27649715a5161f44d1f85",
+      "candidateSha256": "42f3bf4b66c04d12e42acc0290e1c01ab44ae8c86fc7dd64e5cfcf96f38e9cd1",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Strengthens redaction and completeness accounting without changing the public diagnostic command or verdict contract."
+    },
+    {
+      "id": "candidate-mcp-semantics",
+      "surface": "mcpSemantics",
+      "path": "tools-and-doctor",
+      "classification": "compatible",
+      "axis": "diagnostics",
+      "baselineSha256": "5a46f21f40dbea3b41ee10a126c621489c5e0d8c422e8b798ba6e11de2e0db22",
+      "candidateSha256": "0e0d012cfa4c0a12a845bfbc141765c8524718566d070cc8f07d2cee11e491b5",
+      "minimumVersion": "0.1.0-alpha.4",
+      "rationale": "Preserves the read-only MCP tool and doctor semantics while moving transport ownership to the companion package."
     }
   ]
 }

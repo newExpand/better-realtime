@@ -4,3 +4,6 @@ export * from "./resources.ts";
 export * from "./doctor.ts";
 export * from "./query.ts";
 export * from "./hash.ts";
+export * from "./sink.ts";
+export * from "./source.ts";
+export * from "./exporter.ts";

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 const canonicalRemote = "https://github.com/newExpand/better-realtime.git";
+const canonicalIdentityName = "newExpand";
 const publicTag = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const conventionalSubject = /^(?:feat|fix|refactor|chore|docs|test)(?:\([a-z0-9._/-]+\))?!?: [A-Za-z0-9]/u;
 
@@ -29,9 +30,13 @@ export interface PublicHistoryReport {
   headCommit: string;
   subject: string;
   body: string;
+  authorName: string;
   authorEmail: string;
+  committerName: string;
+  committerEmail: string;
   remotes: 0 | 1;
   tags: number;
+  alternates: 0;
   unreachableObjects: 0;
   status: "valid";
 }
@@ -44,10 +49,18 @@ export async function checkPublicHistory(
   options: { baseline?: PublicHistoryBaseline; remoteSnapshot?: PublicRemoteSnapshot } = {},
 ): Promise<PublicHistoryReport> {
   const cwd = resolve(directory);
+  const objectStoreOverride = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY"]
+    .find((name) => process.env[name]);
+  if (objectStoreOverride) throw new Error(`RT_PUBLIC_HISTORY_OBJECT_STORE_ENV_FORBIDDEN:${objectStoreOverride}`);
   const git = async (args: string[]) => (await exec("git", args, { cwd, maxBuffer: 4 * 1024 * 1024 })).stdout.trim();
   if (await git(["status", "--porcelain"])) throw new Error("RT_PUBLIC_HISTORY_DIRTY");
   const branch = await git(["symbolic-ref", "--short", "HEAD"]);
   if (branch !== "main") throw new Error(`RT_PUBLIC_HISTORY_BRANCH_INVALID:${branch}`);
+  const alternatesPath = await git(["rev-parse", "--path-format=absolute", "--git-path", "objects/info/alternates"]);
+  const alternates = await readFile(alternatesPath, "utf8").catch((error: NodeJS.ErrnoException) =>
+    error.code === "ENOENT" ? "" : Promise.reject(error)
+  );
+  if (alternates.trim()) throw new Error("RT_PUBLIC_HISTORY_ALTERNATES_FORBIDDEN");
   if (!expectedAuthorEmail) throw new Error("RT_PUBLIC_HISTORY_AUTHOR_EMAIL_REQUIRED");
   if (!expectedRootCommit || !/^[0-9a-f]{40}$/u.test(expectedRootCommit)) throw new Error("RT_PUBLIC_HISTORY_ROOT_EXPECTATION_REQUIRED");
   if (expectedBaseCommit !== undefined && !/^[0-9a-f]{40}$/u.test(expectedBaseCommit)) throw new Error("RT_PUBLIC_HISTORY_BASE_EXPECTATION_INVALID");
@@ -73,18 +86,21 @@ export async function checkPublicHistory(
     throw new Error(`RT_PUBLIC_HISTORY_INITIAL_ROOT_INVALID:${commitCount}:${headCommit}`);
   }
 
-  const records = (await git(["log", "--format=%H%x1f%s%x1f%b%x1f%ae%x1e", "HEAD"]))
+  const records = (await git(["log", "--format=%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1e", "HEAD"]))
     .split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => record.split("\x1f"));
   if (records.length !== commitCount) throw new Error("RT_PUBLIC_HISTORY_LOG_INVALID");
   const bodyRequiredCommits = new Set(expectedBaseCommit
     ? (await git(["rev-list", `${expectedBaseCommit}..HEAD`])).split("\n").filter(Boolean)
     : [headCommit]);
-  for (const [commit, subject, body, authorEmail] of records) {
+  for (const [commit, subject, body, authorName, authorEmail, committerName, committerEmail] of records) {
     if (!subject || !conventionalSubject.test(subject)) throw new Error(`RT_PUBLIC_HISTORY_SUBJECT_INVALID:${commit}:${subject ?? ""}`);
     if (bodyRequiredCommits.has(commit ?? "") && !body) throw new Error(`RT_PUBLIC_HISTORY_BODY_REQUIRED:${commit}`);
     if (/[^\x09\x0a\x0d\x20-\x7e]/u.test(`${subject}\n${body}`)) throw new Error(`RT_PUBLIC_HISTORY_MESSAGE_NON_ENGLISH:${commit}`);
+    if (authorName !== canonicalIdentityName) throw new Error(`RT_PUBLIC_HISTORY_AUTHOR_NAME_MISMATCH:${commit}:${authorName ?? ""}`);
     if (authorEmail?.toLocaleLowerCase("en-US") === "support@byteloft.app") throw new Error("RT_PUBLIC_HISTORY_CONDUCT_EMAIL_FORBIDDEN");
     if (authorEmail?.toLocaleLowerCase("en-US") !== expectedAuthorEmail.toLocaleLowerCase("en-US")) throw new Error(`RT_PUBLIC_HISTORY_AUTHOR_EMAIL_MISMATCH:${commit}:${authorEmail ?? ""}`);
+    if (committerName !== canonicalIdentityName) throw new Error(`RT_PUBLIC_HISTORY_COMMITTER_NAME_MISMATCH:${commit}:${committerName ?? ""}`);
+    if (committerEmail?.toLocaleLowerCase("en-US") !== expectedAuthorEmail.toLocaleLowerCase("en-US")) throw new Error(`RT_PUBLIC_HISTORY_COMMITTER_EMAIL_MISMATCH:${commit}:${committerEmail ?? ""}`);
   }
 
   const remotes = (await git(["remote"])).split("\n").filter(Boolean);
@@ -132,7 +148,26 @@ export async function checkPublicHistory(
   const unreachable = (await git(["fsck", "--unreachable", "--no-reflogs"])).split("\n").filter(Boolean);
   if (unreachable.length) throw new Error(`RT_PUBLIC_HISTORY_UNREACHABLE_OBJECTS:${unreachable.length}`);
   const latest = records[0]!;
-  return { schemaVersion: "1.1", branch: "main", commitCount, appendedCommits, rootCommit: expectedRootCommit, baseCommit: expectedBaseCommit ?? null, headCommit, subject: latest[1]!, body: latest[2]!, authorEmail: latest[3]!, remotes: remotes.length as 0 | 1, tags: tags.length, unreachableObjects: 0, status: "valid" };
+  return {
+    schemaVersion: "1.1",
+    branch: "main",
+    commitCount,
+    appendedCommits,
+    rootCommit: expectedRootCommit,
+    baseCommit: expectedBaseCommit ?? null,
+    headCommit,
+    subject: latest[1]!,
+    body: latest[2]!,
+    authorName: latest[3]!,
+    authorEmail: latest[4]!,
+    committerName: latest[5]!,
+    committerEmail: latest[6]!,
+    remotes: remotes.length as 0 | 1,
+    tags: tags.length,
+    alternates: 0,
+    unreachableObjects: 0,
+    status: "valid"
+  };
 }
 
 async function loadBaseline(): Promise<PublicHistoryBaseline> {

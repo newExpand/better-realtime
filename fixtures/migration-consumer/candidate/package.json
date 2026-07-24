@@ -1,0 +1,10 @@
+{
+  "name": "better-realtime-alpha2-migration-after",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit false --outDir dist",
+    "run": "node runtime-check.mjs"
+  }
+}

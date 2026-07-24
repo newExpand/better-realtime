@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://better-realtime.dev/spec/contract/v1/manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "schemaDialect", "contractId", "manifestVersion", "streams", "commands"],
+  "properties": {
+    "protocol": { "const": "1.0" },
+    "schemaDialect": { "const": "https://json-schema.org/draft/2020-12/schema" },
+    "contractId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "manifestVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "streams": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/stream" }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/command" }
+    }
+  },
+  "$defs": {
+    "schemaIdentity": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*@[1-9][0-9]*$"
+    },
+    "jsonSchema": {
+      "type": "object",
+      "required": ["$schema"],
+      "properties": {
+        "$schema": { "const": "https://json-schema.org/draft/2020-12/schema" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "payload"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaIdentity" },
+        "payload": { "$ref": "#/$defs/jsonSchema" }
+      }
+    },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "inputSchema", "snapshot", "snapshotSchema", "ordering", "materialization", "events"],
+      "properties": {
+        "input": { "$ref": "#/$defs/jsonSchema" },
+        "inputSchema": { "$ref": "#/$defs/schemaIdentity" },
+        "snapshot": { "$ref": "#/$defs/jsonSchema" },
+        "snapshotSchema": { "$ref": "#/$defs/schemaIdentity" },
+        "ordering": { "const": "per_stream" },
+        "materialization": { "enum": ["state", "state_reducer_v1"] },
+        "state": { "$ref": "#/$defs/jsonSchema" },
+        "stateSchema": { "$ref": "#/$defs/schemaIdentity" },
+        "events": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/event" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "materialization": { "const": "state_reducer_v1" } } },
+          "then": {
+            "properties": {
+              "state": { "$ref": "#/$defs/jsonSchema" },
+              "stateSchema": { "$ref": "#/$defs/schemaIdentity" }
+            },
+            "required": ["state", "stateSchema"]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["state"] },
+                { "required": ["stateSchema"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "resultSchema", "input", "result"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaIdentity" },
+        "resultSchema": { "$ref": "#/$defs/schemaIdentity" },
+        "input": { "$ref": "#/$defs/jsonSchema" },
+        "result": { "$ref": "#/$defs/jsonSchema" }
+      }
+    }
+  }
+}

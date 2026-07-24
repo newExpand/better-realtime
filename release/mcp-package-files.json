@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "package": "better-realtime-mcp",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist/bin.d.ts",
+    "dist/bin.js",
+    "dist/index.d.ts",
+    "dist/index.js",
+    "dist/node-runtime-B8zRgaCV.js",
+    "dist/node-runtime.d.ts",
+    "dist/node-runtime.js",
+    "dist/src-DCBvBsN2.js",
+    "package.json"
+  ]
+}

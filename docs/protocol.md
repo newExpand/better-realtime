@@ -213,6 +213,10 @@ The snapshot provider MUST obtain state and cursor from one atomically consisten
 
 Recovery buffering is bounded by negotiated record and byte limits. Overflow emits `RT_RECOVERY_OVERFLOW`, discards the partial recovery attempt, and starts a new fenced snapshot or fails explicitly. It MUST NOT drop records and declare the stream live.
 
+The `state_reducer_v1` contract materialization mode uses the existing `stream.snapshot.state` payload to carry a framework-owned object containing domain state and the included sequence. This is a payload-schema choice declared by the exact contract manifest, not a new v1 frame field and not a reinterpretation of an existing contract. An alpha.4 peer with a different manifest digest therefore rejects that contract with `RT_CONTRACT_INCOMPATIBLE`; it cannot silently treat the envelope as domain state. A transport-independent SDK may implement the same envelope from the portable manifest. Any future change that asks an old peer to infer a new snapshot or recovery meaning without an exact contract mismatch requires a new capability or `better-realtime.v2`.
+
+The language-neutral manifest shape is [machine-readable](../spec/contract/v1/manifest.schema.json). The [state-stream conformance vector](../conformance/v1/fixtures/state-stream-manifest.json) fixes the complete canonical manifest, framework snapshot-schema identity, and SHA-256 manifest digest. SDKs canonicalize JSON by recursively sorting object keys, preserving array order, and hashing the resulting UTF-8 bytes; they do not reproduce TypeScript source, reducer functions, declaration order, or minified names. A new SDK must reproduce that vector before claiming exact-contract interoperability.
+
 ## Commands
 
 ```json
@@ -246,6 +250,8 @@ After an uncertain delivery or a reconnect, the client sends `command.status.req
 A client validates the declared command-result schema identity and payload before transitioning the local attempt to `completed` or recording success evidence. A schema-name or payload mismatch rejects the local attempt as a contract failure; neither `completed` nor `observed` may be claimed from that message. Consumers may await either settlement boundary independently, so an implementation must own rejection handling for the boundary the consumer does not select.
 
 `observed` is a client-derived state: the command's declared causal completion condition has been applied by that client. A command may declare one causal event, several events, or an event-free completion receipt. Causal event identity and any snapshot-inclusion position are producer-issued; application payload metadata such as `commandId` is not causal proof. Each transmission attempt uses a unique `commandAttemptId`, while retry reuses the stable command ID.
+
+The number of events emitted by a command is not itself a protocol-version boundary. Protocol v1 already represents an empty, singleton, or bounded multi-event causal vector in completion and status records. A server implementation MUST create that vector from the committed command/event relation, preserve stream and sequence positions, and use the same vector during ACK-loss reconciliation. It MUST NOT collapse a multi-event command into one representative event or derive causality from application payload fields.
 
 Requirements:
 

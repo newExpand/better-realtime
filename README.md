@@ -7,7 +7,7 @@ Contract-first realtime for React and Node. Recovery you can prove.
 
 Build typed live streams and commands on native WebSocket without rewriting replay, deduplication, snapshot recovery, and command reconciliation for every feature. For declared capabilities, the verified PostgreSQL profile restores React state after recoverable interruptions and emits machine-readable evidence when recovery cannot be proven.
 
-> `0.1.0-alpha.4` is an evaluation release, not a production-ready declaration. Check the [alpha support matrix](docs/public/support-matrix.md) and [stability policy](docs/public/stability.md) before production use.
+> `0.1.0-alpha.4` is the current published evaluation release. This source tree prepares the unpublished `0.2.0-alpha.1` candidate; do not infer npm availability from the repository version. Check the [0.2 migration guide](docs/public/migration-0.2.md), [alpha support matrix](docs/public/support-matrix.md), and [stability policy](docs/public/stability.md) before production use.
 
 [Read the quickstart](docs/public/quickstart.md) · [Run the verified journey](#run-the-verified-recovery-journey) · [Check alpha support](#alpha-support-matrix) · [Review production boundaries](docs/public/production-deployment.md)
 
@@ -22,33 +22,37 @@ Build typed live streams and commands on native WebSocket without rewriting repl
 
 Better Realtime is not a cache, local database, general synchronization engine, or exactly-once network transport.
 
-## Install the alpha
+## Install the 0.2 candidate
 
-Alpha releases use the npm `alpha` dist-tag. Run this only after `0.1.0-alpha.4` appears in [npm package versions](https://www.npmjs.com/package/better-realtime?activeTab=versions). An npm `E404` means the approval-gated publication has not completed; it does not reserve the name.
+After `0.2.0-alpha.1` appears in the npm version lists, install only the profile each process runs. Before publication, use the exact local candidate tarballs; an npm `E404` is expected and does not reserve either package name.
 
 ```sh
-npm install better-realtime@alpha react pg ws
+# Browser/React
+npm install better-realtime@0.2.0-alpha.1 react
+
+# Node/PostgreSQL gateway
+npm install better-realtime@0.2.0-alpha.1 pg ws
+
+# Local read-only stdio diagnostics
+npm install better-realtime-mcp@0.2.0-alpha.1
 ```
 
-This is the full React + Node/PostgreSQL profile. The package is ESM-only and requires Node.js 22 or newer. Accepted peer ranges are React `>=18.2 <20`, `pg >=8.22 <9`, and `ws >=8.21.1 <9`; the actual alpha evidence covers React 19, Node 22.19, PostgreSQL 18.4, and Chromium. Deploy the PostgreSQL migration before runtime startup and configure an exact browser Origin allowlist.
+The browser-capable base package has no package-wide Node engine. Node gateways and the MCP companion require Node.js 22 or newer. React, `pg`, and `ws` are optional peers, so browser-only consumers do not install PostgreSQL, `ws`, or MCP dependencies. Deploy storage v2 with a migration role before runtime startup and configure an exact browser Origin allowlist.
 
 ## Contract and client example
 
 The shared contract carries both TypeScript inference and Draft 2020-12 runtime validation:
 
 ```ts
-import { command, defineRealtimeContract, jsonSchema, stream } from "better-realtime"
+import { command, defineRealtimeContract, jsonSchema, stateStream } from "better-realtime"
 
 const roomInput = jsonSchema("example.room.input@1", {
   type: "object", additionalProperties: false, required: ["roomId"],
   properties: { roomId: { type: "string", minLength: 1 } },
 })
-const roomState = jsonSchema("example.room.state@1", {
-  type: "object", additionalProperties: false, required: ["messages", "sequence"],
-  properties: {
-    messages: { type: "array", items: { type: "string" } },
-    sequence: { type: "integer", minimum: 0 },
-  },
+const roomState = jsonSchema("example.room.state@2", {
+  type: "object", additionalProperties: false, required: ["messages"],
+  properties: { messages: { type: "array", items: { type: "string" } } },
 })
 const messageAdded = jsonSchema("example.message-added@1", {
   type: "object", additionalProperties: false, required: ["text"],
@@ -66,16 +70,17 @@ const sendResult = jsonSchema("example.send.result@1", {
 export const contract = defineRealtimeContract({
   contractId: "example.chat",
   manifestVersion: "1.0.0",
-  streams: { room: stream({
+  streams: { room: stateStream({
     input: roomInput,
-    snapshot: roomState,
-    events: { messageAdded },
+    state: roomState,
     key: ({ roomId }) => `room:${roomId}`,
-    initial: () => ({ messages: [], sequence: 0 }),
-    applyEvent: (state, event) => ({
-      messages: [...state.messages, event.data.text], sequence: event.sequence,
-    }),
-    snapshotSequence: (state) => state.sequence,
+    initial: () => ({ messages: [] }),
+    events: {
+      messageAdded: {
+        data: messageAdded,
+        reduce: (state, event) => ({ messages: [...state.messages, event.text] }),
+      },
+    },
   }) },
   commands: { sendMessage: command({ input: sendInput, result: sendResult }) },
 })
@@ -93,21 +98,20 @@ const client = createRealtimeClient(contract, {
   auth: () => ({ accessToken: sessionStorage.getItem("access-token") }),
 })
 export const realtime = createRealtimeReact(client)
-await client.connect()
 
 function Room({ roomId }: { roomId: string }) {
-  const room = realtime.useStream("room", { roomId })
-  const sendMessage = realtime.useCommand("sendMessage")
+  const messageCount = realtime.useStream("room", { roomId }, {
+    select: (snapshot) => snapshot.data.messages.length,
+  })
+  const sendMessage = realtime.useCommand("sendMessage", { pendingUntil: "observed" })
   const send = async () => {
-    const attempt = sendMessage.execute({ roomId, text: "Hello" })
-    await attempt.completed // durable command result
-    await attempt.observed  // causal stream event applied locally
+    await sendMessage.executeAsync({ roomId, text: "Hello" })
   }
-  return <button onClick={send}>Send ({room.data.messages.length})</button>
+  return <button disabled={sendMessage.isPending} onClick={send}>Send ({messageCount})</button>
 }
 ```
 
-The Node gateway imports `createRealtimeServer` and `postgres` from `better-realtime/server` and implements the same contract. See the copy-paste [quickstart](docs/public/quickstart.md), [server handlers](docs/public/server.md), and [PostgreSQL deployment](docs/public/postgres.md).
+Subscriptions and commands connect on demand; `client.connect()` remains an explicit warm-up/readiness operation. The Node gateway imports `createRealtimeServer` and `postgres` from `better-realtime/server`, declares every command target before the framework-owned transaction, and implements the same contract. See the copy-paste [quickstart](docs/public/quickstart.md), [server handlers](docs/public/server.md), [PostgreSQL deployment](docs/public/postgres.md), and [0.2 migration guide](docs/public/migration-0.2.md).
 
 ## Why recovery is different
 

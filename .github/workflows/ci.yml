@@ -25,6 +25,7 @@ jobs:
       - run: pnpm check
       - run: pnpm compatibility:check
       - run: pnpm package:clean-room
+      - run: pnpm package:clean-room:isolation
       - run: pnpm package:export-public
       - run: pnpm audit --audit-level=high
 
@@ -38,6 +39,7 @@ jobs:
           package-manager-cache: false
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
       - run: pnpm test:postgres:docker
       - run: pnpm compatibility:matrix
+      - run: pnpm e2e

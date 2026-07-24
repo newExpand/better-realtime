@@ -112,6 +112,15 @@ importers:
         specifier: 8.20.0
         version: 8.20.0
 
+  packages/mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(zod@4.4.3)
+      better-realtime:
+        specifier: workspace:*
+        version: link:../runtime
+
   packages/protocol:
     dependencies:
       ajv:
@@ -132,9 +141,6 @@ importers:
 
   packages/runtime:
     dependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: 1.29.0
-        version: 1.29.0(zod@4.4.3)
       '@realtime/core':
         specifier: workspace:*
         version: link:../core
@@ -150,9 +156,6 @@ importers:
       '@realtime/transport-reference':
         specifier: workspace:*
         version: link:../transport-reference
-      '@types/pg':
-        specifier: 8.20.0
-        version: 8.20.0
       ajv:
         specifier: 8.20.0
         version: 8.20.0
@@ -166,6 +169,9 @@ importers:
         specifier: '>=8.21.1 <9'
         version: 8.21.1
     devDependencies:
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1

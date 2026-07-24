@@ -3,7 +3,7 @@ import React, { StrictMode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { command, createRealtimeClient, defineRealtimeContract, jsonSchema, stream, type RealtimeClient, type WebSocketConstructor } from "../src/index.ts";
+import { command, createRealtimeClient, defineRealtimeContract, jsonSchema, stream, type RealtimeClient, type RuntimeSnapshot, type StreamSnapshot, type WebSocketConstructor } from "../src/index.ts";
 import { createRealtimeReact } from "../src/react.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -120,6 +120,126 @@ describe("contract React lifecycle", () => {
     expect(active).toBe(1);
     await act(async () => root.unmount());
     expect(active).toBe(0);
+  });
+
+  it("selects stream state without rerendering for equal selections", async () => {
+    let source = Object.freeze({ data: Object.freeze({ sequence: 1 }), status: "live", cursor: "cursor_1", sequence: 1, error: null, bufferedRecords: 0, bufferedBytes: 0 }) as StreamSnapshot<{ sequence: number }>;
+    const listeners = new Set<() => void>();
+    let subscriptions = 0;
+    const fakeClient = {
+      contract,
+      stream: () => ({
+        key: "room:42",
+        subscribe: (listener: () => void) => { subscriptions += 1; listeners.add(listener); return () => listeners.delete(listener); },
+        getSnapshot: () => source
+      })
+    } as unknown as RealtimeClient<typeof contract>;
+    const realtime = createRealtimeReact(fakeClient);
+    let renders = 0;
+    const App = () => {
+      renders += 1;
+      const selected = realtime.useStream("room", { roomId: "42" }, { select: (snapshot) => snapshot.data.sequence });
+      return <span>{selected}</span>;
+    };
+    const element = document.createElement("div"); document.body.append(element);
+    const root = createRoot(element);
+    await act(async () => root.render(<App />));
+    expect(renders).toBe(1);
+    source = Object.freeze({ ...source, status: "replaying", bufferedRecords: 1 });
+    await act(async () => listeners.forEach((listener) => listener()));
+    expect(renders).toBe(1);
+    source = Object.freeze({ ...source, data: Object.freeze({ sequence: 2 }), sequence: 2 });
+    await act(async () => listeners.forEach((listener) => listener()));
+    expect(renders).toBe(2);
+    expect(element.textContent).toBe("2");
+    expect(subscriptions).toBe(1);
+    await act(async () => root.unmount());
+    expect(listeners.size).toBe(0);
+  });
+
+  it("uses command-scoped pending state and explicit completion boundaries", async () => {
+    type Activity = ReturnType<RealtimeClient<typeof contract>["commandSnapshot"]>;
+    let runtime = Object.freeze({ connectionState: "idle", sessionState: "absent", sessionGeneration: 0, pendingCount: 0 }) as RuntimeSnapshot;
+    let activity: Activity = Object.freeze({
+      completionPendingCount: 0,
+      observationPendingCount: 0,
+      lastAttempt: null,
+      lastError: null
+    });
+    const runtimeListeners = new Set<() => void>();
+    const commandListeners = new Set<() => void>();
+    let command = 0;
+    let phase = "idle";
+    const fakeClient = {
+      contract,
+      subscribeRuntime: (listener: () => void) => { runtimeListeners.add(listener); return () => runtimeListeners.delete(listener); },
+      runtimeSnapshot: () => runtime,
+      subscribeCommand: (_name: string, listener: () => void) => { commandListeners.add(listener); return () => commandListeners.delete(listener); },
+      commandSnapshot: () => activity,
+      execute: () => {
+        command += 1;
+        const commandId = `command_${command}`;
+        let resolveCompleted!: (value: null) => void;
+        let resolveObserved!: () => void;
+        const completed = new Promise<null>((resolve) => { resolveCompleted = resolve; });
+        const observed = new Promise<void>((resolve) => { resolveObserved = resolve; });
+        activity = Object.freeze({
+          completionPendingCount: 1,
+          observationPendingCount: 1,
+          lastAttempt: Object.freeze({ commandId, state: "sent", deliveryAttempt: 1, createdAt: "2026-01-01T00:00:00.000Z", completionSettled: false, observationSettled: false }),
+          lastError: null
+        });
+        phase = "sent";
+        runtime = Object.freeze({ ...runtime, pendingCount: 1 });
+        commandListeners.forEach((listener) => listener());
+        runtimeListeners.forEach((listener) => listener());
+        queueMicrotask(() => {
+          resolveCompleted(null);
+          phase = "completed";
+          activity = Object.freeze({
+            completionPendingCount: 0,
+            observationPendingCount: 1,
+            lastAttempt: Object.freeze({ ...activity.lastAttempt!, state: "completed", completionSettled: true }),
+            lastError: null
+          });
+          commandListeners.forEach((listener) => listener());
+          queueMicrotask(() => {
+            resolveObserved();
+            phase = "observed";
+            activity = Object.freeze({
+              completionPendingCount: 0,
+              observationPendingCount: 0,
+              lastAttempt: Object.freeze({ ...activity.lastAttempt!, state: "observed", observationSettled: true }),
+              lastError: null
+            });
+            runtime = Object.freeze({ ...runtime, pendingCount: 0 });
+            commandListeners.forEach((listener) => listener());
+            runtimeListeners.forEach((listener) => listener());
+          });
+        });
+        return { commandId, get state() { return activity.lastAttempt!.state; }, completed, observed };
+      }
+    } as unknown as RealtimeClient<typeof contract>;
+    const realtime = createRealtimeReact(fakeClient);
+    const observations: string[] = [];
+    const settlementPhases: string[] = [];
+    const App = () => {
+      const action = realtime.useCommand("noop", { pendingUntil: "observed" });
+      observations.push(`${action.pendingCount}:${action.lastAttempt?.state ?? "none"}`);
+      return <button onClick={() => void action.executeAsync(null).then(() => settlementPhases.push(phase))}>{String(action.isPending)}</button>;
+    };
+    const element = document.createElement("div"); document.body.append(element);
+    const root = createRoot(element);
+    await act(async () => root.render(<App />));
+    expect(runtimeListeners.size).toBe(0);
+    await act(async () => { element.querySelector("button")!.click(); await delay(10); });
+    expect(observations).toContain("1:sent");
+    expect(observations).toContain("1:completed");
+    expect(observations.at(-1)).toBe("0:observed");
+    expect(settlementPhases).toEqual(["observed"]);
+    await act(async () => root.unmount());
+    expect(commandListeners.size).toBe(0);
+    expect(runtimeListeners.size).toBe(0);
   });
 });
 
