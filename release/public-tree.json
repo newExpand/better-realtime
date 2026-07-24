@@ -299,8 +299,8 @@
     },
     {
       "path": "examples/recovery-demo/src/App.tsx",
-      "bytes": 13891,
-      "digest": "sha256:f2601b724b89a4c17ac6099ca9f3e0698d19947068f03d7079bdf2ae151ba3bc"
+      "bytes": 14000,
+      "digest": "sha256:88c7c23a5ca210767a387fb745e79b2e6e2f2bd0021d008ac3159c91a22200c6"
     },
     {
       "path": "examples/recovery-demo/src/command-doctor.ts",
@@ -1224,8 +1224,8 @@
     },
     {
       "path": "scripts/run-two-gateway-dev.sh",
-      "bytes": 4647,
-      "digest": "sha256:de7a01979a6c2566003cca4c6c9b9b30ded17dc6e856c5bf0c3cca32dd95f9a9"
+      "bytes": 4943,
+      "digest": "sha256:72e40e95b8e331d12dc0887522f3fb819996415887a41e1d6ded6f944a656e3b"
     },
     {
       "path": "scripts/test-postgres-docker.sh",
@@ -1319,8 +1319,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 3074,
-      "digest": "sha256:595cc11bdd5cc737eff114021a544f0954f0a5d4148b2949e30390e6516fd087"
+      "bytes": 4024,
+      "digest": "sha256:fcf5f098531474306c85d2e679163c9d3c6fe5ac967c99d548dde23a2cd048c0"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1354,8 +1354,8 @@
     },
     {
       "path": "tests/docker-harness-cleanup.test.ts",
-      "bytes": 17231,
-      "digest": "sha256:5c95ce81bb47ea729c0f64d32544279f1f24ef1c329323f345bd056daa1fc70f"
+      "bytes": 17369,
+      "digest": "sha256:0721b943c1a766da42598ed0df22ab83dac363a6484d8e6c722bfbda4b375689"
     },
     {
       "path": "tests/e2e/global-teardown.ts",
@@ -1364,8 +1364,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 16669,
-      "digest": "sha256:2686971e1fea473e22b0a005d917bbe1f1aa7d0941578032d05a9ebe5c89da4a"
+      "bytes": 17090,
+      "digest": "sha256:6e7ac775687d217d0502a3f5d3607eeaa5f7f9d60b6bf3ce43776d679f84d5aa"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",

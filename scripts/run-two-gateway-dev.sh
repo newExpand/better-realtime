@@ -61,6 +61,7 @@ child_ready=0
 readiness_file=
 requested_signal=
 requested_exit_status=0
+signal_shutdown_started=0
 signal_grace_seconds=${REALTIME_HARNESS_SIGNAL_GRACE_SECONDS:-5}
 if [[ ! "$signal_grace_seconds" =~ ^[1-9][0-9]?$ ]] || (( signal_grace_seconds > 30 )); then
   echo "refusing an invalid harness signal grace period" >&2
@@ -77,12 +78,30 @@ signal_child_group() {
     kill -s "$signal" "$child_pid" 2>/dev/null || true
   fi
 }
+terminate_child_group() {
+  local signal=$1
+  local signal_poll_limit=$((signal_grace_seconds * 20))
+  local signal_poll_attempt
+  signal_child_group "$signal"
+  for ((signal_poll_attempt = 0; signal_poll_attempt < signal_poll_limit; signal_poll_attempt += 1)); do
+    if ! process_group_alive; then
+      break
+    fi
+    sleep 0.05
+  done
+  if process_group_alive; then
+    signal_child_group KILL
+  fi
+}
 forward_signal() {
   local signal=$1 status=$2
-  requested_signal=$signal
-  requested_exit_status=$status
-  if (( child_ready == 1 )); then
-    signal_child_group "$signal"
+  if (( requested_exit_status == 0 )); then
+    requested_signal=$signal
+    requested_exit_status=$status
+  fi
+  if (( child_ready == 1 && signal_shutdown_started == 0 )); then
+    signal_shutdown_started=1
+    terminate_child_group "$requested_signal"
   fi
 }
 
@@ -129,22 +148,13 @@ fi
 rm -f -- "$readiness_file"
 readiness_file=
 if [[ -n "$requested_signal" ]]; then
-  signal_child_group "$requested_signal"
+  signal_shutdown_started=1
+  terminate_child_group "$requested_signal"
 fi
 set +e
 wait "$child_pid"
 child_status=$?
 if (( requested_exit_status != 0 )); then
-  signal_poll_limit=$((signal_grace_seconds * 20))
-  for ((signal_poll_attempt = 0; signal_poll_attempt < signal_poll_limit; signal_poll_attempt += 1)); do
-    if ! process_group_alive; then
-      break
-    fi
-    sleep 0.05
-  done
-  if process_group_alive; then
-    signal_child_group KILL
-  fi
   wait "$child_pid" 2>/dev/null
   child_pid=
   set +m

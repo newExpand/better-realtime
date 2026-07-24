@@ -52,7 +52,9 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   const initialSequence = await sequence(page);
   await page.getByRole("button", { name: "Drain Gateway A" }).click();
   await expect(page.getByTestId("connection-status")).toHaveText(/Reconnecting/, { timeout: 10_000 });
-  await page.getByRole("button", { name: "Enable Gateway B" }).click();
+  const enableGateway = page.getByRole("button", { name: "Enable Gateway B" });
+  await enableGateway.click();
+  await expect(enableGateway).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
   await expect.poll(() => sequence(page)).toBe(initialSequence + 3);
   await expect(page.getByTestId("timeline").getByText("Missed while Gateway A drained: event A.")).toBeVisible();
@@ -70,6 +72,7 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   await expect(page.getByText("Recovered from a deliberately missed NOTIFY wake-up.")).toBeVisible();
 
   await page.getByRole("button", { name: "Lose ACK" }).click();
+  await expect(page.getByText("Next command will reconcile by stable command ID")).toBeVisible();
   await page.getByLabel("Message").fill("Browser ACK loss still converges exactly once.");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
@@ -107,9 +110,12 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
 
   const beforeSnapshot = await sequence(page);
   await page.getByRole("button", { name: "Expire cursor" }).click();
+  await expect(page.getByText("Next reconnect selects fenced snapshot")).toBeVisible();
   await page.getByRole("button", { name: /Drain Gateway/ }).click();
   await expect(page.getByTestId("connection-status")).toHaveText(/Reconnecting/, { timeout: 10_000 });
-  await page.getByRole("button", { name: /Enable Gateway/ }).click();
+  const reenableGateway = page.getByRole("button", { name: /Enable Gateway/ });
+  await reenableGateway.click();
+  await expect(reenableGateway).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
   await expect.poll(() => sequence(page)).toBe(beforeSnapshot + 2);
   await expect(page.getByText("snapshot.applied").first()).toBeVisible();
@@ -117,7 +123,7 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
 
   const beforeSigkill = await sequence(page);
   await page.getByRole("button", { name: "SIGKILL active" }).click();
-  await expect(page.getByTestId("connection-status")).toHaveText(/Reconnecting/, { timeout: 10_000 });
+  await expect(page.getByText("State converges; missing producer evidence stays indeterminate")).toBeVisible();
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
   await expect.poll(() => sequence(page)).toBe(beforeSigkill + 1);
   await expect(page.getByText("Recovered after abrupt gateway SIGKILL.")).toBeVisible();

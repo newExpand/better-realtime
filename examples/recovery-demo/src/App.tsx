@@ -34,8 +34,9 @@ export function App() {
   const doctorCompleteness = serverDoctorCompleteness === "partial" ? "partial" : hasObservedCommand ? commandDoctor?.completeness.status ?? "partial" : serverDoctorCompleteness ?? "loading";
 
   async function chaos(action: ChaosAction) {
+    const response = await fetch(`/api/chaos/${action}`, { method: "POST" });
+    if (!response.ok) throw new Error(`chaos action failed: ${action}:${response.status}`);
     setSelectedChaos(action);
-    await fetch(`/api/chaos/${action}`, { method: "POST" });
     if (action === "duplicate") setScenarios((items) => [{ label: "Duplicate delivery", result: "Event identity retained; reducer effect unchanged", at: new Date().toISOString() }, ...items].slice(0, 3));
     if (action === "lose-ack") setScenarios((items) => [{ label: "ACK loss armed", result: "Next command will reconcile by stable command ID", at: new Date().toISOString() }, ...items].slice(0, 3));
     if (action === "expire-cursor") setScenarios((items) => [{ label: "Cursor expired", result: "Next reconnect selects fenced snapshot", at: new Date().toISOString() }, ...items].slice(0, 3));

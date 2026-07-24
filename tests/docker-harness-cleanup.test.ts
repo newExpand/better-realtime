@@ -47,10 +47,11 @@ it("uses portable Bash for the public two-gateway development path", async () =>
   const rememberedSignalForward = source.indexOf('if [[ -n "$requested_signal" ]]', childAssignment);
   expect(childAssignment).toBeGreaterThan(-1);
   expect(rememberedSignalForward).toBeGreaterThan(childAssignment);
-  expect(source).toContain('if (( child_ready == 1 )); then');
+  expect(source).toContain("child_ready == 1 && signal_shutdown_started == 0");
   expect(source).toContain("better-realtime-two-gateway-ready.XXXXXX");
   expect(source).toContain("signal_child_group KILL");
   expect(source).toContain("signal_poll_limit=$((signal_grace_seconds * 20))");
+  expect(source.indexOf('terminate_child_group "$requested_signal"')).toBeLessThan(source.indexOf('wait "$child_pid"'));
   expect(source).not.toContain("signal_deadline=$((SECONDS");
   await expect(exec("bash", ["-n", resolve("scripts/run-two-gateway-dev.sh")])).resolves.toMatchObject({ stderr: "" });
 });
