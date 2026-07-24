@@ -122,7 +122,9 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
   await expect(page.locator(".fact").filter({ hasText: "Server sessions" })).toContainText("1");
 
   const beforeSigkill = await sequence(page);
-  await page.getByRole("button", { name: "SIGKILL active" }).click();
+  const sigkillButton = page.getByRole("button", { name: "SIGKILL active" });
+  await sigkillButton.click();
+  await expect(sigkillButton).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
   await expect(page.getByText("State converges; missing producer evidence stays indeterminate")).toBeVisible();
   await expect(page.getByTestId("connection-status")).toHaveText(/Live/, { timeout: 15_000 });
   await expect.poll(() => sequence(page)).toBe(beforeSigkill + 1);

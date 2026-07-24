@@ -29,6 +29,14 @@ export async function waitForProcessExit(child: ChildProcess, timeoutMs: number,
   return { ...forced, escalatedToSigkill: true };
 }
 
+export async function terminateWithSigkill(child: ChildProcess, id: string, timeoutMs = 2_000): Promise<ProcessExitObservation> {
+  if (child.exitCode !== null || child.signalCode !== null) throw new Error(`RT_SIGKILL_TARGET_EXITED:${id}`);
+  if (!child.kill("SIGKILL")) throw new Error(`RT_SIGKILL_NOT_DELIVERED:${id}`);
+  const observation = await waitForProcessExit(child, timeoutMs);
+  if (observation.signalCode !== "SIGKILL") throw new Error(`RT_SIGKILL_NOT_OBSERVED:${id}`);
+  return observation;
+}
+
 export function classifyProducerTermination(observation: ProcessExitObservation, evidenceCaptured: boolean): Exclude<ProducerTermination, "running"> {
   if (observation.escalatedToSigkill || observation.signalCode === "SIGKILL") return "sigkill";
   return evidenceCaptured ? "graceful" : "evidence_missing";

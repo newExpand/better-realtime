@@ -889,13 +889,13 @@
     },
     {
       "path": "packages/server-node/src/process-termination.ts",
-      "bytes": 1969,
-      "digest": "sha256:e8b4ff2ea4ae23a68d4063b3a68db5bb2dd04dbce334a77a4073b4d94a987925"
+      "bytes": 2476,
+      "digest": "sha256:e361ef6aa38a5f9ee940dc2381f7de0701486147aa8f19386290a9233913f2a5"
     },
     {
       "path": "packages/server-node/src/recovery-readiness.ts",
-      "bytes": 1767,
-      "digest": "sha256:599340251c821a0035593480bbaa6e56405895555ad6324b1e32f9601eaa8b39"
+      "bytes": 3189,
+      "digest": "sha256:22b63f10968a8ac9aaa1a226c6a24e51425280e71ad51f4a6772500c9d0691e2"
     },
     {
       "path": "packages/server-node/src/server.ts",
@@ -909,8 +909,8 @@
     },
     {
       "path": "packages/server-node/src/two-gateway-dev.ts",
-      "bytes": 29805,
-      "digest": "sha256:5e4d4a1314f6c32e98a44af3b099defd7516abcfb87d4d2a9b758e3243b43c03"
+      "bytes": 31236,
+      "digest": "sha256:540f1f4cbbc18a671c329ad08d3265c405cb616aa3046d8fdae1a84f22eedc2c"
     },
     {
       "path": "packages/server-node/test/application-query.test.ts",
@@ -924,8 +924,8 @@
     },
     {
       "path": "packages/server-node/test/process-termination.test.ts",
-      "bytes": 1244,
-      "digest": "sha256:57608802d0b45276bf43c283403fa50be54b3f22675d13818518cd8b964b0ec2"
+      "bytes": 2438,
+      "digest": "sha256:80e77a114dc74bc021a96ec7e727f48195b4e142bc8527552f01bd3526be298f"
     },
     {
       "path": "packages/server-node/test/validation.test.ts",
@@ -1324,8 +1324,8 @@
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
-      "bytes": 5574,
-      "digest": "sha256:a4a030044a36c29dc01d9615b43c5ab78e2786090f11db58bc68bf1c2021bd72"
+      "bytes": 6139,
+      "digest": "sha256:0b168e9b71b173f44bbccbc80c24c722c7f06517ee11db7ae76eb4819445948c"
     },
     {
       "path": "tests/command-doctor.test.ts",
@@ -1369,8 +1369,8 @@
     },
     {
       "path": "tests/e2e/recovery.spec.ts",
-      "bytes": 17993,
-      "digest": "sha256:3a762bf5b8dd4391ef01e9f596cb1b99263101c97ff3ccdd5ee4c193e23013d4"
+      "bytes": 18124,
+      "digest": "sha256:27d835647d03967d4c93bd0f2e85f87b4e1494cc915c8550d4d5f5f013eabbaa"
     },
     {
       "path": "tests/fixtures/release-identity/artifact.bin",
@@ -1384,8 +1384,8 @@
     },
     {
       "path": "tests/gateway-recovery-readiness.test.ts",
-      "bytes": 1463,
-      "digest": "sha256:26609d2958cd6e19830e7ccd294d1d9c9a43ac5d7a1dee1288f7e722dd3bb024"
+      "bytes": 3523,
+      "digest": "sha256:d94f4eb07801a6c9f0a25be91d808aa01ebc024d6f9a94d56146f55feb82e534"
     },
     {
       "path": "tests/mcp-bootstrap-artifact.test.ts",

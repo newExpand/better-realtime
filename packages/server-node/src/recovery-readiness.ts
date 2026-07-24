@@ -1,10 +1,25 @@
 export interface RecoveryReadinessOptions {
   id: string;
   isExited(): boolean;
-  probe(signal: AbortSignal): Promise<boolean>;
+  probe(signal: AbortSignal): Promise<boolean | RecoveryReadinessObservation>;
   attempts?: number;
   probeTimeoutMs?: number;
   retryDelayMs?: number;
+}
+
+export interface RecoveryReadinessObservation {
+  ready: boolean;
+  reason?: string;
+}
+
+export interface RecoveryCandidateOptions<T> {
+  id: string;
+  current: T | undefined;
+  isExited(candidate: T): boolean;
+  probe(candidate: T, signal: AbortSignal): Promise<boolean | RecoveryReadinessObservation>;
+  stop(candidate: T): Promise<void>;
+  start(): Promise<T>;
+  currentProbeAttempts?: number;
 }
 
 export async function waitForRecoveryReadiness(options: RecoveryReadinessOptions): Promise<void> {
@@ -18,7 +33,7 @@ export async function waitForRecoveryReadiness(options: RecoveryReadinessOptions
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const ready = await Promise.race([
+      const result = await Promise.race([
         options.probe(controller.signal),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => {
@@ -27,7 +42,9 @@ export async function waitForRecoveryReadiness(options: RecoveryReadinessOptions
           }, probeTimeoutMs);
         })
       ]);
-      if (ready) return;
+      const observation = typeof result === "boolean" ? { ready: result } : result;
+      if (observation.ready) return;
+      lastError = new Error(`RT_RECOVERY_GATEWAY_UNREADY:${options.id}:${observation.reason ?? "unspecified"}`);
     } catch (error) {
       lastError = error;
     } finally {
@@ -37,6 +54,32 @@ export async function waitForRecoveryReadiness(options: RecoveryReadinessOptions
   }
 
   throw new Error(`RT_RECOVERY_GATEWAY_NOT_READY:${options.id}`, { cause: lastError });
+}
+
+export async function prepareRecoveryCandidate<T>(options: RecoveryCandidateOptions<T>): Promise<T> {
+  let candidate = options.current;
+  if (candidate && !options.isExited(candidate)) {
+    try {
+      await waitForRecoveryReadiness({
+        id: options.id,
+        isExited: () => options.isExited(candidate!),
+        probe: (signal) => options.probe(candidate!, signal),
+        attempts: options.currentProbeAttempts ?? 2
+      });
+      return candidate;
+    } catch {
+      await options.stop(candidate);
+      candidate = undefined;
+    }
+  }
+
+  candidate = await options.start();
+  await waitForRecoveryReadiness({
+    id: options.id,
+    isExited: () => options.isExited(candidate!),
+    probe: (signal) => options.probe(candidate!, signal)
+  });
+  return candidate;
 }
 
 function boundedInteger(value: number, name: string, minimum: number): number {

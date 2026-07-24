@@ -8,8 +8,8 @@ import { PostgresEventLog } from "@realtime/store-postgres";
 import { doctor, type EvidenceRecord, type ProducerInstance } from "@realtime/diagnostics";
 import { Pool } from "pg";
 import { signDemoCredential, type AuthenticatedPrincipal } from "./demo-auth.ts";
-import { classifyProducerTermination, type ProducerTermination, waitForProcessExit } from "./process-termination.ts";
-import { waitForRecoveryReadiness } from "./recovery-readiness.ts";
+import { classifyProducerTermination, terminateWithSigkill, type ProducerTermination, waitForProcessExit } from "./process-termination.ts";
+import { prepareRecoveryCandidate, waitForRecoveryReadiness, type RecoveryReadinessObservation } from "./recovery-readiness.ts";
 
 const execFileAsync = promisify(execFile);
 const host = "127.0.0.1";
@@ -196,12 +196,10 @@ async function stopGateway(gateway: GatewayProcess, captureEvidence: boolean): P
 }
 
 async function sigkillGateway(gateway: GatewayProcess): Promise<void> {
-  if (gateway.child.exitCode !== null || gateway.child.signalCode !== null) return;
+  await terminateWithSigkill(gateway.child, gateway.id);
   sigkillEvidenceMissing = true;
   const topology = [...expectedTopology].reverse().find((entry) => entry.runtimeId === gateway.id && entry.runtimeBootId === gateway.bootId);
   if (topology) topology.termination = "sigkill";
-  gateway.child.kill("SIGKILL");
-  await waitForProcessExit(gateway.child, 2_000);
 }
 
 async function handleHttp(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -240,6 +238,7 @@ async function handleHttp(incoming: IncomingMessage, response: ServerResponse): 
       await operation;
       json(response, 200, { ok: true, action, activeGateway: lastActive });
     } catch (error) {
+      console.error(JSON.stringify({ chaosActionFailed: true, action, errors: errorChain(error) }));
       json(response, 503, { ok: false, action, error: error instanceof Error ? error.message : String(error) });
     }
     return;
@@ -309,18 +308,21 @@ async function chaos(action: string): Promise<void> {
   if (action === "sigkill") {
     const sigkillTarget = previousActive && previousActive.child.exitCode === null && previousActive.child.signalCode === null ? previousActive : selectGateway();
     if (!sigkillTarget) throw new Error("RT_RECOVERY_GATEWAY_UNAVAILABLE");
+    const otherId = sigkillTarget.id === "gateway-a" ? "gateway-b" : "gateway-a";
+    const recoveryGateway = await prepareRecoveryCandidate({
+      id: otherId,
+      current: gateways.get(otherId),
+      isExited: (gateway) => gateway.child.exitCode !== null || gateway.child.signalCode !== null,
+      probe: (gateway, signal) => probeRecoveryGateway(gateway, signal),
+      stop: (gateway) => stopGateway(gateway, true),
+      start: () => startGateway(otherId)
+    });
     routeEnabled = false;
     await sigkillGateway(sigkillTarget);
-    const otherId = sigkillTarget.id === "gateway-a" ? "gateway-b" : "gateway-a";
-    const recoveryGateway = await startGateway(otherId);
     await waitForRecoveryReadiness({
       id: recoveryGateway.id,
       isExited: () => recoveryGateway.child.exitCode !== null || recoveryGateway.child.signalCode !== null,
-      probe: async (signal) => {
-        const response = await fetch(`http://${host}:${recoveryGateway.port}/health`, { signal });
-        if (!response.ok) return false;
-        return (await response.json() as { status?: unknown }).status === "ready";
-      }
+      probe: (signal) => probeRecoveryGateway(recoveryGateway, signal)
     });
     await appendRoomMessage("System", "Recovered after abrupt gateway SIGKILL.");
     preferred = otherId;
@@ -445,6 +447,31 @@ async function getJson(gateway: GatewayProcess, path: string): Promise<Record<st
   const response = await fetch(`http://${host}:${gateway.port}${path}`);
   if (!response.ok) throw new Error(`${gateway.id} ${path} failed: ${response.status}`);
   return await response.json() as Record<string, unknown>;
+}
+
+async function probeRecoveryGateway(gateway: GatewayProcess, signal: AbortSignal): Promise<RecoveryReadinessObservation> {
+  const response = await fetch(`http://${host}:${gateway.port}/health`, { signal });
+  const health = await response.json() as { status?: unknown };
+  if (response.ok && health.status === "ready") return { ready: true };
+  const inspection = await fetch(`http://${host}:${gateway.port}/api/inspect`, { signal })
+    .then(async (result) => result.ok ? await result.json() as Record<string, unknown> : undefined)
+    .catch(() => undefined);
+  const reason = inspection
+    ? ["accepting", "databaseReady", "listenerReady", "outboxReady", "draining"]
+        .map((key) => `${key}=${String(inspection[key])}`)
+        .join(",")
+    : `status=${String(health.status)},http=${response.status}`;
+  return { ready: false, reason };
+}
+
+function errorChain(error: unknown): string[] {
+  const messages: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current !== undefined; depth += 1) {
+    messages.push(current instanceof Error ? current.message : String(current));
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return messages;
 }
 
 
