@@ -1359,13 +1359,13 @@
     },
     {
       "path": "tests/docker-harness-cleanup.test.ts",
-      "bytes": 17369,
-      "digest": "sha256:0721b943c1a766da42598ed0df22ab83dac363a6484d8e6c722bfbda4b375689"
+      "bytes": 20445,
+      "digest": "sha256:107f4304f1db60dd4145b780ac1b5e6967325e70194c3d4e3dbbdcff91ce25f1"
     },
     {
       "path": "tests/e2e/global-teardown.ts",
-      "bytes": 1751,
-      "digest": "sha256:ee680c3e6d6cde0e27deb1e8062626bb692999d012cd3aac53230f2a57b060d5"
+      "bytes": 5201,
+      "digest": "sha256:2ef5949da4fcc86711e7a2e63fd8cbe2a40b69de9ce6bed6338c9a8963401a4c"
     },
     {
       "path": "tests/e2e/recovery.spec.ts",

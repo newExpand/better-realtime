@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
+import { reconcileOwnedPostgresContainer } from "./e2e/global-teardown.ts";
 
 const exec = promisify(execFile);
 const cleanupOwners = [
@@ -54,6 +55,81 @@ it("uses portable Bash for the public two-gateway development path", async () =>
   expect(source.indexOf('terminate_child_group "$requested_signal"')).toBeLessThan(source.indexOf('wait "$child_pid"'));
   expect(source).not.toContain("signal_deadline=$((SECONDS");
   await expect(exec("bash", ["-n", resolve("scripts/run-two-gateway-dev.sh")])).resolves.toMatchObject({ stderr: "" });
+});
+
+it("lets the runtime finish owned PostgreSQL removal before fallback cleanup", async () => {
+  const containerId = "f".repeat(64);
+  let inspectionCount = 0;
+  let removalCount = 0;
+  const inspectionSelectors: string[] = [];
+  const result = await reconcileOwnedPostgresContainer({
+    containerName: "better-realtime-two-gateway-runtime-removal",
+    ownerToken: "runtime-removal-owner",
+    settleAttempts: 4,
+    wait: async () => undefined,
+    command: async (arguments_) => {
+      if (arguments_[0] === "inspect") {
+        inspectionCount += 1;
+        inspectionSelectors.push(arguments_.at(-1) ?? "");
+        if (inspectionCount <= 2) return { stdout: `${containerId}|runtime-removal-owner\n` };
+        throw Object.assign(new Error("No such object"), { stderr: "Error: No such object" });
+      }
+      removalCount += 1;
+      return { stdout: "" };
+    },
+  });
+  expect(result).toBe("graceful-removal-observed");
+  expect(removalCount).toBe(0);
+  expect(inspectionSelectors).toEqual([
+    "better-realtime-two-gateway-runtime-removal",
+    containerId,
+    containerId,
+  ]);
+});
+
+it("accepts a concurrent owned-container removal only after absence is observed", async () => {
+  const containerId = "9".repeat(64);
+  let removalStarted = false;
+  const result = await reconcileOwnedPostgresContainer({
+    containerName: "better-realtime-two-gateway-concurrent-removal",
+    ownerToken: "concurrent-removal-owner",
+    settleAttempts: 1,
+    wait: async () => undefined,
+    command: async (arguments_) => {
+      if (arguments_[0] === "inspect") {
+        if (removalStarted) {
+          throw Object.assign(new Error("No such container"), { stderr: "Error: No such container" });
+        }
+        return { stdout: `${containerId}|concurrent-removal-owner\n` };
+      }
+      removalStarted = true;
+      throw Object.assign(new Error("removal is already in progress"), {
+        stderr: "Error response from daemon: removal is already in progress",
+      });
+    },
+  });
+  expect(result).toBe("concurrent-removal-observed");
+});
+
+it("fails a non-responsive Docker command within the configured deadline", async () => {
+  const started = Date.now();
+  await expect(reconcileOwnedPostgresContainer({
+    containerName: "better-realtime-two-gateway-hung-docker",
+    ownerToken: "hung-docker-owner",
+    commandTimeoutMs: 10,
+    settleAttempts: 1,
+    wait: async () => undefined,
+    command: () => new Promise(() => undefined),
+  })).rejects.toThrow("RT_DOCKER_COMMAND_TIMEOUT");
+  expect(Date.now() - started).toBeLessThan(500);
+});
+
+it("bounds Playwright teardown HTTP and Docker calls", async () => {
+  const source = await readFile(resolve("tests/e2e/global-teardown.ts"), "utf8");
+  expect(source).toContain("AbortSignal.timeout(2_000)");
+  expect(source).toContain("AbortSignal.timeout(1_000)");
+  expect(source).toContain("RT_DOCKER_COMMAND_TIMEOUT");
+  expect(source).toContain('dockerCommand(["rm", "-f", "-v", "--", containerId])');
 });
 
 it("resolves a symlinked path with spaces and preserves owner-scoped cleanup under a restricted PATH", async () => {
@@ -298,7 +374,7 @@ it("forwards a signal remembered in the pre-launch child assignment window", asy
 
 it.each(cleanupOwners)("removes anonymous Docker volumes in %s", async (path) => {
   const source = await readFile(resolve(path), "utf8");
-  const removalLines = source.split("\n").filter((line) => /docker.*(?:\srm\s|["']rm["'])/u.test(line));
+  const removalLines = source.split("\n").filter((line) => /(?:docker|command).*(?:\srm\s|["']rm["'])/u.test(line));
   expect(removalLines.length).toBeGreaterThan(0);
   for (const line of removalLines) expect(line).toMatch(/(?:--volumes|["' ]-v["' ])/u);
 });
@@ -353,6 +429,6 @@ it.each([
   expect(source).toMatch(/observed_?[Oo]wner/u);
   expect(source).toMatch(/owner_?[Tt]oken/u);
   expect(source).toMatch(/observed_?[Oo]wner[^\n]*(?:==|!==)[^\n]*owner_?[Tt]oken/u);
-  expect(source).toMatch(/(?:docker\s+rm|["']rm["']).*container_?[Ii]d/u);
+  expect(source).toMatch(/(?:(?:docker|command).*(?:\srm\s|["']rm["'])).*container_?[Ii]d/u);
   expect(source).not.toMatch(/(?:docker\s+rm|["']rm["']).*container_?[Nn]ame/u);
 });
