@@ -69,11 +69,44 @@ const jsonBody = (value: unknown): Pick<RequestInit, "body" | "headers"> => ({
 
 interface GitHubAsset { id: number; name: string; digest: string | null; size: number; state: string }
 interface GitHubRelease { id: number; tag_name: string; target_commitish: string; name: string | null; body: string | null; draft: boolean; prerelease: boolean; immutable: boolean; upload_url: string }
-interface GitTagRef { object: { type: string; sha: string } }
+interface GitTagRef { ref?: string; object: { type: string; sha: string } }
 interface GitTagObject { tag: string; message: string; object: { type: string; sha: string } }
 interface CheckRun { id: number; name: string; head_sha: string; external_id: string | null; status: string; conclusion: string | null }
 interface CheckRunsResponse { check_runs: CheckRun[] }
 interface ActionsRun { id: number; run_attempt: number; event: string; path: string; head_sha: string }
+type DetailedTagObservation =
+  | { state: "absent" }
+  | { state: "pending_object"; objectSha: string }
+  | { state: "mismatch"; reason: string }
+  | { state: "exact"; objectSha: string; targetSha: string };
+
+function boundedInteger(name: string, fallback: number, minimum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!/^(0|[1-9][0-9]*)$/u.test(raw)) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_CONFIGURATION_INVALID:${name}`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > 120_000) {
+    throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_CONFIGURATION_INVALID:${name}`);
+  }
+  return value;
+}
+
+async function waitForVisibility<T>(label: string, observeValue: () => Promise<T | undefined>): Promise<T> {
+  const attempts = boundedInteger("RELEASE_PROVIDER_SETTLE_ATTEMPTS", 20, 1);
+  const delayMs = boundedInteger("RELEASE_PROVIDER_SETTLE_DELAY_MS", 1_000, 0);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const value = await observeValue();
+    if (value !== undefined) return value;
+    if (attempt === attempts) break;
+    if (delayMs > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
+  }
+  throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_${label}_VISIBILITY_TIMEOUT`);
+}
+
+function assertProviderConfiguration(): void {
+  boundedInteger("RELEASE_PROVIDER_SETTLE_ATTEMPTS", 20, 1);
+  boundedInteger("RELEASE_PROVIDER_SETTLE_DELAY_MS", 1_000, 0);
+}
 
 async function loadIdentity(): Promise<ApprovedReleaseBundle> {
   const path = process.env.RELEASE_BUNDLE_IDENTITY_FILE;
@@ -83,18 +116,48 @@ async function loadIdentity(): Promise<ApprovedReleaseBundle> {
   return identity;
 }
 
-async function observeTag(identity: ApprovedReleaseBundle): Promise<ObservedReleaseBundleState["tag"]> {
+async function readTag(identity: ApprovedReleaseBundle): Promise<DetailedTagObservation> {
   const ref = await optional<GitTagRef>(`repos/${identity.repository}/git/ref/tags/${encodeURIComponent(identity.tag)}`);
   if (!ref) return { state: "absent" };
   if (ref.object.type !== "tag") return { state: "mismatch", reason: "lightweight tag" };
-  const object = await request<GitTagObject>(`repos/${identity.repository}/git/tags/${ref.object.sha}`);
+  const object = await optional<GitTagObject>(`repos/${identity.repository}/git/tags/${ref.object.sha}`);
+  if (!object) return { state: "pending_object", objectSha: ref.object.sha };
   if (object.tag !== identity.tag || object.message !== identity.tagMessage || object.object.type !== "commit" || object.object.sha !== identity.sourceSha) {
     return { state: "mismatch", reason: "annotated tag identity" };
   }
   return { state: "exact", objectSha: ref.object.sha, targetSha: object.object.sha };
 }
 
-async function releaseAssets(identity: ApprovedReleaseBundle, releaseId: number): Promise<ObservedBundleAsset[]> {
+async function observeTag(identity: ApprovedReleaseBundle, expectedObjectSha?: string): Promise<ObservedReleaseBundleState["tag"]> {
+  const tag = await readTag(identity);
+  if (tag.state === "pending_object") {
+    const objectSha = await waitForExactTag(identity, expectedObjectSha ?? tag.objectSha);
+    return { state: "exact", objectSha, targetSha: identity.sourceSha };
+  }
+  if (tag.state === "absent" && expectedObjectSha !== undefined) {
+    const objectSha = await waitForExactTag(identity, expectedObjectSha);
+    return { state: "exact", objectSha, targetSha: identity.sourceSha };
+  }
+  if (tag.state === "exact" && expectedObjectSha !== undefined && tag.objectSha !== expectedObjectSha) {
+    return { state: "mismatch", reason: "annotated tag object changed" };
+  }
+  return tag;
+}
+
+async function waitForExactTag(identity: ApprovedReleaseBundle, expectedObjectSha?: string): Promise<string> {
+  const tag = await waitForVisibility("TAG", async () => {
+    const observed = await readTag(identity);
+    if (observed.state === "absent" || observed.state === "pending_object") return undefined;
+    if (observed.state === "mismatch") throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_TAG_MISMATCH:${observed.reason}`);
+    if (expectedObjectSha !== undefined && observed.objectSha !== expectedObjectSha) {
+      throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TAG_OBJECT_MISMATCH");
+    }
+    return observed;
+  });
+  return tag.objectSha;
+}
+
+async function fetchReleaseAssets(identity: ApprovedReleaseBundle, releaseId: number): Promise<ObservedBundleAsset[]> {
   return (await listAll<GitHubAsset>(`repos/${identity.repository}/releases/${releaseId}/assets`)).map((asset) => ({
     id: asset.id,
     name: asset.name,
@@ -104,11 +167,44 @@ async function releaseAssets(identity: ApprovedReleaseBundle, releaseId: number)
   }));
 }
 
-async function observeReleases(identity: ApprovedReleaseBundle, fixedReleaseId?: number): Promise<ObservedBundleRelease[]> {
+function assertPinnedAsset(observed: ObservedBundleAsset, pinned: ObservedBundleAsset): void {
+  if (
+    observed.id !== pinned.id
+    || observed.name !== pinned.name
+    || observed.sha256 !== pinned.sha256
+    || observed.size !== pinned.size
+    || observed.state !== "uploaded"
+  ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_PINNED_ASSET_MISMATCH");
+}
+
+async function releaseAssets(
+  identity: ApprovedReleaseBundle,
+  releaseId: number,
+  pinnedAssets: ReadonlyMap<string, ObservedBundleAsset> = new Map(),
+): Promise<ObservedBundleAsset[]> {
+  if (pinnedAssets.size === 0) return await fetchReleaseAssets(identity, releaseId);
+  return await waitForVisibility("ASSET", async () => {
+    const assets = await fetchReleaseAssets(identity, releaseId);
+    for (const pinned of pinnedAssets.values()) {
+      const matches = assets.filter(({ name }) => name === pinned.name);
+      if (matches.length === 0) return undefined;
+      if (matches.length !== 1) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_AMBIGUOUS_ASSET");
+      assertPinnedAsset(matches[0]!, pinned);
+    }
+    return assets;
+  });
+}
+
+async function observeReleases(
+  identity: ApprovedReleaseBundle,
+  fixedReleaseId?: number,
+  pinnedAssets: ReadonlyMap<string, ObservedBundleAsset> = new Map(),
+): Promise<ObservedBundleRelease[]> {
   const releases = await listAll<GitHubRelease>(`repos/${identity.repository}/releases`);
   const matches = releases.filter(({ tag_name }) => tag_name === identity.tag);
   if (fixedReleaseId !== undefined && !matches.some(({ id }) => id === fixedReleaseId)) {
-    matches.push(await request<GitHubRelease>(`repos/${identity.repository}/releases/${fixedReleaseId}`));
+    matches.push(await waitForVisibility("RELEASE", async () =>
+      await optional<GitHubRelease>(`repos/${identity.repository}/releases/${fixedReleaseId}`)));
   }
   return await Promise.all(matches.map(async (candidate) => {
     const release = await request<GitHubRelease>(`repos/${identity.repository}/releases/${candidate.id}`);
@@ -122,7 +218,7 @@ async function observeReleases(identity: ApprovedReleaseBundle, fixedReleaseId?:
       draft: release.draft,
       prerelease: release.prerelease,
       immutable: release.immutable,
-      assets: await releaseAssets(identity, release.id),
+      assets: await releaseAssets(identity, release.id, pinnedAssets),
     };
   }));
 }
@@ -185,8 +281,16 @@ async function observeNpm(
   }
 }
 
-async function observe(identity: ApprovedReleaseBundle, fixedReleaseId?: number): Promise<ObservedReleaseBundleState> {
-  const [tag, releases] = await Promise.all([observeTag(identity), observeReleases(identity, fixedReleaseId)]);
+async function observe(
+  identity: ApprovedReleaseBundle,
+  fixedReleaseId?: number,
+  fixedTagObjectSha?: string,
+  pinnedAssets: ReadonlyMap<string, ObservedBundleAsset> = new Map(),
+): Promise<ObservedReleaseBundleState> {
+  const [tag, releases] = await Promise.all([
+    observeTag(identity, fixedTagObjectSha),
+    observeReleases(identity, fixedReleaseId, pinnedAssets),
+  ]);
   const releaseId = releases.length === 1 ? releases[0]!.id : undefined;
   const intents = {
     "better-realtime": await observeIntent(identity, "better-realtime", releaseId),
@@ -209,22 +313,125 @@ async function observe(identity: ApprovedReleaseBundle, fixedReleaseId?: number)
   };
 }
 
-async function createTag(identity: ApprovedReleaseBundle): Promise<void> {
+async function createTag(identity: ApprovedReleaseBundle): Promise<string> {
   const object = await request<{ sha: string }>(`repos/${identity.repository}/git/tags`, {
     method: "POST",
     ...jsonBody({ tag: identity.tag, message: identity.tagMessage, object: identity.sourceSha, type: "commit" }),
   });
-  await request(`repos/${identity.repository}/git/refs`, { method: "POST", ...jsonBody({ ref: `refs/tags/${identity.tag}`, sha: object.sha }) });
+  if (!/^[a-f0-9]{40}$/u.test(object.sha)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TAG_OBJECT_INVALID");
+  let created = false;
+  try {
+    const ref = await request<GitTagRef>(`repos/${identity.repository}/git/refs`, {
+      method: "POST",
+      ...jsonBody({ ref: `refs/tags/${identity.tag}`, sha: object.sha }),
+    });
+    if (
+      ref.ref !== `refs/tags/${identity.tag}`
+      || ref.object.type !== "tag"
+      || ref.object.sha !== object.sha
+    ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_CREATED_TAG_REF_MISMATCH");
+    created = true;
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 422) throw error;
+  }
+  return await waitForExactTag(identity, created ? object.sha : undefined);
 }
 
-async function createRelease(identity: ApprovedReleaseBundle): Promise<number> {
+function assertReleaseMetadata(identity: ApprovedReleaseBundle, release: GitHubRelease, expectedDraft?: boolean): void {
+  if (
+    !Number.isSafeInteger(release.id)
+    || release.id <= 0
+    || release.tag_name !== identity.tag
+    || release.target_commitish !== identity.sourceSha
+    || release.name !== identity.title
+    || sha256(release.body ?? "") !== identity.bodySha256
+    || release.prerelease !== true
+    || (expectedDraft !== undefined && release.draft !== expectedDraft)
+    || (release.draft && release.immutable)
+  ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RELEASE_IDENTITY_MISMATCH");
+}
+
+function assertApprovedAssetSubset(
+  identity: ApprovedReleaseBundle,
+  release: GitHubRelease,
+  assets: ObservedBundleAsset[],
+): void {
+  const approved = new Map(
+    [...identity.packages.flatMap(({ artifact, checksum }) => [artifact, checksum]), ...(identity.publicIdentity ? [identity.publicIdentity] : [])]
+      .map((asset) => [asset.name, asset] as const),
+  );
+  const publicIdentityName = `better-realtime-${identity.version}.bundle.identity.json`;
+  const seen = new Set<string>();
+  for (const observed of assets) {
+    const expected = approved.get(observed.name);
+    const generalizedPublicIdentity = !identity.publicIdentity && observed.name === publicIdentityName;
+    if (
+      (!expected && !generalizedPublicIdentity)
+      || seen.has(observed.name)
+      || !Number.isSafeInteger(observed.id)
+      || observed.id <= 0
+      || (expected !== undefined && (observed.sha256 !== expected.sha256 || observed.size !== expected.size))
+      || (generalizedPublicIdentity && (!/^[a-f0-9]{64}$/u.test(observed.sha256) || observed.size <= 0))
+      || observed.state !== "uploaded"
+    ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_EXISTING_ASSET_MISMATCH");
+    seen.add(observed.name);
+  }
+  if (!release.draft) {
+    for (const expected of identity.packages.flatMap(({ artifact, checksum }) => [artifact, checksum])) {
+      if (!seen.has(expected.name)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_FINAL_RELEASE_ASSET_MISSING");
+    }
+    if (!seen.has(publicIdentityName)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_FINAL_RELEASE_IDENTITY_MISSING");
+  }
+}
+
+async function waitForCreatedRelease(
+  identity: ApprovedReleaseBundle,
+  expectedId?: number,
+): Promise<{ releaseId: number; assets: ObservedBundleAsset[] }> {
+  if (expectedId !== undefined) {
+    return await waitForVisibility("RELEASE", async () => {
+      const release = await optional<GitHubRelease>(`repos/${identity.repository}/releases/${expectedId}`);
+      if (!release) return undefined;
+      assertReleaseMetadata(identity, release, true);
+      const matches = (await listAll<GitHubRelease>(`repos/${identity.repository}/releases`))
+        .filter(({ tag_name }) => tag_name === identity.tag);
+      if (matches.length > 1 || matches.some(({ id }) => id !== expectedId)) {
+        throw new Error("RT_RELEASE_BUNDLE_PROVIDER_AMBIGUOUS_RELEASE");
+      }
+      const assets = await releaseAssets(identity, release.id);
+      if (assets.length !== 0) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_CREATED_RELEASE_ASSETS_MISMATCH");
+      return { releaseId: release.id, assets };
+    });
+  }
+  return await waitForVisibility("RELEASE", async () => {
+    const matches = (await listAll<GitHubRelease>(`repos/${identity.repository}/releases`))
+      .filter(({ tag_name }) => tag_name === identity.tag);
+    if (matches.length === 0) return undefined;
+    if (matches.length !== 1) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_AMBIGUOUS_RELEASE");
+    const candidate = matches[0]!;
+    const release = await optional<GitHubRelease>(`repos/${identity.repository}/releases/${candidate.id}`);
+    if (!release) return undefined;
+    assertReleaseMetadata(identity, release);
+    const assets = await releaseAssets(identity, release.id);
+    assertApprovedAssetSubset(identity, release, assets);
+    return { releaseId: release.id, assets };
+  });
+}
+
+async function createRelease(identity: ApprovedReleaseBundle): Promise<{ releaseId: number; assets: ObservedBundleAsset[] }> {
   const notes = await readFile(resolve(process.env.RELEASE_NOTES_FILE ?? "CHANGELOG.md"), "utf8");
   if (sha256(notes) !== identity.bodySha256) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_NOTES_MISMATCH");
-  const release = await request<GitHubRelease>(`repos/${identity.repository}/releases`, {
-    method: "POST",
-    ...jsonBody({ tag_name: identity.tag, target_commitish: identity.sourceSha, name: identity.title, body: notes, draft: true, prerelease: true, make_latest: "false" }),
-  });
-  return release.id;
+  let release: GitHubRelease | undefined;
+  try {
+    release = await request<GitHubRelease>(`repos/${identity.repository}/releases`, {
+      method: "POST",
+      ...jsonBody({ tag_name: identity.tag, target_commitish: identity.sourceSha, name: identity.title, body: notes, draft: true, prerelease: true, make_latest: "false" }),
+    });
+    assertReleaseMetadata(identity, release, true);
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 422) throw error;
+  }
+  return await waitForCreatedRelease(identity, release?.id);
 }
 
 function assetPath(name: string): string {
@@ -233,19 +440,46 @@ function assetPath(name: string): string {
   return resolve(root, name);
 }
 
-async function uploadAsset(identity: ApprovedReleaseBundle, releaseId: number, expected: ApprovedBundleAsset): Promise<void> {
+async function uploadAsset(
+  identity: ApprovedReleaseBundle,
+  releaseId: number,
+  expected: ApprovedBundleAsset,
+): Promise<ObservedBundleAsset> {
   const release = await request<GitHubRelease>(`repos/${identity.repository}/releases/${releaseId}`);
-  if (!release.draft || release.immutable) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_UPLOAD_REQUIRES_DRAFT");
+  assertReleaseMetadata(identity, release, true);
   const bytes = new Uint8Array(await readFile(assetPath(expected.name)));
   if (bytes.byteLength !== expected.size || sha256(bytes) !== expected.sha256) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_LOCAL_ASSET_MISMATCH");
-  const uploaded = await request<GitHubAsset>(`${release.upload_url.replace(/\{.*$/u, "")}?name=${encodeURIComponent(expected.name)}`, {
-    method: "POST",
-    headers: { Accept: "application/vnd.github+json", "Content-Type": "application/octet-stream" },
-    body: bytes,
-  });
-  if (uploaded.name !== expected.name || uploaded.size !== expected.size || uploaded.digest !== `sha256:${expected.sha256}` || uploaded.state !== "uploaded") {
-    throw new Error("RT_RELEASE_BUNDLE_PROVIDER_UPLOADED_ASSET_MISMATCH");
+  let uploaded: GitHubAsset | undefined;
+  try {
+    uploaded = await request<GitHubAsset>(`${release.upload_url.replace(/\{.*$/u, "")}?name=${encodeURIComponent(expected.name)}`, {
+      method: "POST",
+      headers: { Accept: "application/vnd.github+json", "Content-Type": "application/octet-stream" },
+      body: bytes,
+    });
+    if (
+      !Number.isSafeInteger(uploaded.id)
+      || uploaded.id <= 0
+      || uploaded.name !== expected.name
+      || uploaded.size !== expected.size
+      || uploaded.digest !== `sha256:${expected.sha256}`
+      || uploaded.state !== "uploaded"
+    ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_UPLOADED_ASSET_MISMATCH");
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 422) throw error;
   }
+  return await waitForVisibility("ASSET", async () => {
+    const matches = (await releaseAssets(identity, releaseId)).filter(({ name }) => name === expected.name);
+    if (matches.length === 0) return undefined;
+    if (matches.length !== 1) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_AMBIGUOUS_ASSET");
+    const observed = matches[0]!;
+    if (
+      (uploaded !== undefined && observed.id !== uploaded.id)
+      || observed.sha256 !== expected.sha256
+      || observed.size !== expected.size
+      || observed.state !== "uploaded"
+    ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_UPLOADED_ASSET_MISMATCH");
+    return observed;
+  });
 }
 
 function findAsset(identity: ApprovedReleaseBundle, name: string): ApprovedBundleAsset {
@@ -306,25 +540,32 @@ async function finalize(identity: ApprovedReleaseBundle, state: ObservedReleaseB
     ...jsonBody({ draft: false, prerelease: true, make_latest: "false" }),
   });
   if (updated.id !== releaseId) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RELEASE_ID_CHANGED");
+  assertReleaseMetadata(identity, updated, false);
 }
 
-async function stage(
+export async function stageReleaseBundle(
   identity: ApprovedReleaseBundle,
   mode: "stage_github_draft" | "reconcile_github",
 ): Promise<{ releaseId: number; tagObject: string; existingPublicIdentity: boolean }> {
+  assertProviderConfiguration();
   let fixedReleaseId: number | undefined;
+  let fixedTagObjectSha: string | undefined;
+  const pinnedAssets = new Map<string, ObservedBundleAsset>();
   for (let transition = 0; transition < 12; transition += 1) {
-    let state = await observe(identity, fixedReleaseId);
+    let state = await observe(identity, fixedReleaseId, fixedTagObjectSha, pinnedAssets);
+    if (state.tag.state === "exact") fixedTagObjectSha ??= state.tag.objectSha;
     if (state.releases.length === 1) fixedReleaseId ??= state.releases[0]!.id;
     const plan = planReleaseBundleTransition(identity, state);
     if (plan.action === "create_tag") {
       if (mode !== "stage_github_draft") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RECONCILE_REQUIRES_STAGED_DRAFT");
-      await createTag(identity);
+      fixedTagObjectSha = await createTag(identity);
       continue;
     }
     if (plan.action === "create_release") {
       if (mode !== "stage_github_draft") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RECONCILE_REQUIRES_STAGED_DRAFT");
-      fixedReleaseId = await createRelease(identity);
+      const created = await createRelease(identity);
+      fixedReleaseId = created.releaseId;
+      for (const asset of created.assets) pinnedAssets.set(asset.name, asset);
       continue;
     }
     if (plan.action === "upload_asset") {
@@ -333,7 +574,8 @@ async function stage(
         mode === "stage_github_draft" && plan.assetName === publicName
         || mode === "reconcile_github" && plan.assetName !== publicName
       ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_COMMAND_ASSET_BOUNDARY");
-      await uploadAsset(identity, plan.releaseId, findAsset(identity, plan.assetName));
+      const uploaded = await uploadAsset(identity, plan.releaseId, findAsset(identity, plan.assetName));
+      pinnedAssets.set(uploaded.name, uploaded);
       continue;
     }
     if (plan.action === "finalize_release") {
@@ -353,7 +595,7 @@ async function stage(
     }
     if (plan.action === "wait_for_immutable") {
       for (let attempt = 1; attempt <= 12; attempt += 1) {
-        state = await observe(identity, plan.releaseId);
+        state = await observe(identity, plan.releaseId, fixedTagObjectSha, pinnedAssets);
         const next = planReleaseBundleTransition(identity, state);
         if (next.action !== "wait_for_immutable") break;
         if (attempt === 12) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_IMMUTABLE_TIMEOUT");
@@ -431,7 +673,7 @@ async function main(): Promise<void> {
     if (command === "reconcile-github" && process.env.RELEASE_ATTESTATIONS_VERIFIED !== "true") {
       throw new Error("RT_RELEASE_BUNDLE_PROVIDER_ATTESTATION_GATE_REQUIRED");
     }
-    const result = await stage(identity, command === "stage-github-draft" ? "stage_github_draft" : "reconcile_github");
+    const result = await stageReleaseBundle(identity, command === "stage-github-draft" ? "stage_github_draft" : "reconcile_github");
     await output("release_id", result.releaseId);
     await output("tag_object", result.tagObject);
     await output("existing_identity", result.existingPublicIdentity);

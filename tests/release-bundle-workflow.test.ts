@@ -172,6 +172,30 @@ describe("two-package release workflow security", () => {
     expect(provider).not.toMatch(/method:\s*"DELETE"/u);
   });
 
+  it("keeps post-mutation visibility reconciliation bounded, exact, and non-destructive", async () => {
+    const [provider, workflow] = await Promise.all([
+      readFile(resolve(root, "scripts/release-bundle-github.ts"), "utf8"),
+      readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8"),
+    ]);
+    const stage = job(workflow, "stage-release", "attest-release-assets");
+    const publishBase = job(workflow, "publish-base", "verify-base");
+    const publishMcp = job(workflow, "publish-mcp", "verify");
+    expect(provider).toContain('waitForVisibility("TAG"');
+    expect(provider).toContain('waitForVisibility("RELEASE"');
+    expect(provider).toContain('waitForVisibility("ASSET"');
+    expect(provider).toContain("error instanceof HttpError");
+    expect(provider).toContain("error.status !== 422");
+    expect(provider).toContain("RT_RELEASE_BUNDLE_PROVIDER_${label}_VISIBILITY_TIMEOUT");
+    expect(provider).not.toMatch(/git\/refs[\s\S]{0,240}method:\s*"PATCH"/u);
+    expect(provider).not.toContain("force: true");
+    expect(stage).toContain("contents: write");
+    expect(stage).toContain("id-token: none");
+    for (const publish of [publishBase, publishMcp]) {
+      expect(publish).toContain("contents: read");
+      expect(publish).toContain("id-token: write");
+    }
+  });
+
   it("fails closed on partial publication instead of repeating an existing package", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8");
     const provider = await readFile(resolve(root, "scripts/release-bundle-github.ts"), "utf8");
