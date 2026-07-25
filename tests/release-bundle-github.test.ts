@@ -13,6 +13,7 @@ function json(value: unknown, status = 200): Response {
 
 interface FakeProviderOptions {
   tagInitiallyExists?: boolean;
+  releaseInitiallyExists?: boolean;
   initialTagStatus?: number;
   tagRefPostStatus?: number;
   tagIdentity?: "exact" | "lightweight" | "wrong_message" | "wrong_target";
@@ -26,6 +27,7 @@ interface FakeProviderOptions {
   preexistingApprovedAsset?: boolean;
   preexistingCompleteAssets?: boolean;
   preexistingPublicIdentity?: boolean;
+  identityHasPublicIdentity?: boolean;
   preexistingAssetMismatch?: boolean;
   existingReleaseState?: "draft" | "finalized" | "immutable";
   assetPostStatus?: number;
@@ -80,7 +82,7 @@ async function delayedTagProvider(options: FakeProviderOptions = {}) {
   let hiddenTagReads = options.hiddenTagReads ?? 1;
   let tagReadPatternIndex = 0;
   let hiddenTagObjectReads = options.hiddenTagObjectReads ?? 0;
-  let releaseCreated = false;
+  let releaseCreated = options.releaseInitiallyExists ?? false;
   let hiddenReleaseListReads = options.hiddenReleaseListReads ?? 0;
   let hiddenReleaseDirectReads = options.hiddenReleaseDirectReads ?? 0;
   let tagObjectPosts = 0;
@@ -96,6 +98,14 @@ async function delayedTagProvider(options: FakeProviderOptions = {}) {
   let twoAssetSnapshotReads = 0;
   const publicIdentityBytes = new TextEncoder().encode('{"schemaVersion":"better-realtime.public-release-bundle.v1"}\n');
   const publicIdentityName = `better-realtime-${identity.version}.bundle.identity.json`;
+  if (options.identityHasPublicIdentity) {
+    identity.publicIdentity = {
+      name: publicIdentityName,
+      sha256: sha256(publicIdentityBytes),
+      size: publicIdentityBytes.byteLength,
+    };
+    await writeFile(join(directory, publicIdentityName), publicIdentityBytes);
+  }
   const approvedBytes = new Map<string, Uint8Array>();
   for (const [index, entry] of packages.entries()) {
     approvedBytes.set(entry.artifact.name, packageBytes[index]!);
@@ -113,6 +123,35 @@ async function delayedTagProvider(options: FakeProviderOptions = {}) {
     immutable: finalState === "immutable",
     upload_url: "https://uploads.github.test/releases/42/assets{?name,label}",
   };
+  const seedPreexistingAssets = (): void => {
+    if (assets.length > 0 || (!options.preexistingApprovedAsset && !options.preexistingCompleteAssets)) return;
+    const expectedAssets = options.preexistingCompleteAssets
+      ? identity.packages.flatMap(({ artifact, checksum }) => [artifact, checksum])
+      : [identity.packages[0].artifact];
+    for (const expected of expectedAssets) {
+      const id = assets.length + 11;
+      assets.push({
+        id,
+        name: expected.name,
+        digest: options.preexistingAssetMismatch ? `sha256:${"9".repeat(64)}` : `sha256:${expected.sha256}`,
+        size: expected.size,
+        state: options.preexistingAssetMismatch ? "starter" : "uploaded",
+      });
+      assetBytes.set(id, approvedBytes.get(expected.name)!);
+    }
+    if (options.preexistingPublicIdentity) {
+      const id = assets.length + 11;
+      assets.push({
+        id,
+        name: publicIdentityName,
+        digest: `sha256:${sha256(publicIdentityBytes)}`,
+        size: publicIdentityBytes.byteLength,
+        state: "uploaded",
+      });
+      assetBytes.set(id, publicIdentityBytes);
+    }
+  };
+  if (releaseCreated) seedPreexistingAssets();
 
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -168,33 +207,7 @@ async function delayedTagProvider(options: FakeProviderOptions = {}) {
       releaseCreated = true;
       releasePosts += 1;
       if (options.releasePostStatus === 422) {
-        if (assets.length === 0 && (options.preexistingApprovedAsset || options.preexistingCompleteAssets)) {
-          const expectedAssets = options.preexistingCompleteAssets
-            ? identity.packages.flatMap(({ artifact, checksum }) => [artifact, checksum])
-            : [identity.packages[0].artifact];
-          for (const expected of expectedAssets) {
-            const id = assets.length + 11;
-            assets.push({
-              id,
-              name: expected.name,
-              digest: options.preexistingAssetMismatch ? `sha256:${"9".repeat(64)}` : `sha256:${expected.sha256}`,
-              size: expected.size,
-              state: options.preexistingAssetMismatch ? "starter" : "uploaded",
-            });
-            assetBytes.set(id, approvedBytes.get(expected.name)!);
-          }
-        }
-        if (options.preexistingPublicIdentity && !assets.some(({ name }) => name === publicIdentityName)) {
-          const id = assets.length + 11;
-          assets.push({
-            id,
-            name: publicIdentityName,
-            digest: `sha256:${sha256(publicIdentityBytes)}`,
-            size: publicIdentityBytes.byteLength,
-            state: "uploaded",
-          });
-          assetBytes.set(id, publicIdentityBytes);
-        }
+        seedPreexistingAssets();
         return json({ message: "release exists" }, 422);
       }
       if (options.releasePostStatus && options.releasePostStatus !== 201) {
@@ -275,8 +288,14 @@ async function withProvider(
     stage: (
       identity: ApprovedReleaseBundle,
       mode: "stage_github_draft" | "reconcile_github",
-    ) => Promise<{ releaseId: number; tagObject: string; existingPublicIdentity: boolean }>,
+    ) => Promise<{
+      releaseId: number;
+      tagObject: string;
+      existingPublicIdentity: boolean;
+      operatorAction: "none" | "create_draft" | "finalize_draft";
+    }>,
   ) => Promise<void>,
+  allowReleaseMutation = true,
 ): Promise<void> {
   const provider = await delayedTagProvider(options);
   const prior = {
@@ -285,12 +304,15 @@ async function withProvider(
     RELEASE_ASSET_DIR: process.env.RELEASE_ASSET_DIR,
     RELEASE_PROVIDER_SETTLE_ATTEMPTS: process.env.RELEASE_PROVIDER_SETTLE_ATTEMPTS,
     RELEASE_PROVIDER_SETTLE_DELAY_MS: process.env.RELEASE_PROVIDER_SETTLE_DELAY_MS,
+    RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION: process.env.RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION,
   };
   process.env.GH_TOKEN = "test-token";
   process.env.RELEASE_NOTES_FILE = provider.notesPath;
   process.env.RELEASE_ASSET_DIR = provider.directory;
   process.env.RELEASE_PROVIDER_SETTLE_ATTEMPTS = "4";
   process.env.RELEASE_PROVIDER_SETTLE_DELAY_MS = "0";
+  if (allowReleaseMutation) process.env.RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION = "true";
+  else delete process.env.RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION;
   vi.stubGlobal("fetch", provider.fetch);
   vi.resetModules();
   try {
@@ -305,6 +327,61 @@ async function withProvider(
 }
 
 describe.sequential("two-package GitHub release visibility reconciliation", () => {
+  it("hands an exact tag-only state to the user without attempting a Release mutation", async () => {
+    await withProvider(
+      { tagInitiallyExists: true, hiddenTagReads: 0 },
+      async (provider, stage) => {
+        await expect(stage(provider.identity, "stage_github_draft")).resolves.toMatchObject({
+          releaseId: 0,
+          tagObject: "e".repeat(40),
+          operatorAction: "create_draft",
+        });
+        expect(provider.releasePosts()).toBe(0);
+        expect(provider.assetPosts()).toBe(0);
+      },
+      false,
+    );
+  });
+
+  it("uses an exact user-created draft without repeating the Release mutation", async () => {
+    await withProvider(
+      { tagInitiallyExists: true, hiddenTagReads: 0, releaseInitiallyExists: true },
+      async (provider, stage) => {
+        await expect(stage(provider.identity, "stage_github_draft")).resolves.toMatchObject({
+          releaseId: 42,
+          tagObject: "e".repeat(40),
+          operatorAction: "none",
+        });
+        expect(provider.releasePosts()).toBe(0);
+        expect(provider.assetPosts()).toBe(4);
+      },
+      false,
+    );
+  });
+
+  it("hands an exact asset-complete draft to the user without attempting finalization", async () => {
+    await withProvider(
+      {
+        tagInitiallyExists: true,
+        hiddenTagReads: 0,
+        releaseInitiallyExists: true,
+        preexistingCompleteAssets: true,
+        preexistingPublicIdentity: true,
+        identityHasPublicIdentity: true,
+      },
+      async (provider, stage) => {
+        await expect(stage(provider.identity, "reconcile_github")).resolves.toMatchObject({
+          releaseId: 42,
+          tagObject: "e".repeat(40),
+          operatorAction: "finalize_draft",
+        });
+        expect(provider.releasePosts()).toBe(0);
+        expect(provider.assetPosts()).toBe(0);
+      },
+      false,
+    );
+  });
+
   it("rejects an invalid visibility bound before any mutation", async () => {
     await withProvider({}, async (provider, stage) => {
       process.env.RELEASE_PROVIDER_SETTLE_ATTEMPTS = "0";

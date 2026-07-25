@@ -79,6 +79,7 @@ type DetailedTagObservation =
   | { state: "pending_object"; objectSha: string }
   | { state: "mismatch"; reason: string }
   | { state: "exact"; objectSha: string; targetSha: string };
+type ReleaseOperatorAction = "none" | "create_draft" | "finalize_draft";
 
 function boundedInteger(name: string, fallback: number, minimum: number): number {
   const raw = process.env[name];
@@ -106,7 +107,14 @@ async function waitForVisibility<T>(label: string, observeValue: () => Promise<T
 function assertProviderConfiguration(): void {
   boundedInteger("RELEASE_PROVIDER_SETTLE_ATTEMPTS", 20, 1);
   boundedInteger("RELEASE_PROVIDER_SETTLE_DELAY_MS", 1_000, 0);
+  const releaseMutation = process.env.RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION;
+  if (releaseMutation !== undefined && releaseMutation !== "true") {
+    throw new Error("RT_RELEASE_BUNDLE_PROVIDER_CONFIGURATION_INVALID:RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION");
+  }
 }
+
+const allowUserReleaseMutation = (): boolean =>
+  process.env.RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION === "true";
 
 async function loadIdentity(): Promise<ApprovedReleaseBundle> {
   const path = process.env.RELEASE_BUNDLE_IDENTITY_FILE;
@@ -524,7 +532,11 @@ async function recoverPublicIdentity(identity: ApprovedReleaseBundle): Promise<A
   return enriched;
 }
 
-async function finalize(identity: ApprovedReleaseBundle, state: ObservedReleaseBundleState, releaseId: number): Promise<void> {
+async function verifyFinalizationAssets(
+  identity: ApprovedReleaseBundle,
+  state: ObservedReleaseBundleState,
+  releaseId: number,
+): Promise<void> {
   const release = state.releases.find(({ id }) => id === releaseId);
   if (!release) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RELEASE_ID_MISSING");
   for (const expected of [...identity.packages.flatMap(({ artifact, checksum }) => [artifact, checksum]), ...(identity.publicIdentity ? [identity.publicIdentity] : [])]) {
@@ -535,6 +547,10 @@ async function finalize(identity: ApprovedReleaseBundle, state: ObservedReleaseB
       throw new Error("RT_RELEASE_BUNDLE_PROVIDER_REMOTE_BYTES_MISMATCH");
     }
   }
+}
+
+async function finalize(identity: ApprovedReleaseBundle, state: ObservedReleaseBundleState, releaseId: number): Promise<void> {
+  await verifyFinalizationAssets(identity, state, releaseId);
   const updated = await request<GitHubRelease>(`repos/${identity.repository}/releases/${releaseId}`, {
     method: "PATCH",
     ...jsonBody({ draft: false, prerelease: true, make_latest: "false" }),
@@ -546,7 +562,12 @@ async function finalize(identity: ApprovedReleaseBundle, state: ObservedReleaseB
 export async function stageReleaseBundle(
   identity: ApprovedReleaseBundle,
   mode: "stage_github_draft" | "reconcile_github",
-): Promise<{ releaseId: number; tagObject: string; existingPublicIdentity: boolean }> {
+): Promise<{
+  releaseId: number;
+  tagObject: string;
+  existingPublicIdentity: boolean;
+  operatorAction: ReleaseOperatorAction;
+}> {
   assertProviderConfiguration();
   let fixedReleaseId: number | undefined;
   let fixedTagObjectSha: string | undefined;
@@ -563,6 +584,15 @@ export async function stageReleaseBundle(
     }
     if (plan.action === "create_release") {
       if (mode !== "stage_github_draft") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_RECONCILE_REQUIRES_STAGED_DRAFT");
+      if (!allowUserReleaseMutation()) {
+        if (state.tag.state !== "exact") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TAG_NOT_EXACT");
+        return {
+          releaseId: 0,
+          tagObject: state.tag.objectSha,
+          existingPublicIdentity: false,
+          operatorAction: "create_draft",
+        };
+      }
       const created = await createRelease(identity);
       fixedReleaseId = created.releaseId;
       for (const asset of created.assets) pinnedAssets.set(asset.name, asset);
@@ -579,8 +609,8 @@ export async function stageReleaseBundle(
       continue;
     }
     if (plan.action === "finalize_release") {
+      if (state.tag.state !== "exact") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TAG_NOT_EXACT");
       if (!identity.publicIdentity || mode === "stage_github_draft") {
-        if (state.tag.state !== "exact") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TAG_NOT_EXACT");
         const publicName = `better-realtime-${identity.version}.bundle.identity.json`;
         const existing = state.releases[0]?.assets.find(({ name }) => name === publicName);
         if (existing && !identity.publicIdentity) {
@@ -588,7 +618,21 @@ export async function stageReleaseBundle(
           if (bytes.byteLength !== existing.size || sha256(bytes) !== existing.sha256) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_PUBLIC_IDENTITY_MISMATCH");
           await writeFile(assetPath(publicName), bytes, { flag: "wx" });
         }
-        return { releaseId: plan.releaseId, tagObject: state.tag.objectSha, existingPublicIdentity: Boolean(existing) };
+        return {
+          releaseId: plan.releaseId,
+          tagObject: state.tag.objectSha,
+          existingPublicIdentity: Boolean(existing),
+          operatorAction: "none",
+        };
+      }
+      if (!allowUserReleaseMutation()) {
+        await verifyFinalizationAssets(identity, state, plan.releaseId);
+        return {
+          releaseId: plan.releaseId,
+          tagObject: state.tag.objectSha,
+          existingPublicIdentity: true,
+          operatorAction: "finalize_draft",
+        };
       }
       await finalize(identity, state, plan.releaseId);
       continue;
@@ -614,7 +658,12 @@ export async function stageReleaseBundle(
       if (bytes.byteLength !== existing.size || sha256(bytes) !== existing.sha256) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_PUBLIC_IDENTITY_MISMATCH");
       await writeFile(assetPath(publicName), bytes, { flag: "wx" });
     }
-    return { releaseId: fixedReleaseId, tagObject: state.tag.objectSha, existingPublicIdentity: Boolean(existing) };
+    return {
+      releaseId: fixedReleaseId,
+      tagObject: state.tag.objectSha,
+      existingPublicIdentity: Boolean(existing),
+      operatorAction: "none",
+    };
   }
   throw new Error("RT_RELEASE_BUNDLE_PROVIDER_TRANSITION_LIMIT");
 }
@@ -677,6 +726,7 @@ async function main(): Promise<void> {
     await output("release_id", result.releaseId);
     await output("tag_object", result.tagObject);
     await output("existing_identity", result.existingPublicIdentity);
+    await output("operator_action", result.operatorAction);
     return;
   }
   if (command === "prepare-package") {

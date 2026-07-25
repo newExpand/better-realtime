@@ -248,6 +248,7 @@ jobs:
       release_id: ${{ steps.stage.outputs.release_id }}
       tag_object: ${{ steps.stage.outputs.tag_object }}
       existing_identity: ${{ steps.stage.outputs.existing_identity }}
+      operator_action: ${{ steps.stage.outputs.operator_action }}
       bundle_name: ${{ steps.bundle.outputs.bundle_name }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -267,7 +268,7 @@ jobs:
           RELEASE_ASSET_DIR: release-assets
         run: pnpm tsx scripts/release-bundle-github.ts stage-github-draft
       - name: Create public bundle identity and enrich the approved identity
-        if: steps.stage.outputs.existing_identity != 'true'
+        if: steps.stage.outputs.operator_action == 'none' && steps.stage.outputs.existing_identity != 'true'
         env:
           RELEASE_BUNDLE_BASE_IDENTITY: release-assets/release-bundle.json
           RELEASE_BASE_ARTIFACT: release-assets/${{ needs.build.outputs.base_artifact }}
@@ -284,7 +285,7 @@ jobs:
           RELEASE_BUNDLE_ENRICHED_IDENTITY_OUTPUT: release-assets/release-bundle.enriched.json
         run: pnpm tsx scripts/create-public-release-bundle-identity.ts
       - name: Re-adopt exact public bundle identity from an existing draft or immutable Release
-        if: steps.stage.outputs.existing_identity == 'true'
+        if: steps.stage.outputs.operator_action == 'none' && steps.stage.outputs.existing_identity == 'true'
         env:
           RELEASE_BUNDLE_BASE_IDENTITY: release-assets/release-bundle.json
           RELEASE_PUBLIC_BUNDLE_IDENTITY: release-assets/better-realtime-${{ inputs.version }}.bundle.identity.json
@@ -294,9 +295,16 @@ jobs:
           RELEASE_BUNDLE_ENRICHED_IDENTITY_OUTPUT: release-assets/release-bundle.enriched.json
         run: pnpm tsx scripts/adopt-public-release-bundle-identity.ts
       - name: Name the identity-bound workflow artifact
+        if: steps.stage.outputs.operator_action == 'none'
         id: bundle
         run: echo "bundle_name=release-bundle-identity-${{ inputs.source_sha }}-${{ inputs.version }}-attempt-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - name: Report the exact user draft handoff
+        if: steps.stage.outputs.operator_action == 'create_draft'
+        run: |
+          echo "::error::RT_RELEASE_BUNDLE_OPERATOR_HANDOFF_REQUIRED:create_draft: Create the exact verified draft Release with a user OAuth token that has workflow scope, then dispatch this workflow again."
+          exit 1
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: steps.stage.outputs.operator_action == 'none'
         with:
           name: ${{ steps.bundle.outputs.bundle_name }}
           path: release-assets/
@@ -306,12 +314,80 @@ jobs:
 
   attest-release-assets:
     needs: [build, stage-release]
+    if: needs.stage-release.outputs.operator_action == 'none'
     runs-on: ubuntu-latest
     permissions: { contents: read, attestations: write, id-token: write }
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with: { name: "${{ needs.stage-release.outputs.bundle_name }}", path: release-assets }
+      - name: Observe exact attestation state before any mutation
+        id: observe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          BASE_ARTIFACT: ${{ needs.build.outputs.base_artifact }}
+          MCP_ARTIFACT: ${{ needs.build.outputs.mcp_artifact }}
+          IDENTITY_ARTIFACT: better-realtime-${{ inputs.version }}.bundle.identity.json
+        run: |
+          set -euo pipefail
+          action=
+          for attempt in $(seq 1 5); do
+            existing=0
+            absent=0
+            for asset in "$BASE_ARTIFACT" "$MCP_ARTIFACT" "$IDENTITY_ARTIFACT"; do
+              digest="$(sha256sum "release-assets/$asset" | cut -d' ' -f1)"
+              response="$(mktemp)"
+              http_status="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+                --header 'Accept: application/vnd.github+json' \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'X-GitHub-Api-Version: 2026-03-10' \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/attestations/sha256:$digest?predicate_type=provenance&per_page=100")"
+              if [ "$http_status" = 404 ]; then
+                absent=$((absent + 1))
+                continue
+              fi
+              test "$http_status" = 200
+              count="$(jq -r '.attestations | length' "$response")"
+              test "$count" = 1
+              existing=$((existing + 1))
+            done
+            if [ "$existing" -eq 3 ] && [ "$absent" -eq 0 ]; then
+              action=verify
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              if [ "$existing" -eq 0 ] && [ "$absent" -eq 3 ]; then
+                action=create
+                break
+              fi
+              echo "::error::RT_RELEASE_BUNDLE_ATTESTATION_STATE_PARTIAL:existing=$existing:absent=$absent"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$action" = create ]; then
+            echo "action=create" >> "$GITHUB_OUTPUT"
+          elif [ "$action" = verify ]; then
+            for asset in "$BASE_ARTIFACT" "$MCP_ARTIFACT" "$IDENTITY_ARTIFACT"; do
+              verification="$(mktemp)"
+              gh attestation verify "release-assets/$asset" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" \
+                --signer-digest "$REVIEWED_WORKFLOW_SHA" \
+                --source-ref refs/heads/main \
+                --source-digest "$REVIEWED_WORKFLOW_SHA" \
+                --deny-self-hosted-runners \
+                --limit 100 \
+                --format json > "$verification"
+              test "$(jq -r 'length' "$verification")" = 1
+            done
+            echo "action=verify" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::RT_RELEASE_BUNDLE_ATTESTATION_STATE_INVALID"
+            exit 1
+          fi
       - uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        if: steps.observe.outputs.action == 'create'
         with:
           subject-path: |
             release-assets/${{ needs.build.outputs.base_artifact }}
@@ -320,9 +396,12 @@ jobs:
 
   finalize-release:
     needs: [build, stage-release, attest-release-assets]
+    if: needs.stage-release.outputs.operator_action == 'none'
     runs-on: ubuntu-latest
     permissions: { attestations: read, contents: write, checks: read, id-token: none }
-    outputs: { release_id: "${{ steps.finalize.outputs.release_id }}" }
+    outputs:
+      release_id: ${{ steps.finalize.outputs.release_id }}
+      operator_action: ${{ steps.finalize.outputs.operator_action }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
@@ -336,9 +415,20 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}", REVIEWED_WORKFLOW_SHA: "${{ inputs.workflow_sha }}" }
         run: |
           set -euo pipefail
-          for asset in "${{ needs.build.outputs.base_artifact }}" "${{ needs.build.outputs.mcp_artifact }}" "better-realtime-${{ inputs.version }}.bundle.identity.json"; do
-            gh attestation verify "release-assets/$asset" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" --signer-digest "$REVIEWED_WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$REVIEWED_WORKFLOW_SHA"
+          verified=false
+          for attempt in $(seq 1 10); do
+            verified=true
+            for asset in "${{ needs.build.outputs.base_artifact }}" "${{ needs.build.outputs.mcp_artifact }}" "better-realtime-${{ inputs.version }}.bundle.identity.json"; do
+              if ! gh attestation verify "release-assets/$asset" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" --signer-digest "$REVIEWED_WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$REVIEWED_WORKFLOW_SHA" --deny-self-hosted-runners; then
+                verified=false
+                break
+              fi
+            done
+            if [ "$verified" = true ]; then break; fi
+            test "$attempt" -lt 10
+            sleep 3
           done
+          test "$verified" = true
       - name: Upload public identity and finalize/resume immutable Release
         id: finalize
         env:
@@ -348,9 +438,15 @@ jobs:
           RELEASE_ASSET_DIR: release-assets
           RELEASE_ATTESTATIONS_VERIFIED: "true"
         run: pnpm tsx scripts/release-bundle-github.ts reconcile-github
+      - name: Report the exact user finalization handoff
+        if: steps.finalize.outputs.operator_action == 'finalize_draft'
+        run: |
+          echo "::error::RT_RELEASE_BUNDLE_OPERATOR_HANDOFF_REQUIRED:finalize_draft: Publish the exact asset-complete draft with the verified numeric Release ID using a user OAuth token that has workflow scope, then dispatch this workflow again."
+          exit 1
 
   prepare-base:
     needs: [build, stage-release, finalize-release]
+    if: needs.finalize-release.outputs.operator_action == 'none'
     runs-on: ubuntu-latest
     permissions: { contents: read, checks: read, id-token: none }
     outputs:

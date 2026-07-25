@@ -188,12 +188,53 @@ describe("two-package release workflow security", () => {
     expect(provider).toContain("RT_RELEASE_BUNDLE_PROVIDER_${label}_VISIBILITY_TIMEOUT");
     expect(provider).not.toMatch(/git\/refs[\s\S]{0,240}method:\s*"PATCH"/u);
     expect(provider).not.toContain("force: true");
+    expect(provider).toContain('type ReleaseOperatorAction = "none" | "create_draft" | "finalize_draft"');
+    expect(provider).toContain("RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION");
+    expect(workflow).toContain("operator_action: ${{ steps.stage.outputs.operator_action }}");
+    expect(workflow).toContain("operator_action: ${{ steps.finalize.outputs.operator_action }}");
+    expect(workflow).toContain("needs.stage-release.outputs.operator_action == 'none'");
+    expect(workflow).toContain("needs.finalize-release.outputs.operator_action == 'none'");
+    expect(workflow).not.toContain("RELEASE_PROVIDER_ALLOW_USER_RELEASE_MUTATION");
     expect(stage).toContain("contents: write");
     expect(stage).toContain("id-token: none");
     for (const publish of [publishBase, publishMcp]) {
       expect(publish).toContain("contents: read");
       expect(publish).toContain("id-token: write");
     }
+  });
+
+  it("marks operator handoffs incomplete and observes attestations before any repeat mutation", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8");
+    const stage = job(workflow, "stage-release", "attest-release-assets");
+    const attest = job(workflow, "attest-release-assets", "finalize-release");
+    const finalize = job(workflow, "finalize-release", "prepare-base");
+
+    expect(stage).toContain("RT_RELEASE_BUNDLE_OPERATOR_HANDOFF_REQUIRED:create_draft");
+    expect(finalize).toContain("RT_RELEASE_BUNDLE_OPERATOR_HANDOFF_REQUIRED:finalize_draft");
+    expect(stage).toMatch(/Report the exact user draft handoff[\s\S]*exit 1/u);
+    expect(finalize).toMatch(/Report the exact user finalization handoff[\s\S]*exit 1/u);
+
+    expect(workflow).not.toContain("\n  observe-release-attestations:\n");
+    expect(attest).toContain("permissions: { contents: read, attestations: write, id-token: write }");
+    expect(attest).toContain("repos/$GITHUB_REPOSITORY/attestations/sha256:$digest");
+    expect(attest).toContain("predicate_type=provenance");
+    expect(attest).toContain('test "$count" = 1');
+    expect(attest).toContain("for attempt in $(seq 1 5)");
+    expect(attest).toContain('if [ "$existing" -eq 0 ] && [ "$absent" -eq 3 ]');
+    expect(attest).toContain('if [ "$existing" -eq 3 ] && [ "$absent" -eq 0 ]');
+    expect(attest).toContain("RT_RELEASE_BUNDLE_ATTESTATION_STATE_PARTIAL");
+    expect(attest).toContain("gh attestation verify");
+    expect(attest).toContain("--signer-digest \"$REVIEWED_WORKFLOW_SHA\"");
+    expect(attest).toContain("--source-digest \"$REVIEWED_WORKFLOW_SHA\"");
+    expect(attest).toContain("if: steps.observe.outputs.action == 'create'");
+    expect(attest.indexOf("name: Observe exact attestation state before any mutation")).toBeLessThan(
+      attest.indexOf("uses: actions/attest@"),
+    );
+    expect(attest).toContain("needs: [build, stage-release]");
+    expect(finalize).toContain("for attempt in $(seq 1 10)");
+    expect(finalize).toContain("needs: [build, stage-release, attest-release-assets]");
+    expect(finalize).not.toContain("needs.attest-release-assets.result == 'skipped'");
+    expect(workflow.match(/actions\/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6/gu)).toHaveLength(1);
   });
 
   it("fails closed on partial publication instead of repeating an existing package", async () => {

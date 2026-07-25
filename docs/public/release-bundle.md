@@ -9,7 +9,7 @@ Both tarballs come from one reviewed public source commit and one annotated Git 
 
 ## Release workflow
 
-The `release-bundle.yml` workflow replaces the historical single-package workflow for this boundary. Before any GitHub or npm mutation it requires the approved SHA-256, packed size, unpacked size, and file count for both tarballs. It creates one draft prerelease containing exactly:
+The `release-bundle.yml` workflow replaces the historical single-package workflow for this boundary. Before any GitHub or npm mutation it requires the approved SHA-256, packed size, unpacked size, and file count for both tarballs. It fills one exact draft prerelease containing:
 
 - both tarballs;
 - one checksum file per tarball;
@@ -17,7 +17,40 @@ The `release-bundle.yml` workflow replaces the historical single-package workflo
 
 The public bundle identity is immutable prepublication evidence. Its registry URLs, bytes, and dist-tags are explicitly `expectedNpmRegistry` values, not observations, and its completed-check list stops at the reviewed source/workflow, approved tarballs, and exact draft assets. It does not claim that npm bytes or provenance were already verified. Its `generatedAt` value is a required, separately approved canonical ISO-8601 UTC dispatch input; it is the actual evidence-generation time, not a source or workflow commit timestamp. The verification-only workflow reports those post-publication results independently and never rewrites the immutable identity asset.
 
-The draft is finalized only after all five assets have exact identity and all three non-checksum artifacts have GitHub artifact attestations. `better-realtime` is published and fully verified before `better-realtime-mcp` becomes eligible for publication. Each publish job has a different protected GitHub Environment and a package-qualified durable publish-intent marker. If one package exists with exact bytes, a rerun verifies it and never publishes it again. If a publish intent exists while registry absence remains ambiguous, the workflow stops rather than repeating `npm publish`.
+GitHub requires `Workflows: write` in addition to `Contents: write` when a
+Release resolves to a commit that changes `.github/workflows/**`. The
+Actions-provided `GITHUB_TOKEN` cannot receive that permission. The workflow
+therefore never attempts to create or publish such a Release. It reports one
+of two explicit operator handoffs instead:
+
+1. `create_draft`: an authenticated maintainer creates the exact draft with a
+   local GitHub OAuth session that has `repo` and `workflow` scopes. The
+   numeric Release ID, annotated tag, target, title, body hash, draft state,
+   prerelease state, and empty asset set must all match before a new dispatch.
+2. `finalize_draft`: after the workflow has uploaded and byte-verified all five
+   assets and created all three artifact attestations, the maintainer publishes
+   only that exact numeric draft with the same local OAuth boundary. The next
+   dispatch must observe `immutable:true` and the exact assets before npm
+   publication becomes eligible.
+
+Both handoffs deliberately end the workflow run with a non-success conclusion.
+They are release states that require operator action, not successful
+publications. Before creating attestations, the isolated no-checkout
+attestation job bounded-observes all three approved SHA-256 subjects in the
+same job attempt that owns the sole mutation. Exactly zero attestations
+permits creation; exactly one cryptographically verified attestation for each
+subject permits a mutation-free resume. Partial, duplicate, mismatched,
+unavailable, or timed-out state fails closed. A failed-job rerun and a later
+dispatch therefore both re-observe and verify existing attestations instead
+of creating duplicates.
+
+Do not add a PAT, GitHub App key, or workflow secret to bypass these handoffs.
+Do not change repository-wide default workflow permissions: neither action
+grants the unavailable `Workflows: write` permission to `GITHUB_TOKEN`.
+[GitHub's Create and Update Release contract](https://docs.github.com/en/rest/releases/releases)
+is authoritative for this boundary.
+
+The draft is published only after all five assets have exact identity and all three non-checksum artifacts have GitHub artifact attestations. `better-realtime` is published and fully verified before `better-realtime-mcp` becomes eligible for publication. Each publish job has a different protected GitHub Environment and a package-qualified durable publish-intent marker. If one package exists with exact bytes, a rerun verifies it and never publishes it again. If a publish intent exists while registry absence remains ambiguous, the workflow stops rather than repeating `npm publish`.
 
 `release-bundle-verify.yml` is verification-only. It has no OIDC authority and no publish command. It downloads the immutable GitHub assets by numeric Release ID; verifies the annotated tag, public identity schema and every source/workflow/Release/package field; checks SHA-256, SHA-512, integrity, packed and unpacked sizes, exact file manifests, checksum sidecars, expected dist-tags, and all three GitHub artifact attestations; retrieves both registry tarballs with bounded polling; compares every byte; installs the exact tarballs in isolated browser/server/MCP consumers; and independently verifies each npm signature/provenance identity. A registry or dist-tag lookup error is a verification failure and is never interpreted as an absent tag.
 
@@ -90,5 +123,8 @@ Official npm references:
 3. Perform and verify the companion bootstrap steps above under a separate approval.
 4. Produce both candidate tarballs twice and approve their exact SHA-256, packed size, unpacked size, and file count.
 5. Approve the shared source SHA, reviewed workflow SHA, public export digest, exact `evidence_generated_at` ISO-8601 UTC time, both artifact identities (SHA-256, packed size, unpacked size, and file count), and final expected dist-tags. The first real companion release requires `expected_mcp_latest` to equal the candidate version so the release cannot complete until default installation selects the real candidate. Use the literal `absent` only for a package whose registry is permitted to have no `latest` tag; OIDC publication changes only the explicitly requested `alpha` tag and cannot perform `npm dist-tag`.
-6. Dispatch `release-bundle.yml`.
+6. Dispatch `release-bundle.yml`. Complete only an explicitly reported
+   `create_draft` or `finalize_draft` handoff with the exact numeric Release
+   identity, then dispatch again. A handoff is an observed state transition,
+   not a workflow rerun or permission workaround.
 7. If publication succeeds but later verification fails, dispatch only `release-bundle-verify.yml` with the original per-package publish workflow SHA/run/attempt. Never move a tag, replace an immutable asset, reuse a version, or republish an already visible package.
