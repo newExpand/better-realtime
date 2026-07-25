@@ -74,12 +74,73 @@ interface GitTagObject { tag: string; message: string; object: { type: string; s
 interface CheckRun { id: number; name: string; head_sha: string; external_id: string | null; status: string; conclusion: string | null }
 interface CheckRunsResponse { check_runs: CheckRun[] }
 interface ActionsRun { id: number; run_attempt: number; event: string; path: string; head_sha: string }
+export interface ExpectedPriorPublish { workflowSha: string; runId: string; runAttempt: string; releaseId: number }
 type DetailedTagObservation =
   | { state: "absent" }
   | { state: "pending_object"; objectSha: string }
   | { state: "mismatch"; reason: string }
   | { state: "exact"; objectSha: string; targetSha: string };
 type ReleaseOperatorAction = "none" | "create_draft" | "finalize_draft";
+
+function identityWorkflowSha(): string {
+  const value = process.env.RELEASE_IDENTITY_WORKFLOW_SHA ?? process.env.GITHUB_SHA;
+  if (!value || !/^[a-f0-9]{40}$/u.test(value)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_IDENTITY_WORKFLOW_SHA_INVALID");
+  return value;
+}
+
+function expectedPriorPublish(): ExpectedPriorPublish | undefined {
+  const values = [
+    process.env.RELEASE_EXPECTED_PRIOR_PUBLISH_WORKFLOW_SHA,
+    process.env.RELEASE_EXPECTED_PRIOR_PUBLISH_RUN_ID,
+    process.env.RELEASE_EXPECTED_PRIOR_PUBLISH_RUN_ATTEMPT,
+    process.env.RELEASE_EXPECTED_RELEASE_ID,
+  ];
+  if (values.every((value) => value === "absent")) return undefined;
+  const [workflowSha, runId, runAttempt, releaseIdText] = values;
+  if (
+    !workflowSha
+    || !/^[a-f0-9]{40}$/u.test(workflowSha)
+    || !runId
+    || !/^[1-9][0-9]*$/u.test(runId)
+    || !runAttempt
+    || !/^[1-9][0-9]*$/u.test(runAttempt)
+    || !releaseIdText
+    || !/^[1-9][0-9]*$/u.test(releaseIdText)
+  ) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_PRIOR_PUBLISH_EXPECTATION_INVALID");
+  return { workflowSha, runId, runAttempt, releaseId: Number(releaseIdText) };
+}
+
+export function assertExpectedReleaseId(expected: string | undefined, actual: number): void {
+  if (expected === undefined || expected === "absent") return;
+  if (!/^[1-9][0-9]*$/u.test(expected) || Number(expected) !== actual) {
+    throw new Error("RT_RELEASE_BUNDLE_PROVIDER_EXPECTED_RELEASE_ID_MISMATCH");
+  }
+}
+
+export function assertPriorPublishIdentity(
+  packageName: ReleasePackageName,
+  expected: ExpectedPriorPublish | undefined,
+  intent: PackagePublishIntent,
+  releaseId: number,
+  originalRun: ActionsRun,
+): void {
+  if (
+    intent.state !== "present"
+    || !expected
+    || intent.runId !== expected.runId
+    || intent.runAttempt !== expected.runAttempt
+    || intent.releaseId !== expected.releaseId
+    || releaseId !== expected.releaseId
+  ) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_PRIOR_PUBLISH_IDENTITY_MISMATCH:${packageName}`);
+  if (
+    String(originalRun.id) !== intent.runId
+    || String(originalRun.run_attempt) !== intent.runAttempt
+    || originalRun.event !== "workflow_dispatch"
+    || originalRun.path !== ".github/workflows/release-bundle.yml"
+    || !/^[a-f0-9]{40}$/u.test(originalRun.head_sha)
+    || originalRun.head_sha !== expected.workflowSha
+  ) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_PUBLISH_RUN_MISMATCH:${packageName}`);
+}
 
 function boundedInteger(name: string, fallback: number, minimum: number): number {
   const raw = process.env[name];
@@ -506,6 +567,7 @@ async function recoverPublicIdentity(identity: ApprovedReleaseBundle): Promise<A
   const [tag, releases] = await Promise.all([observeTag(identity), observeReleases(identity)]);
   if (tag.state !== "exact" || releases.length !== 1) return identity;
   const release = releases[0]!;
+  assertExpectedReleaseId(process.env.RELEASE_EXPECTED_RELEASE_ID, release.id);
   const publicName = `better-realtime-${identity.version}.bundle.identity.json`;
   const matches = release.assets.filter(({ name }) => name === publicName);
   if (matches.length === 0) return identity;
@@ -518,9 +580,8 @@ async function recoverPublicIdentity(identity: ApprovedReleaseBundle): Promise<A
   if (bytes.byteLength !== observed.size || sha256(bytes) !== observed.sha256) {
     throw new Error("RT_RELEASE_BUNDLE_PROVIDER_PUBLIC_IDENTITY_MISMATCH");
   }
-  const workflowSha = process.env.GITHUB_SHA;
-  if (!workflowSha || !/^[a-f0-9]{40}$/u.test(workflowSha)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_WORKFLOW_SHA_INVALID");
-  const enriched = adoptPublicReleaseBundleIdentity(identity, bytes, tag.objectSha, release.id, workflowSha);
+  const identityWorkflow = identityWorkflowSha();
+  const enriched = adoptPublicReleaseBundleIdentity(identity, bytes, tag.objectSha, release.id, identityWorkflow);
   if (
     enriched.publicIdentity?.name !== observed.name
     || enriched.publicIdentity.sha256 !== observed.sha256
@@ -676,7 +737,9 @@ async function preparePackage(identity: ApprovedReleaseBundle, packageName: Rele
   const digest = releaseBundleIdentityDigest(identity, releaseId);
   const workflowSha = process.env.GITHUB_SHA;
   if (!workflowSha || !/^[a-f0-9]{40}$/u.test(workflowSha)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_WORKFLOW_SHA_INVALID");
+  const expectedPrior = expectedPriorPublish();
   if (plan.action === "mark_package_publish_intent" && plan.packageName === packageName) {
+    if (expectedPrior) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_UNEXPECTED_NEW_PUBLISH:${packageName}`);
     await output("publish", true);
     await output("publish_run_id", runId);
     await output("publish_run_attempt", runAttempt);
@@ -685,14 +748,7 @@ async function preparePackage(identity: ApprovedReleaseBundle, packageName: Rele
     const intent = state.publishIntents[packageName];
     if (intent.state !== "present") throw new Error("RT_RELEASE_BUNDLE_PROVIDER_INTENT_MISSING");
     const originalRun = await request<ActionsRun>(`repos/${identity.repository}/actions/runs/${intent.runId}/attempts/${intent.runAttempt}`);
-    if (
-      String(originalRun.id) !== intent.runId
-      || String(originalRun.run_attempt) !== intent.runAttempt
-      || originalRun.event !== "workflow_dispatch"
-      || originalRun.path !== ".github/workflows/release-bundle.yml"
-      || !/^[a-f0-9]{40}$/u.test(originalRun.head_sha)
-      || originalRun.head_sha !== workflowSha
-    ) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_PUBLISH_RUN_MISMATCH:${packageName}`);
+    assertPriorPublishIdentity(packageName, expectedPrior, intent, releaseId, originalRun);
     await output("publish", false);
     await output("publish_run_id", intent.runId);
     await output("publish_run_attempt", intent.runAttempt);

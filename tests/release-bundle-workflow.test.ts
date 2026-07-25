@@ -66,6 +66,27 @@ describe("two-package release workflow security", () => {
     expect(mcp).toContain("--tag alpha --access public --provenance --ignore-scripts");
   });
 
+  it("pins an attestation-capable npm and keeps an existing base package out of the OIDC mutation job", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8");
+    const prepareBase = job(workflow, "prepare-base", "publish-base");
+    const publishBase = job(workflow, "publish-base", "verify-base");
+    const verifyBase = job(workflow, "verify-base", "prepare-mcp");
+
+    expect(publishBase).toContain("if: needs.prepare-base.outputs.publish == 'true'");
+    expect(verifyBase).toContain("needs: [build, stage-release, prepare-base, publish-base]");
+    expect(verifyBase).toContain("needs.publish-base.result == 'skipped'");
+    expect(verifyBase).toContain("PRIOR_PUBLISH_WORKFLOW_SHA");
+    expect(verifyBase).toContain("NEW_PUBLISH_WORKFLOW_SHA");
+    expect(verifyBase).toContain("npm install --global npm@11.18.0");
+    expect(verifyBase).toContain('test "$(npm --version)" = 11.18.0');
+    expect(verifyBase.indexOf("npm install --global npm@11.18.0")).toBeLessThan(
+      verifyBase.indexOf("npm audit signatures --json --include-attestations"),
+    );
+    expect(prepareBase).toContain("RELEASE_EXPECTED_PRIOR_PUBLISH_WORKFLOW_SHA");
+    expect(prepareBase).toContain("RELEASE_EXPECTED_PRIOR_PUBLISH_RUN_ID");
+    expect(prepareBase).toContain("RELEASE_EXPECTED_PRIOR_PUBLISH_RUN_ATTEMPT");
+  });
+
   it("guards the historical bare-relative npm tarball regression for both packages", async () => {
     const workflow = await readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8");
     expect(workflow.match(/npm publish "\.\/\$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts/gu)).toHaveLength(2);
@@ -224,9 +245,10 @@ describe("two-package release workflow security", () => {
     expect(attest).toContain('if [ "$existing" -eq 3 ] && [ "$absent" -eq 0 ]');
     expect(attest).toContain("RT_RELEASE_BUNDLE_ATTESTATION_STATE_PARTIAL");
     expect(attest).toContain("gh attestation verify");
-    expect(attest).toContain("--signer-digest \"$REVIEWED_WORKFLOW_SHA\"");
-    expect(attest).toContain("--source-digest \"$REVIEWED_WORKFLOW_SHA\"");
-    expect(attest).toContain("if: steps.observe.outputs.action == 'create'");
+    expect(attest).toContain("--signer-digest \"$IDENTITY_WORKFLOW_SHA\"");
+    expect(attest).toContain("--source-digest \"$IDENTITY_WORKFLOW_SHA\"");
+    expect(attest).toContain("if: steps.observe.outputs.action == 'create' && !inputs.recover_partial_publication");
+    expect(attest).toContain("RT_RELEASE_BUNDLE_RECOVERY_ATTESTATIONS_NOT_EXACT");
     expect(attest.indexOf("name: Observe exact attestation state before any mutation")).toBeLessThan(
       attest.indexOf("uses: actions/attest@"),
     );
@@ -248,21 +270,57 @@ describe("two-package release workflow security", () => {
   });
 
   it("binds verification-only recovery to the original publish workflow attempt", async () => {
-    const [workflow, verify] = await Promise.all([
+    const [workflow, verify, runbook, boundaryText] = await Promise.all([
       readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8"),
-      readFile(resolve(root, ".github/workflows/release-bundle-verify.yml"), "utf8")
+      readFile(resolve(root, ".github/workflows/release-bundle-verify.yml"), "utf8"),
+      readFile(resolve(root, "docs/public/release-bundle.md"), "utf8"),
+      readFile(resolve(root, "release/release-bundle-boundaries.json"), "utf8"),
     ]);
     const provider = await readFile(resolve(root, "scripts/release-bundle-github.ts"), "utf8");
     expect(provider).toContain("recoverPublicIdentity(await loadIdentity())");
-    expect(provider).toContain("adoptPublicReleaseBundleIdentity(identity, bytes, tag.objectSha, release.id, workflowSha)");
+    expect(provider).toContain("adoptPublicReleaseBundleIdentity(identity, bytes, tag.objectSha, release.id, identityWorkflow)");
     expect(provider).toContain("actions/runs/${intent.runId}/attempts/${intent.runAttempt}");
     expect(provider).toContain('originalRun.event !== "workflow_dispatch"');
     expect(provider).toContain('originalRun.path !== ".github/workflows/release-bundle.yml"');
-    expect(provider).toContain("originalRun.head_sha !== workflowSha");
+    expect(provider).toContain("originalRun.head_sha !== expected.workflowSha");
+    expect(provider).toContain("intent.runId !== expected.runId");
+    expect(provider).toContain("intent.runAttempt !== expected.runAttempt");
     expect(provider).toContain('await output("publish_workflow_sha", originalRun.head_sha)');
     expect(workflow.match(/echo "publish_workflow_sha=\$ORIGINAL_WORKFLOW_SHA"/gu)).toHaveLength(2);
-    expect(verify).toContain('test "$BASE_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"');
-    expect(verify).toContain('test "$MCP_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"');
+    expect(workflow).toContain("identity_workflow_sha:");
+    expect(workflow).toContain("recover_partial_publication:");
+    expect(workflow).toContain("resume_release_id:");
+    expect(workflow).toContain("resume_base_publish_workflow_sha:");
+    expect(workflow).toContain("resume_base_publish_run_id:");
+    expect(workflow).toContain("resume_base_publish_run_attempt:");
+    expect(workflow).toContain("RELEASE_IDENTITY_WORKFLOW_SHA: ${{ inputs.identity_workflow_sha }}");
+    expect(workflow).toContain("identity_workflow_sha: ${{ inputs.identity_workflow_sha }}");
+    expect(verify).toContain("identity_workflow_sha:");
+    expect(verify).not.toContain("publication_split:");
+    expect(verify).toContain('test "$GITHUB_SHA" = "$CONTROL_WORKFLOW_SHA"');
+    expect(verify).toContain('test "$GITHUB_WORKFLOW_SHA" = "$CONTROL_WORKFLOW_SHA"');
+    expect(verify.indexOf('test "$GITHUB_WORKFLOW_SHA" = "$CONTROL_WORKFLOW_SHA"')).toBeLessThan(
+      verify.indexOf("actions/checkout@"),
+    );
+    expect(verify).toContain('for sha in "$IDENTITY_WORKFLOW_SHA" "$BASE_WORKFLOW_SHA" "$MCP_WORKFLOW_SHA" "$CONTROL_WORKFLOW_SHA"');
+    expect(verify).toContain('git merge-base --is-ancestor "$sha" "$CONTROL_WORKFLOW_SHA"');
+    expect(verify).toContain('git merge-base --is-ancestor "$IDENTITY_WORKFLOW_SHA" "$BASE_WORKFLOW_SHA"');
+    expect(verify).toContain('git merge-base --is-ancestor "$IDENTITY_WORKFLOW_SHA" "$MCP_WORKFLOW_SHA"');
+    expect(verify).toContain("identity_run_id=\"$(jq -er '.workflow.runId");
+    expect(verify).toContain("identity_run_attempt=\"$(jq -er '.workflow.runAttempt");
+    expect(verify).toContain('actions/runs/$identity_run_id/attempts/$identity_run_attempt');
+    expect(verify).toContain('test "$(jq -r .event <<<"$identity_run")" = workflow_dispatch');
+    expect(verify).toContain('test "$(jq -r .path <<<"$identity_run")" = .github/workflows/release-bundle.yml');
+    expect(verify).toContain('test "$(jq -r .head_sha <<<"$identity_run")" = "$IDENTITY_WORKFLOW_SHA"');
+    expect(verify).toContain("--workflow-sha \"$IDENTITY_WORKFLOW_SHA\"");
+    expect(verify).toContain("--signer-digest \"$IDENTITY_WORKFLOW_SHA\"");
+    expect(verify).toContain("npm install --global npm@11.18.0");
+    expect(verify).toContain('test "$(npm --version)" = 11.18.0');
+    expect(runbook).toContain("npm 10 can");
+    expect(runbook).toContain("its OIDC publish job is skipped entirely");
+    const boundary = JSON.parse(boundaryText) as { partialPublicationRecovery?: { baseMutation?: unknown; attestationMutation?: unknown } };
+    expect(boundary.partialPublicationRecovery?.baseMutation).toContain("skip the base OIDC job");
+    expect(boundary.partialPublicationRecovery?.attestationMutation).toContain("forbidden");
   });
 
   it("verifies the companion bootstrap tag and rejects unexpected registry tags", async () => {

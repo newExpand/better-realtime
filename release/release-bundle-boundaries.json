@@ -19,6 +19,24 @@
       "publishOrder": 2
     }
   ],
+  "workflowIdentityPolicy": {
+    "control": "the reviewed workflow commit executing the current dispatch",
+    "immutableIdentity": "the workflow commit recorded by the public identity asset and GitHub artifact attestations",
+    "publication": "the package-specific workflow commit, run ID, and attempt recorded by npm provenance"
+  },
+  "partialPublicationRecovery": {
+    "explicitInputs": [
+      "identity_workflow_sha",
+      "recover_partial_publication",
+      "resume_release_id",
+      "resume_base_publish_workflow_sha",
+      "resume_base_publish_run_id",
+      "resume_base_publish_run_attempt"
+    ],
+    "baseMutation": "skip the base OIDC job when an exact prior base publication is reconciled",
+    "attestationMutation": "forbidden while recover_partial_publication is true",
+    "verification": "bind immutable assets to identity_workflow_sha and npm provenance to each package publish workflow/run/attempt; verification-only accepts append-only reviewed control revisions without assuming either package publish revision equals the verifier revision"
+  },
   "partialSuccessPolicy": "verify exact published packages; never republish; publish the next absent package only after prior package byte/provenance verification",
   "bootstrapPolicy": "better-realtime-mcp must exist and have its own trusted publisher before this workflow is dispatched"
 }

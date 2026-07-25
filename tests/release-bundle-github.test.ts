@@ -647,3 +647,46 @@ describe.sequential("two-package GitHub release visibility reconciliation", () =
     });
   });
 });
+
+describe("partial-publication identity reconciliation", () => {
+  it("accepts only the exact prior base publish workflow, run, attempt, and immutable Release", async () => {
+    const { assertExpectedReleaseId, assertPriorPublishIdentity } = await import("../scripts/release-bundle-github.ts");
+    const expected = { workflowSha: "8".repeat(40), runId: "30155752238", runAttempt: "1", releaseId: 359732302 };
+    const intent = {
+      state: "present" as const,
+      runId: expected.runId,
+      runAttempt: expected.runAttempt,
+      releaseId: expected.releaseId,
+      identityDigest: "br-release-bundle-v1-approved",
+    };
+    const run = {
+      id: Number(expected.runId),
+      run_attempt: Number(expected.runAttempt),
+      event: "workflow_dispatch",
+      path: ".github/workflows/release-bundle.yml",
+      head_sha: expected.workflowSha,
+    };
+
+    expect(() => assertPriorPublishIdentity("better-realtime", expected, intent, expected.releaseId, run)).not.toThrow();
+    expect(() => assertPriorPublishIdentity("better-realtime", undefined, intent, expected.releaseId, run)).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_PRIOR_PUBLISH_IDENTITY_MISMATCH",
+    );
+    expect(() => assertPriorPublishIdentity("better-realtime", { ...expected, runId: "999" }, intent, expected.releaseId, run)).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_PRIOR_PUBLISH_IDENTITY_MISMATCH",
+    );
+    expect(() => assertPriorPublishIdentity("better-realtime", expected, intent, 1, run)).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_PRIOR_PUBLISH_IDENTITY_MISMATCH",
+    );
+    expect(() => assertPriorPublishIdentity("better-realtime", expected, intent, expected.releaseId, { ...run, head_sha: "9".repeat(40) })).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_PUBLISH_RUN_MISMATCH",
+    );
+    expect(() => assertPriorPublishIdentity("better-realtime", expected, intent, expected.releaseId, { ...run, path: ".github/workflows/release.yml" })).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_PUBLISH_RUN_MISMATCH",
+    );
+    expect(() => assertExpectedReleaseId(String(expected.releaseId), expected.releaseId)).not.toThrow();
+    expect(() => assertExpectedReleaseId("absent", expected.releaseId)).not.toThrow();
+    expect(() => assertExpectedReleaseId("1", expected.releaseId)).toThrow(
+      "RT_RELEASE_BUNDLE_PROVIDER_EXPECTED_RELEASE_ID_MISMATCH",
+    );
+  });
+});

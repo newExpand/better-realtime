@@ -9,13 +9,13 @@
     },
     {
       "path": ".github/workflows/release-bundle-verify.yml",
-      "bytes": 13510,
-      "digest": "sha256:e2cc6986f1d6afe8e77e00201c738b182b7c29be3ba4aa1c1eb0623935839dd4"
+      "bytes": 16186,
+      "digest": "sha256:55b7f703d36f325d6124473ddde3744dd11c9ea6b0c98a89b77db4721d4440e7"
     },
     {
       "path": ".github/workflows/release-bundle.yml",
-      "bytes": 40749,
-      "digest": "sha256:98c1972862910544f0513a89adc79cef8fd24d50c88c54aadcf0354073f03026"
+      "bytes": 46439,
+      "digest": "sha256:2c3b5a869efc21f0d0ac3d88d16d5dd67be9a8c4af5e20eaec2c858452da6741"
     },
     {
       "path": ".github/workflows/release-verify.yml",
@@ -249,8 +249,8 @@
     },
     {
       "path": "docs/public/release-bundle.md",
-      "bytes": 13167,
-      "digest": "sha256:c3ee38181b9fbaed4eb1fa80bef35d4e44b5c05184d793e1c077eb0883733db2"
+      "bytes": 15179,
+      "digest": "sha256:12ce3f927fa7b5480361d206f0d67be5d78d9e3e96b0b2b46bc9a277ea730e7c"
     },
     {
       "path": "docs/public/release-integrity.md",
@@ -1039,8 +1039,8 @@
     },
     {
       "path": "release/public-history.json",
-      "bytes": 806,
-      "digest": "sha256:927e203a770d1c365a9df04b413d318e2dd3762630d72e13b50c51a5d80d8889"
+      "bytes": 970,
+      "digest": "sha256:ea07dd08171347fa53ce394cb16cd1090c9160b18d2e056ff43a09c079429378"
     },
     {
       "path": "release/public-release-bundle-identity.schema.json",
@@ -1059,8 +1059,8 @@
     },
     {
       "path": "release/release-bundle-boundaries.json",
-      "bytes": 893,
-      "digest": "sha256:6dd80c3221d83e3eb957a08ac686c582085d18b54268f6475ac78b9c1b615365"
+      "bytes": 1970,
+      "digest": "sha256:44c0b58e6780dfab0c7cc789b32f42329d0cd466fdd8c51c496c7f7b6ec88db2"
     },
     {
       "path": "scripts/acquire-compatibility-fixture.ts",
@@ -1199,8 +1199,8 @@
     },
     {
       "path": "scripts/release-bundle-github.ts",
-      "bytes": 36637,
-      "digest": "sha256:3978f984cefc63fa32fb208ad4286c8145b6b11f6e81ad269ce75a03c00b28b7"
+      "bytes": 38950,
+      "digest": "sha256:c4f89c784a84c8e165c812ef26a342e207882f7009443e4bee2e0791fa9cd12f"
     },
     {
       "path": "scripts/release-bundle-state-machine.ts",
@@ -1424,8 +1424,8 @@
     },
     {
       "path": "tests/npm-provenance.test.ts",
-      "bytes": 8115,
-      "digest": "sha256:bfdeadaefa53cde738e30fb0e4aac19559d7157db0476d9beb1ff16fe386a116"
+      "bytes": 8255,
+      "digest": "sha256:32baa70e21d57da022b1f6e6cacf5026fb8fc0588fd8e91247d065025403e774"
     },
     {
       "path": "tests/package-content-policy.test.ts",
@@ -1454,8 +1454,8 @@
     },
     {
       "path": "tests/release-bundle-github.test.ts",
-      "bytes": 28096,
-      "digest": "sha256:38eb18545956b653e74129df6d9bc573fd03cdcb373f5ce0d4bdb7bd7d05b86f"
+      "bytes": 30449,
+      "digest": "sha256:31df8982bab0c5a972bd319b500dcc57ffd7e57b35b45b8166d8cbbb3105d02a"
     },
     {
       "path": "tests/release-bundle-identity.test.ts",
@@ -1469,8 +1469,8 @@
     },
     {
       "path": "tests/release-bundle-workflow.test.ts",
-      "bytes": 19221,
-      "digest": "sha256:a28761cffabe7c1f2806043b9c33496cbc68a27591443e357d8f001e29db6ed1"
+      "bytes": 23621,
+      "digest": "sha256:b806fe31e7cbc9a1028dc5531beb6f665e010b56ff0c55cf9606f773719ba081"
     },
     {
       "path": "tests/release-identity.test.ts",

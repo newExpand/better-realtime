@@ -50,9 +50,40 @@ grants the unavailable `Workflows: write` permission to `GITHUB_TOKEN`.
 [GitHub's Create and Update Release contract](https://docs.github.com/en/rest/releases/releases)
 is authoritative for this boundary.
 
-The draft is published only after all five assets have exact identity and all three non-checksum artifacts have GitHub artifact attestations. `better-realtime` is published and fully verified before `better-realtime-mcp` becomes eligible for publication. Each publish job has a different protected GitHub Environment and a package-qualified durable publish-intent marker. If one package exists with exact bytes, a rerun verifies it and never publishes it again. If a publish intent exists while registry absence remains ambiguous, the workflow stops rather than repeating `npm publish`.
+The draft is published only after all five assets have exact identity and all three non-checksum artifacts have GitHub artifact attestations. `better-realtime` is published and fully verified before `better-realtime-mcp` becomes eligible for publication. Each publish job has a different protected GitHub Environment and a package-qualified durable publish-intent marker. An explicitly approved partial-publication recovery dispatch verifies an exact existing base package and never enters its OIDC publish job. If a publish intent exists while registry absence remains ambiguous, the workflow stops rather than repeating `npm publish`. After the companion package is visible, never redispatch `release-bundle.yml`; use only the no-OIDC verification workflow.
 
 `release-bundle-verify.yml` is verification-only. It has no OIDC authority and no publish command. It downloads the immutable GitHub assets by numeric Release ID; verifies the annotated tag, public identity schema and every source/workflow/Release/package field; checks SHA-256, SHA-512, integrity, packed and unpacked sizes, exact file manifests, checksum sidecars, expected dist-tags, and all three GitHub artifact attestations; retrieves both registry tarballs with bounded polling; compares every byte; installs the exact tarballs in isolated browser/server/MCP consumers; and independently verifies each npm signature/provenance identity. A registry or dist-tag lookup error is a verification failure and is never interpreted as an absent tag.
+
+The workflow pins npm `11.18.0` before reading `npm audit signatures
+--include-attestations` output and requires that exact version. npm 10 can
+report empty `invalid` and `missing` arrays without emitting the verified
+attestation bundle required by this verifier. That older response is
+incomplete, not a successful proof, and remains fail-closed.
+
+A partial-publication recovery can legitimately have three different workflow
+identities:
+
+- the workflow commit recorded by the immutable public identity and GitHub
+  artifact attestations;
+- the workflow commit/run/attempt that published each npm package;
+- the newer reviewed control workflow commit that performs recovery.
+
+Recovery accepts that split only through explicit inputs. It verifies the
+existing immutable identity and attestations against their original workflow,
+verifies each package provenance against that package's original publish
+workflow/run/attempt, and checks that all older workflow revisions are
+ancestors of the current reviewed recovery revision. When the base package is
+already exact, its OIDC publish job is skipped entirely; registry bytes and
+provenance are verified read-only before the companion package can become
+eligible. A missing or mismatched Release ID, workflow SHA, run, attempt,
+intent, asset, attestation, or registry artifact stops recovery. The workflow
+never treats an existing version as permission to call `npm publish` again.
+The standalone verifier also binds its actual GitHub execution revision to the
+reviewed control SHA and validates the immutable identity's recorded
+workflow run/attempt against the Actions API. It accepts independently recorded
+identity, base-publish, and companion-publish revisions only when each is an
+ancestor of that control revision and each recorded run points to the exact
+workflow path and head SHA.
 
 ## Trusted Publisher bootstrap for `better-realtime-mcp`
 

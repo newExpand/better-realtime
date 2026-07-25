@@ -8,6 +8,7 @@ on:
       release_id: { required: true, type: string }
       source_sha: { required: true, type: string }
       workflow_sha: { required: true, type: string }
+      identity_workflow_sha: { required: true, type: string }
       evidence_generated_at: { required: true, type: string }
       expected_base_sha256: { required: true, type: string }
       expected_base_size: { required: true, type: string }
@@ -32,6 +33,7 @@ on:
       release_id: { required: true, type: string }
       source_sha: { required: true, type: string }
       workflow_sha: { required: true, type: string }
+      identity_workflow_sha: { required: true, type: string }
       evidence_generated_at: { required: true, type: string }
       expected_base_sha256: { required: true, type: string }
       expected_base_size: { required: true, type: string }
@@ -67,6 +69,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ inputs.release_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          CONTROL_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
           BASE_SHA256: ${{ inputs.expected_base_sha256 }}
           BASE_SIZE: ${{ inputs.expected_base_size }}
           MCP_SHA256: ${{ inputs.expected_mcp_sha256 }}
@@ -74,6 +77,8 @@ jobs:
           ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
         run: |
           set -euo pipefail
+          test "$GITHUB_SHA" = "$CONTROL_WORKFLOW_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$CONTROL_WORKFLOW_SHA"
           test "$TAG" = "v$VERSION"
           [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
@@ -108,7 +113,7 @@ jobs:
           test "$(sha256sum "$ROOT/release/better-realtime-mcp-$VERSION.tgz" | cut -d' ' -f1)" = "$MCP_SHA256"
           test "$(wc -c < "$ROOT/release/better-realtime-mcp-$VERSION.tgz" | tr -d ' ')" = "$MCP_SIZE"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { ref: "${{ inputs.workflow_sha }}", persist-credentials: false }
+        with: { ref: "${{ inputs.workflow_sha }}", fetch-depth: 0, persist-credentials: false }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: "22.x", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
       - run: corepack enable
@@ -121,7 +126,8 @@ jobs:
           TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ inputs.release_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          CONTROL_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          IDENTITY_WORKFLOW_SHA: ${{ inputs.identity_workflow_sha }}
           EVIDENCE_GENERATED_AT: ${{ inputs.evidence_generated_at }}
           BASE_SHA256: ${{ inputs.expected_base_sha256 }}
           BASE_SIZE: ${{ inputs.expected_base_size }}
@@ -136,9 +142,12 @@ jobs:
           ROOT: ${{ runner.temp }}/better-realtime-bundle-verification
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CONTROL_WORKFLOW_SHA"
+          git cat-file -e "$IDENTITY_WORKFLOW_SHA^{commit}"
+          git merge-base --is-ancestor "$IDENTITY_WORKFLOW_SHA" "$CONTROL_WORKFLOW_SHA"
           pnpm tsx scripts/verify-public-release-bundle.ts \
             --identity "$ROOT/release/better-realtime-$VERSION.bundle.identity.json" \
-            --version "$VERSION" --source-sha "$SOURCE_SHA" --workflow-sha "$WORKFLOW_SHA" \
+            --version "$VERSION" --source-sha "$SOURCE_SHA" --workflow-sha "$IDENTITY_WORKFLOW_SHA" \
             --tag "$TAG" --tag-object "$RELEASE_TAG_OBJECT" --release-id "$RELEASE_ID" \
             --evidence-generated-at "$EVIDENCE_GENERATED_AT" \
             --base-artifact "$ROOT/release/better-realtime-$VERSION.tgz" \
@@ -149,10 +158,19 @@ jobs:
             --mcp-checksum "$ROOT/release/better-realtime-mcp-$VERSION.tgz.sha256" \
             --mcp-manifest release/mcp-package-files.json --mcp-sha256 "$MCP_SHA256" \
             --mcp-size "$MCP_SIZE" --mcp-unpacked-size "$MCP_UNPACKED_SIZE" --mcp-files "$MCP_FILES" --mcp-latest "$MCP_LATEST"
+          identity_file="$ROOT/release/better-realtime-$VERSION.bundle.identity.json"
+          identity_run_id="$(jq -er '.workflow.runId | select(test("^[1-9][0-9]*$"))' "$identity_file")"
+          identity_run_attempt="$(jq -er '.workflow.runAttempt | select(test("^[1-9][0-9]*$"))' "$identity_file")"
+          identity_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$identity_run_id/attempts/$identity_run_attempt")"
+          test "$(jq -r .id <<<"$identity_run")" = "$identity_run_id"
+          test "$(jq -r .run_attempt <<<"$identity_run")" = "$identity_run_attempt"
+          test "$(jq -r .event <<<"$identity_run")" = workflow_dispatch
+          test "$(jq -r .path <<<"$identity_run")" = .github/workflows/release-bundle.yml
+          test "$(jq -r .head_sha <<<"$identity_run")" = "$IDENTITY_WORKFLOW_SHA"
           for asset in "better-realtime-$VERSION.tgz" "better-realtime-mcp-$VERSION.tgz" "better-realtime-$VERSION.bundle.identity.json"; do
             gh attestation verify "$ROOT/release/$asset" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-bundle.yml" \
-              --signer-digest "$WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$WORKFLOW_SHA"
+              --signer-digest "$IDENTITY_WORKFLOW_SHA" --source-ref refs/heads/main --source-digest "$IDENTITY_WORKFLOW_SHA"
           done
       - name: Wait for both registry artifacts and compare every byte
         env:
@@ -175,13 +193,34 @@ jobs:
           MCP_WORKFLOW_SHA: ${{ inputs.mcp_publish_workflow_sha }}
           MCP_RUN_ID: ${{ inputs.mcp_publish_run_id }}
           MCP_RUN_ATTEMPT: ${{ inputs.mcp_publish_run_attempt }}
-          REVIEWED_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          CONTROL_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+          IDENTITY_WORKFLOW_SHA: ${{ inputs.identity_workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
           EXPECTED_BASE_LATEST: ${{ inputs.expected_base_latest }}
           EXPECTED_MCP_LATEST: ${{ inputs.expected_mcp_latest }}
         run: |
           set -euo pipefail
-          test "$BASE_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"
-          test "$MCP_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"
+          test "$(npm --version)" = 11.18.0
+          for sha in "$IDENTITY_WORKFLOW_SHA" "$BASE_WORKFLOW_SHA" "$MCP_WORKFLOW_SHA" "$CONTROL_WORKFLOW_SHA"; do
+            [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+            git cat-file -e "$sha^{commit}"
+            git merge-base --is-ancestor "$sha" "$CONTROL_WORKFLOW_SHA"
+          done
+          git merge-base --is-ancestor "$IDENTITY_WORKFLOW_SHA" "$BASE_WORKFLOW_SHA"
+          git merge-base --is-ancestor "$IDENTITY_WORKFLOW_SHA" "$MCP_WORKFLOW_SHA"
+          verify_publish_run() {
+            workflow_sha="$1"
+            run_id="$2"
+            run_attempt="$3"
+            run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt")"
+            test "$(jq -r .id <<<"$run")" = "$run_id"
+            test "$(jq -r .run_attempt <<<"$run")" = "$run_attempt"
+            test "$(jq -r .event <<<"$run")" = workflow_dispatch
+            test "$(jq -r .path <<<"$run")" = .github/workflows/release-bundle.yml
+            test "$(jq -r .head_sha <<<"$run")" = "$workflow_sha"
+          }
+          verify_publish_run "$BASE_WORKFLOW_SHA" "$BASE_RUN_ID" "$BASE_RUN_ATTEMPT"
+          verify_publish_run "$MCP_WORKFLOW_SHA" "$MCP_RUN_ID" "$MCP_RUN_ATTEMPT"
           (cd "$ROOT/signatures" && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$VERSION" "better-realtime-mcp@$VERSION" && npm audit signatures --json --include-attestations > audit.json)
           pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-$VERSION.tgz" --package better-realtime --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-alpha --workflow-sha "$BASE_WORKFLOW_SHA" --publish-run-id "$BASE_RUN_ID" --publish-run-attempt "$BASE_RUN_ATTEMPT"
           pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-mcp-$VERSION.tgz" --package better-realtime-mcp --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-mcp-alpha --workflow-sha "$MCP_WORKFLOW_SHA" --publish-run-id "$MCP_RUN_ID" --publish-run-attempt "$MCP_RUN_ATTEMPT"
