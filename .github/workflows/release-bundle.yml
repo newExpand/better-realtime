@@ -588,6 +588,7 @@ jobs:
     if: >-
       ${{
         always()
+        && !cancelled()
         && needs.build.result == 'success'
         && needs.stage-release.result == 'success'
         && needs.prepare-base.result == 'success'
@@ -642,6 +643,15 @@ jobs:
 
   prepare-mcp:
     needs: [build, stage-release, finalize-release, verify-base]
+    if: >-
+      ${{
+        always()
+        && !cancelled()
+        && needs.build.result == 'success'
+        && needs.stage-release.result == 'success'
+        && needs.finalize-release.result == 'success'
+        && needs.verify-base.result == 'success'
+      }}
     runs-on: ubuntu-latest
     permissions: { contents: read, checks: read, id-token: none }
     outputs:

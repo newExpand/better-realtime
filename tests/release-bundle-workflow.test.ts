@@ -71,10 +71,16 @@ describe("two-package release workflow security", () => {
     const prepareBase = job(workflow, "prepare-base", "publish-base");
     const publishBase = job(workflow, "publish-base", "verify-base");
     const verifyBase = job(workflow, "verify-base", "prepare-mcp");
+    const prepareMcp = job(workflow, "prepare-mcp", "publish-mcp");
 
     expect(publishBase).toContain("if: needs.prepare-base.outputs.publish == 'true'");
     expect(verifyBase).toContain("needs: [build, stage-release, prepare-base, publish-base]");
     expect(verifyBase).toContain("needs.publish-base.result == 'skipped'");
+    expect(verifyBase).toContain("!cancelled()");
+    expect(prepareMcp).toContain("always()");
+    expect(prepareMcp).toContain("!cancelled()");
+    expect(prepareMcp).toContain("needs.finalize-release.result == 'success'");
+    expect(prepareMcp).toContain("needs.verify-base.result == 'success'");
     expect(verifyBase).toContain("PRIOR_PUBLISH_WORKFLOW_SHA");
     expect(verifyBase).toContain("NEW_PUBLISH_WORKFLOW_SHA");
     expect(verifyBase).toContain("npm install --global npm@11.18.0");
