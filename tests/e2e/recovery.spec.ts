@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForHttpStatusTransition } from "./http-status-transition.ts";
 import { createServer } from "node:http";
 
 const sequence = async (page: import("@playwright/test").Page) =>
@@ -176,8 +177,37 @@ test("a real browser converges across interruption, replay, dedupe, ACK loss, an
     probe.__outageSocket = socket;
     await ready;
   });
+  const healthStatus = ({ remainingMs }: { remainingMs: number }) =>
+    page.evaluate(async (timeoutMs) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return (await fetch("/health", { signal: controller.signal })).status;
+      } finally {
+        clearTimeout(timer);
+      }
+    }, Math.max(1, Math.floor(remainingMs)));
+  const databaseOutageTransitionTimeoutMs = 5_000;
+  await waitForHttpStatusTransition(
+    healthStatus,
+    { expectedStatus: 200, timeoutMs: databaseOutageTransitionTimeoutMs, intervalMs: 100 }
+  );
+  const databaseOutageResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === "/api/chaos/db-outage"
+  );
   await page.getByRole("button", { name: "Pause database" }).click();
-  await expect.poll(() => page.evaluate(async () => (await fetch("/health")).status), { timeout: 1_000, intervals: [50] }).toBe(503);
+  const databaseOutageResponse = await databaseOutageResponsePromise;
+  expect(databaseOutageResponse.ok()).toBe(true);
+  expect(await databaseOutageResponse.json()).toMatchObject({ ok: true, action: "db-outage" });
+  // The harness schedules automatic recovery 1.25 seconds after the
+  // authoritative pause response. Five seconds covers a loaded runner plus
+  // the ensuing gateway restart window, while still requiring an observed
+  // unready boundary rather than accepting eventual recovery as success.
+  await waitForHttpStatusTransition(
+    healthStatus,
+    { expectedStatus: 503, timeoutMs: databaseOutageTransitionTimeoutMs, intervalMs: 100 }
+  );
   const outageProbe = await page.evaluate(async () => {
     const probe = window as unknown as { __outageProbe?: { operationSent: boolean; closed: boolean; errors: string[]; successKinds: string[] }; __outageSocket?: WebSocket };
     const state = probe.__outageProbe;

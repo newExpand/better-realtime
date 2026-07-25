@@ -86,4 +86,57 @@ describe("browser acceptance isolation", () => {
     expect(source).toContain('expect(reenableGateway).toHaveAttribute("aria-pressed", "true")');
     expect(source).toContain('getByText("State converges; missing producer evidence stays indeterminate")');
   });
+
+  it("observes the authoritative database-outage response before the bounded health transition", async () => {
+    const source = await readFile(resolve(root, "tests/e2e/recovery.spec.ts"), "utf8");
+    const healthTransition = source.indexOf("const databaseOutageTransitionTimeoutMs = 5_000");
+    const healthReady = source.indexOf("expectedStatus: 200", healthTransition);
+    const outageResponse = source.indexOf("const databaseOutageResponsePromise = page.waitForResponse");
+    const outageClick = source.indexOf('getByRole("button", { name: "Pause database" }).click()');
+    const outageIdentity = source.indexOf('response.request().method() === "POST"');
+    const outageBody = source.indexOf('expect(await databaseOutageResponse.json()).toMatchObject({ ok: true, action: "db-outage" })');
+    const healthUnavailable = source.indexOf("expectedStatus: 503", outageBody);
+    expect(healthTransition).toBeGreaterThan(-1);
+    expect(healthReady).toBeGreaterThan(healthTransition);
+    expect(outageResponse).toBeGreaterThan(healthReady);
+    expect(outageResponse).toBeGreaterThan(-1);
+    expect(outageClick).toBeGreaterThan(outageResponse);
+    expect(outageIdentity).toBeGreaterThan(outageResponse);
+    expect(outageBody).toBeGreaterThan(outageClick);
+    expect(healthUnavailable).toBeGreaterThan(outageBody);
+    expect(source).toContain('new URL(response.url()).pathname === "/api/chaos/db-outage"');
+    expect(source).toContain("expect(databaseOutageResponse.ok()).toBe(true)");
+    expect(source).toContain("const databaseOutageTransitionTimeoutMs = 5_000");
+    expect(source).not.toContain('{ timeout: 1_000, intervals: [50] }).toBe(503)');
+  });
+
+  it("preserves only bounded Playwright failure evidence from the browser job", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/ci.yml"), "utf8");
+    expect(workflow).toContain("id: browser-e2e");
+    expect(workflow).toContain("id: prepare_browser_evidence");
+    expect(workflow).toContain(
+      "steps.prepare_browser_evidence.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
+    expect(workflow).toContain("run: pnpm e2e:prepare-failure-evidence");
+    expect(workflow).toContain("actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0");
+    expect(workflow).toContain("output/playwright/ci-failure-evidence/**/test-failed-*.png");
+    expect(workflow).toContain("output/playwright/ci-failure-evidence/**/video.webm");
+    expect(workflow).toContain("output/playwright/ci-failure-evidence/**/trace.zip");
+    expect(workflow).toContain("output/playwright/ci-failure-evidence/**/error-context.md");
+    expect(workflow).toContain("if-no-files-found: error");
+    expect(workflow).toContain("retention-days: 3");
+    expect(workflow).toContain("include-hidden-files: false");
+    expect(workflow).not.toContain("path: output/playwright");
+    expect(workflow).not.toContain("output/playwright/test-results/**");
+    expect(workflow).not.toContain("path: .");
+    expect(workflow).not.toContain(".env");
+    expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
+    expect(workflow).toMatch(/\npermissions:\n  contents: read\n/u);
+    expect(workflow).not.toMatch(/\npermissions:\n(?:.*\n)*?\s+\w[\w-]*: write/u);
+    expect(workflow).toContain("github.event_name == 'push'");
+    expect(workflow).toContain("github.ref == 'refs/heads/main'");
+    expect(workflow).toContain("This job has no");
+    expect(workflow).not.toContain("secrets.");
+    expect(workflow).not.toContain("id-token: write");
+  });
 });

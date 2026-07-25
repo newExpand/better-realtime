@@ -30,6 +30,7 @@
     "dev:server": "pnpm --filter @realtime/server-node dev",
     "dev:demo": "pnpm --filter @realtime/recovery-demo dev",
     "e2e": "tsx scripts/run-browser-matrix.ts",
+    "e2e:prepare-failure-evidence": "tsx scripts/prepare-playwright-failure-evidence.ts",
     "e2e:headed": "playwright test --headed",
     "package:pack": "tsx scripts/pack-runtime.ts",
     "package:pack:mcp": "tsx scripts/pack-mcp.ts",
