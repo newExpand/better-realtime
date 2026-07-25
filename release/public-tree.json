@@ -14,8 +14,8 @@
     },
     {
       "path": ".github/workflows/release-bundle.yml",
-      "bytes": 46731,
-      "digest": "sha256:9413e61ede737ce47efcc1b1818ad65778cab1196134935396c569d415825fd4"
+      "bytes": 47786,
+      "digest": "sha256:ce07930fe085aab2c76ccf713431c3c953d7ed8cd451c41785cc7a1c8b1366ef"
     },
     {
       "path": ".github/workflows/release-verify.yml",
@@ -1469,8 +1469,8 @@
     },
     {
       "path": "tests/release-bundle-workflow.test.ts",
-      "bytes": 23990,
-      "digest": "sha256:44013a889df8a0562c8a8a36376f1fc14ebea7f9af944c19518251913688c37c"
+      "bytes": 25059,
+      "digest": "sha256:b8207c1b5a54e1d247ba66fa486e7507d2d9b6f780b21c3503b5f4a6dfa10b82"
     },
     {
       "path": "tests/release-identity.test.ts",

@@ -685,7 +685,15 @@ jobs:
 
   publish-mcp:
     needs: [build, stage-release, finalize-release, prepare-mcp]
-    if: needs.prepare-mcp.outputs.publish == 'true'
+    if: >-
+      ${{
+        always()
+        && !cancelled()
+        && needs.build.result == 'success'
+        && needs.stage-release.result == 'success'
+        && needs.finalize-release.result == 'success'
+        && needs.prepare-mcp.result == 'success'
+      }}
     runs-on: ubuntu-latest
     environment: npm-mcp-alpha
     permissions: { actions: read, contents: read, checks: write, id-token: write }
@@ -718,13 +726,21 @@ jobs:
           test "$(jq -r .immutable <<<"$release_json")" = true
           test "$(jq -r .draft <<<"$release_json")" = false
           test "$(jq -r .target_commitish <<<"$release_json")" = "${{ inputs.source_sha }}"
-          if [ "$SHOULD_PUBLISH" = true ]; then
-            status="$(curl --silent --show-error --output registry.json --write-out '%{http_code}' "https://registry.npmjs.org/better-realtime-mcp/$VERSION")"
-            test "$status" = 404
-            marker="publish-intent/$VERSION/better-realtime-mcp/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
-            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
-          fi
+          case "$SHOULD_PUBLISH" in
+            true)
+              status="$(curl --silent --show-error --output registry.json --write-out '%{http_code}' "https://registry.npmjs.org/better-realtime-mcp/$VERSION")"
+              test "$status" = 404
+              marker="publish-intent/$VERSION/better-realtime-mcp/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
+              npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
+              ;;
+            false)
+              ;;
+            *)
+              echo "RT_RELEASE_BUNDLE_MCP_PUBLISH_DECISION_INVALID" >&2
+              exit 1
+              ;;
+          esac
       - id: result
         env:
           SHOULD_PUBLISH: ${{ needs.prepare-mcp.outputs.publish }}
@@ -732,18 +748,38 @@ jobs:
           ORIGINAL_RUN_ATTEMPT: ${{ needs.prepare-mcp.outputs.publish_run_attempt }}
           ORIGINAL_WORKFLOW_SHA: ${{ needs.prepare-mcp.outputs.publish_workflow_sha }}
         run: |
-          if [ "$SHOULD_PUBLISH" = true ]; then
-            echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-            echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish_workflow_sha=$ORIGINAL_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
-            echo "publish_run_id=$ORIGINAL_RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "publish_run_attempt=$ORIGINAL_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          fi
+          case "$SHOULD_PUBLISH" in
+            true)
+              echo "publish_workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+              echo "publish_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+              echo "publish_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+              ;;
+            false)
+              test "$ORIGINAL_WORKFLOW_SHA" != ""
+              test "$ORIGINAL_RUN_ID" != ""
+              test "$ORIGINAL_RUN_ATTEMPT" != ""
+              echo "publish_workflow_sha=$ORIGINAL_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+              echo "publish_run_id=$ORIGINAL_RUN_ID" >> "$GITHUB_OUTPUT"
+              echo "publish_run_attempt=$ORIGINAL_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "RT_RELEASE_BUNDLE_MCP_RESULT_DECISION_INVALID" >&2
+              exit 1
+              ;;
+          esac
 
   verify:
     needs: [build, stage-release, finalize-release, prepare-base, publish-mcp]
+    if: >-
+      ${{
+        always()
+        && !cancelled()
+        && needs.build.result == 'success'
+        && needs.stage-release.result == 'success'
+        && needs.finalize-release.result == 'success'
+        && needs.prepare-base.result == 'success'
+        && needs.publish-mcp.result == 'success'
+      }}
     uses: ./.github/workflows/release-bundle-verify.yml
     with:
       version: ${{ inputs.version }}

@@ -72,6 +72,8 @@ describe("two-package release workflow security", () => {
     const publishBase = job(workflow, "publish-base", "verify-base");
     const verifyBase = job(workflow, "verify-base", "prepare-mcp");
     const prepareMcp = job(workflow, "prepare-mcp", "publish-mcp");
+    const publishMcp = job(workflow, "publish-mcp", "verify");
+    const finalVerify = job(workflow, "verify");
 
     expect(publishBase).toContain("if: needs.prepare-base.outputs.publish == 'true'");
     expect(verifyBase).toContain("needs: [build, stage-release, prepare-base, publish-base]");
@@ -81,6 +83,20 @@ describe("two-package release workflow security", () => {
     expect(prepareMcp).toContain("!cancelled()");
     expect(prepareMcp).toContain("needs.finalize-release.result == 'success'");
     expect(prepareMcp).toContain("needs.verify-base.result == 'success'");
+    expect(publishMcp).toContain("always()");
+    expect(publishMcp).toContain("!cancelled()");
+    expect(publishMcp).toContain("needs.prepare-mcp.result == 'success'");
+    expect(publishMcp).toContain('case "$SHOULD_PUBLISH" in');
+    expect(publishMcp).not.toContain("if: needs.prepare-mcp.outputs.publish == 'true'");
+    expect(publishMcp).toContain("RT_RELEASE_BUNDLE_MCP_PUBLISH_DECISION_INVALID");
+    expect(publishMcp).toContain("RT_RELEASE_BUNDLE_MCP_RESULT_DECISION_INVALID");
+    expect(publishMcp).toContain('test "$ORIGINAL_WORKFLOW_SHA" != ""');
+    expect(publishMcp).toContain('test "$ORIGINAL_RUN_ID" != ""');
+    expect(publishMcp).toContain('test "$ORIGINAL_RUN_ATTEMPT" != ""');
+    expect(finalVerify).toContain("always()");
+    expect(finalVerify).toContain("!cancelled()");
+    expect(finalVerify).toContain("needs.finalize-release.result == 'success'");
+    expect(finalVerify).toContain("needs.publish-mcp.result == 'success'");
     expect(verifyBase).toContain("PRIOR_PUBLISH_WORKFLOW_SHA");
     expect(verifyBase).toContain("NEW_PUBLISH_WORKFLOW_SHA");
     expect(verifyBase).toContain("npm install --global npm@11.18.0");
