@@ -80,7 +80,7 @@ gh attestation verify "github/better-realtime-$version.identity.json" \
 ```
 
 The public identity JSON never contains private repository, private export commit/tag, local path, internal document, task/thread, or credential data. Private export identity remains in the private release record.
-Its `distTags` object records the exact registry tag state approved for that publication verification; `latest` need not equal the newly published version.
+Its `distTags` object records the exact registry tag state approved for that publication verification; `latest` need not equal the newly published version, and the companion record also preserves `bootstrap -> 0.0.0-bootstrap.0`.
 Because the identity asset must be attached before an immutable Release is finalized, its evidence status is `prepublication-approved`. Successful post-publication checks verify the registry bytes, npm provenance run, and tags against that immutable record; they do not rewrite the identity asset to claim a later state.
 
 GitHub documents what [artifact attestations establish](https://docs.github.com/en/actions/concepts/security/artifact-attestations) and how to [generate and verify them](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations). npm documents the scope of [package provenance statements](https://docs.npmjs.com/generating-provenance-statements).

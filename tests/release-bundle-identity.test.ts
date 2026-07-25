@@ -144,7 +144,10 @@ describe("two-package release identity", () => {
     await promisify(execFile)("bash", ["-lc", publicCommand], { cwd: resolve(".") });
     const publicBytes = await readFile(publicOutput);
     const publicIdentity = JSON.parse(publicBytes.toString("utf8")) as {
-      packages: Array<{ artifact: { unpackedSize: number }; expectedNpmRegistry: { distTags: { latest: string | null } } }>;
+      packages: Array<{
+        artifact: { unpackedSize: number };
+        expectedNpmRegistry: { distTags: { latest: string | null; bootstrap?: string } };
+      }>;
       evidence: { verification: { checks: string[] } };
     };
     const publicSchema = JSON.parse(await readFile(resolve("release/public-release-bundle.schema.json"), "utf8"));
@@ -153,8 +156,18 @@ describe("two-package release identity", () => {
     } }).compile(publicSchema);
     expect(validatePublic(publicIdentity), JSON.stringify(validatePublic.errors)).toBe(true);
     expect(validatePublic({ ...publicIdentity, privateRepository: "private/example" })).toBe(false);
+    const missingBootstrap = structuredClone(publicIdentity);
+    delete missingBootstrap.packages[1]!.expectedNpmRegistry.distTags.bootstrap;
+    expect(validatePublic(missingBootstrap)).toBe(false);
+    const baseWithBootstrap = structuredClone(publicIdentity);
+    baseWithBootstrap.packages[0]!.expectedNpmRegistry.distTags.bootstrap = "0.0.0-bootstrap.0";
+    expect(validatePublic(baseWithBootstrap)).toBe(false);
     expect(publicIdentity.packages.map(({ artifact }) => artifact.unpackedSize)).toEqual([4, 3]);
     expect(publicIdentity.packages.map(({ expectedNpmRegistry }) => expectedNpmRegistry.distTags.latest)).toEqual(["0.1.0-alpha.4", null]);
+    expect(publicIdentity.packages.map(({ expectedNpmRegistry }) => expectedNpmRegistry.distTags.bootstrap)).toEqual([
+      undefined,
+      "0.0.0-bootstrap.0",
+    ]);
     expect(publicIdentity.evidence.verification.checks).not.toContain("npm-registry-byte-equality");
     expect(() => adoptPublicReleaseBundleIdentity(created, publicBytes, "b".repeat(40), 456, "d".repeat(40))).toThrow(
       "RT_RELEASE_BUNDLE_ADOPT_PUBLIC_IDENTITY_MISMATCH",
@@ -240,7 +253,9 @@ describe("two-package release identity", () => {
         ...value.digests,
         size: value.report.size,
         fileCount: value.report.files.length,
-        distTags: { alpha: version, latest },
+        distTags: value.name === "better-realtime-mcp"
+          ? { alpha: version, latest, bootstrap: "0.0.0-bootstrap.0" }
+          : { alpha: version, latest },
       },
       environment,
     });
@@ -289,6 +304,18 @@ describe("two-package release identity", () => {
     const changed = structuredClone(publicIdentity);
     changed.packages[1]!.expectedNpmRegistry.sha512 = "0".repeat(128);
     await expect(verifyPublicReleaseBundle(changed, expected)).rejects.toThrow("RT_PUBLIC_RELEASE_BUNDLE_VERIFY_PUBLIC_PACKAGE_RECORD_MISMATCH:better-realtime-mcp");
+    const movedBootstrap = structuredClone(publicIdentity);
+    movedBootstrap.packages[1]!.expectedNpmRegistry.distTags.bootstrap = version;
+    await expect(verifyPublicReleaseBundle(movedBootstrap, expected)).rejects.toThrow(
+      "RT_PUBLIC_RELEASE_BUNDLE_VERIFY_SCHEMA_INVALID",
+    );
+    const unexpectedTag = structuredClone(publicIdentity) as typeof publicIdentity & {
+      packages: Array<{ expectedNpmRegistry: { distTags: Record<string, unknown> } }>;
+    };
+    unexpectedTag.packages[1]!.expectedNpmRegistry.distTags.preview = version;
+    await expect(verifyPublicReleaseBundle(unexpectedTag, expected)).rejects.toThrow(
+      "RT_PUBLIC_RELEASE_BUNDLE_VERIFY_SCHEMA_INVALID",
+    );
     await expect(verifyPublicReleaseBundle(publicIdentity, { ...expected, evidenceGeneratedAt: "2026-07-24T06:00:00+00:00" })).rejects.toThrow(
       "RT_PUBLIC_RELEASE_BUNDLE_VERIFY_EXPECTATION_INVALID",
     );

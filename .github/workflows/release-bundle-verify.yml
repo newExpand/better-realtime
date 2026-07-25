@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           for package in better-realtime better-realtime-mcp; do
-            for attempt in $(seq 1 20); do npm pack "$package@$VERSION" --pack-destination "$ROOT/registry" >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
+            for attempt in $(seq 1 20); do npm pack "$package@$VERSION" --pack-destination "$ROOT/registry" --registry=https://registry.npmjs.org >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
             cmp "$ROOT/release/$package-$VERSION.tgz" "$ROOT/registry/$package-$VERSION.tgz"
           done
           BETTER_REALTIME_TARBALL="$ROOT/registry/better-realtime-$VERSION.tgz" BETTER_REALTIME_MCP_TARBALL="$ROOT/registry/better-realtime-mcp-$VERSION.tgz" pnpm package:clean-room:isolation
@@ -175,26 +175,38 @@ jobs:
           MCP_WORKFLOW_SHA: ${{ inputs.mcp_publish_workflow_sha }}
           MCP_RUN_ID: ${{ inputs.mcp_publish_run_id }}
           MCP_RUN_ATTEMPT: ${{ inputs.mcp_publish_run_attempt }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
           EXPECTED_BASE_LATEST: ${{ inputs.expected_base_latest }}
           EXPECTED_MCP_LATEST: ${{ inputs.expected_mcp_latest }}
         run: |
           set -euo pipefail
+          test "$BASE_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"
+          test "$MCP_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"
           (cd "$ROOT/signatures" && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$VERSION" "better-realtime-mcp@$VERSION" && npm audit signatures --json --include-attestations > audit.json)
           pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-$VERSION.tgz" --package better-realtime --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-alpha --workflow-sha "$BASE_WORKFLOW_SHA" --publish-run-id "$BASE_RUN_ID" --publish-run-attempt "$BASE_RUN_ATTEMPT"
           pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures "$ROOT/signatures/audit.json" --tarball "$ROOT/registry/better-realtime-mcp-$VERSION.tgz" --package better-realtime-mcp --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-mcp-alpha --workflow-sha "$MCP_WORKFLOW_SHA" --publish-run-id "$MCP_RUN_ID" --publish-run-attempt "$MCP_RUN_ATTEMPT"
           verify_tags() {
             package="$1"
             expected_latest="$2"
-            tags="$(npm view "$package" dist-tags --json)"
+            expected_bootstrap="$3"
+            tags="$(npm view "$package" dist-tags --json --registry=https://registry.npmjs.org)"
             node -e '
               const tags = JSON.parse(process.argv[1]);
               const version = process.argv[2];
               const expectedLatest = process.argv[3];
+              const expectedBootstrap = process.argv[4];
               if (!tags || typeof tags !== "object" || Array.isArray(tags) || tags.alpha !== version) process.exit(1);
               if (expectedLatest === "absent") {
                 if (Object.hasOwn(tags, "latest")) process.exit(1);
               } else if (tags.latest !== expectedLatest) process.exit(1);
-            ' "$tags" "$VERSION" "$expected_latest"
+              if (expectedBootstrap === "absent") {
+                if (Object.hasOwn(tags, "bootstrap")) process.exit(1);
+              } else if (tags.bootstrap !== expectedBootstrap) process.exit(1);
+              const expectedKeys = ["alpha"];
+              if (expectedLatest !== "absent") expectedKeys.push("latest");
+              if (expectedBootstrap !== "absent") expectedKeys.push("bootstrap");
+              if (JSON.stringify(Object.keys(tags).sort()) !== JSON.stringify(expectedKeys.sort())) process.exit(1);
+            ' "$tags" "$VERSION" "$expected_latest" "$expected_bootstrap"
           }
-          verify_tags better-realtime "$EXPECTED_BASE_LATEST"
-          verify_tags better-realtime-mcp "$EXPECTED_MCP_LATEST"
+          verify_tags better-realtime "$EXPECTED_BASE_LATEST" absent
+          verify_tags better-realtime-mcp "$EXPECTED_MCP_LATEST" 0.0.0-bootstrap.0

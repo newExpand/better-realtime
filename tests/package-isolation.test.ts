@@ -68,6 +68,26 @@ describe("browser and Node dependency isolation", () => {
     });
   });
 
+  it("declares only shipped Node entrypoints as side-effectful", async () => {
+    const [manifestSource, fileManifestSource] = await Promise.all([
+      readFile(resolve(root, "packages/runtime/package.json"), "utf8"),
+      readFile(resolve(root, "release/package-files.json"), "utf8")
+    ]);
+    const manifest = JSON.parse(manifestSource) as { sideEffects?: string[] };
+    const fileManifest = JSON.parse(fileManifestSource) as { files?: string[] };
+    const shipped = new Set(fileManifest.files ?? []);
+
+    expect(manifest.sideEffects).toEqual([
+      "./dist/node-only.js",
+      "./dist/cli-bin.js",
+      "./dist/server.js",
+      "./dist/diagnostic-io.js"
+    ]);
+    for (const entry of manifest.sideEffects ?? []) {
+      expect(shipped.has(entry.replace(/^\.\//u, "")), entry).toBe(true);
+    }
+  });
+
   it("isolates the MCP SDK and executable in its own publishable package", async () => {
     const [manifestSource, runtimeManifestSource, rootTsconfigSource, mcpTsconfigSource, vitestConfig] = await Promise.all([
       readFile(resolve(root, "packages/mcp/package.json"), "utf8"),
@@ -133,6 +153,7 @@ describe("browser and Node dependency isolation", () => {
           artifactCommand: "package:pack",
           workflow: ".github/workflows/release.yml",
           environment: "npm-alpha",
+          versionPolicy: "0.1.x-alpha",
           status: "active"
         },
         "better-realtime-mcp": {
@@ -148,25 +169,45 @@ describe("browser and Node dependency isolation", () => {
       manifest: "packages/runtime/package.json",
       artifactCommand: "package:pack",
       workflow: ".github/workflows/release.yml",
-      environment: "npm-alpha"
+      environment: "npm-alpha",
+      version: "0.1.0-alpha.4"
     })).resolves.toBeUndefined();
-    await expect(assertSingleReleasePackage()).resolves.toBeUndefined();
+    await expect(assertSingleReleasePackage({
+      packageName: "better-realtime",
+      manifest: "packages/runtime/package.json",
+      artifactCommand: "package:pack",
+      workflow: ".github/workflows/release.yml",
+      environment: "npm-alpha",
+      version: "0.1.0-alpha.4"
+    })).resolves.toBeUndefined();
+    await expect(assertReleasePackageBoundary({
+      packageName: "better-realtime",
+      manifest: "packages/runtime/package.json",
+      artifactCommand: "package:pack",
+      workflow: ".github/workflows/release.yml",
+      environment: "npm-alpha",
+      version: "0.2.0-alpha.1"
+    })).rejects.toThrow("RT_RELEASE_PACKAGE_VERSION_BOUNDARY_MISMATCH:0.2.0-alpha.1");
     await expect(assertReleasePackageBoundary({
       packageName: "better-realtime-mcp",
       manifest: "packages/mcp/package.json",
       artifactCommand: "package:pack:mcp",
       workflow: ".github/workflows/release-mcp.yml",
-      environment: "npm-mcp-alpha"
+      environment: "npm-mcp-alpha",
+      version: "0.1.0-alpha.4"
     })).rejects.toThrow("RT_RELEASE_PACKAGE_REQUIRES_SEPARATE_IDENTITY");
     await expect(assertReleasePackageBoundary({
       packageName: "better-realtime",
       manifest: "packages/runtime/package.json",
       artifactCommand: "package:pack:mcp",
       workflow: ".github/workflows/release.yml",
-      environment: "npm-alpha"
+      environment: "npm-alpha",
+      version: "0.1.0-alpha.4"
     })).rejects.toThrow("RT_RELEASE_PACKAGE_BOUNDARY_MISMATCH");
     expect(workflow).toContain("pnpm --dir release-source release:single-package:check");
     expect(workflow).toContain("RELEASE_PACKAGE_NAME: better-realtime");
+    expect(workflow).toContain("RELEASE_VERSION: ${{ inputs.version }}");
+    expect(workflow).toContain('[[ "$INPUT_VERSION" =~ ^0\\.1\\.[0-9]+-alpha\\.[1-9][0-9]*$ ]]');
     expect(workflow).toContain("pnpm --dir release-source --silent package:pack");
     expect(workflow).not.toContain("package:pack:mcp");
     expect(runbook).toContain("The historical `0.1.x` release boundary published only `better-realtime`.");
@@ -204,5 +245,16 @@ describe("browser and Node dependency isolation", () => {
       "packages/mcp/src/bin.ts"
     ].map((path) => readFile(resolve(root, path), "utf8")));
     for (const source of sources) expect(source).toContain("assertSupportedNodeRuntime");
+  });
+
+  it("scans both exact tarballs in pack and verification-only paths", async () => {
+    const [runtimePack, mcpPack, isolation] = await Promise.all([
+      readFile(resolve(root, "scripts/pack-runtime.ts"), "utf8"),
+      readFile(resolve(root, "scripts/pack-mcp.ts"), "utf8"),
+      readFile(resolve(root, "scripts/verify-package-isolation.ts"), "utf8")
+    ]);
+    for (const source of [runtimePack, mcpPack, isolation]) {
+      expect(source).toContain("verifyPackedArtifactContent");
+    }
   });
 });

@@ -7,6 +7,7 @@
       "artifactCommand": "package:pack",
       "workflow": ".github/workflows/release.yml",
       "environment": "npm-alpha",
+      "versionPolicy": "0.1.x-alpha",
       "status": "active"
     },
     "better-realtime-mcp": {

@@ -115,7 +115,8 @@
           "required": ["alpha", "latest"],
           "properties": {
             "alpha": { "$ref": "#/$defs/version" },
-            "latest": { "oneOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] }
+            "latest": { "oneOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] },
+            "bootstrap": { "const": "0.0.0-bootstrap.0" }
           }
         }
       }
@@ -136,13 +137,43 @@
     "basePackage": {
       "allOf": [
         { "$ref": "#/$defs/packageBase" },
-        { "type": "object", "properties": { "name": { "const": "better-realtime" }, "environment": { "const": "npm-alpha" } } }
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "better-realtime" },
+            "environment": { "const": "npm-alpha" },
+            "expectedNpmRegistry": {
+              "type": "object",
+              "properties": {
+                "distTags": {
+                  "type": "object",
+                  "not": { "required": ["bootstrap"] }
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "mcpPackage": {
       "allOf": [
         { "$ref": "#/$defs/packageBase" },
-        { "type": "object", "properties": { "name": { "const": "better-realtime-mcp" }, "environment": { "const": "npm-mcp-alpha" } } }
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "better-realtime-mcp" },
+            "environment": { "const": "npm-mcp-alpha" },
+            "expectedNpmRegistry": {
+              "type": "object",
+              "properties": {
+                "distTags": {
+                  "type": "object",
+                  "required": ["bootstrap"]
+                }
+              }
+            }
+          }
+        }
       ]
     }
   }

@@ -95,7 +95,7 @@ describe("two-package release workflow security", () => {
     expect(verify).toContain("--base-files");
     expect(verify).toContain("--mcp-files");
     expect(verify.match(/gh attestation verify/gu)).toHaveLength(1);
-    expect(verify).toContain('tags="$(npm view "$package" dist-tags --json)"');
+    expect(verify).toContain('tags="$(npm view "$package" dist-tags --json --registry=https://registry.npmjs.org)"');
     expect(verify).toContain('if (Object.hasOwn(tags, "latest")) process.exit(1)');
     expect(verify).not.toContain("dist-tags.latest 2>/dev/null || true");
   });
@@ -138,8 +138,22 @@ describe("two-package release workflow security", () => {
     expect(build).toContain("Object.hasOwn(tags, \"alpha\")");
     expect(build).toContain('tags.latest !== undefined && tags.latest !== "0.0.0-bootstrap.0"');
     expect(build).toContain('test "$EXPECTED_MCP_LATEST" = "$VERSION"');
+    expect(workflow).toContain("both protected publishing Environments exist with the exact reviewer, admin-bypass policy, and zero secrets");
+    expect(build).toContain('for environment_name in npm-alpha npm-mcp-alpha');
+    expect(build).toContain('gh api "repos/$GITHUB_REPOSITORY/environments/$environment_name"');
+    expect(build).toContain('test "$(jq -r .can_admins_bypass <<<"$environment")" = false');
+    expect(build).toContain('.reviewer.login == "newExpand"');
+    expect(build).toContain('select(.type == "required_reviewers")');
+    expect(build.indexOf('for environment_name in npm-alpha npm-mcp-alpha')).toBeLessThan(upload);
+    expect(build).toContain("actions: read");
+    expect(build).not.toContain("deployments: read");
+    expect(build).not.toContain('environments/$environment_name/secrets');
     expect(runbook).toContain("`npm publish --tag bootstrap` adds the `bootstrap` dist-tag");
     expect(runbook).toContain("The expected bootstrap state therefore has no `latest` tag");
+    expect(runbook).toContain("pinned npm `11.18.0`");
+    expect(runbook).toContain("npm login --auth-type=web --registry=https://registry.npmjs.org");
+    expect(runbook).toContain("--ignore-scripts \\\n  --registry=https://registry.npmjs.org");
+    expect(runbook).toContain("npm logout --registry=https://registry.npmjs.org");
     expect(runbook).toContain("defensively permits `latest` only when");
     expect(runbook).not.toContain("mandatory first-package `latest`");
     expect(runbook).toContain("npm dist-tag add better-realtime-mcp@0.2.0-alpha.1 latest");
@@ -169,15 +183,30 @@ describe("two-package release workflow security", () => {
   });
 
   it("binds verification-only recovery to the original publish workflow attempt", async () => {
-    const workflow = await readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8");
+    const [workflow, verify] = await Promise.all([
+      readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8"),
+      readFile(resolve(root, ".github/workflows/release-bundle-verify.yml"), "utf8")
+    ]);
     const provider = await readFile(resolve(root, "scripts/release-bundle-github.ts"), "utf8");
     expect(provider).toContain("recoverPublicIdentity(await loadIdentity())");
     expect(provider).toContain("adoptPublicReleaseBundleIdentity(identity, bytes, tag.objectSha, release.id, workflowSha)");
     expect(provider).toContain("actions/runs/${intent.runId}/attempts/${intent.runAttempt}");
     expect(provider).toContain('originalRun.event !== "workflow_dispatch"');
     expect(provider).toContain('originalRun.path !== ".github/workflows/release-bundle.yml"');
+    expect(provider).toContain("originalRun.head_sha !== workflowSha");
     expect(provider).toContain('await output("publish_workflow_sha", originalRun.head_sha)');
     expect(workflow.match(/echo "publish_workflow_sha=\$ORIGINAL_WORKFLOW_SHA"/gu)).toHaveLength(2);
+    expect(verify).toContain('test "$BASE_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"');
+    expect(verify).toContain('test "$MCP_WORKFLOW_SHA" = "$REVIEWED_WORKFLOW_SHA"');
+  });
+
+  it("verifies the companion bootstrap tag and rejects unexpected registry tags", async () => {
+    const workflow = await readFile(resolve(root, ".github/workflows/release-bundle-verify.yml"), "utf8");
+    expect(workflow).toContain('verify_tags better-realtime "$EXPECTED_BASE_LATEST" absent');
+    expect(workflow).toContain('verify_tags better-realtime-mcp "$EXPECTED_MCP_LATEST" 0.0.0-bootstrap.0');
+    expect(workflow).toContain("tags.bootstrap !== expectedBootstrap");
+    expect(workflow).toContain("JSON.stringify(Object.keys(tags).sort())");
+    expect(workflow).toContain("--registry=https://registry.npmjs.org");
   });
 
   it("keeps the alpha.4 single-package history separate while making the 0.2 bundle discoverable", async () => {

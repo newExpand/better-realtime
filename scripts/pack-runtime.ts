@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { verifyPackedArtifactContent } from "./verify-package-artifact-content.ts";
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
@@ -72,7 +73,9 @@ export async function packRuntime(outputDirectory: string): Promise<PackedRuntim
     assertPackageFileManifest(fileManifest, artifact.files.map(({ path }) => path), String(manifest.name));
     const forbidden = artifact.files.filter(({ path }) => path.includes("src/") || path.includes("docs/internal") || path.endsWith(".map") || path.includes("AGENTS.md"));
     if (forbidden.length) throw new Error(`RT_PACKAGE_PRIVATE_CONTENT:${forbidden.map(({ path }) => path).join(",")}`);
-    return { schemaVersion: "1.0", package: String(manifest.name), version: String(manifest.version), tarball: join(outputDirectory, basename(artifact.filename)), size: artifact.size, unpackedSize: artifact.unpackedSize, files: artifact.files.length };
+    const tarball = join(outputDirectory, basename(artifact.filename));
+    await verifyPackedArtifactContent(tarball, [root]);
+    return { schemaVersion: "1.0", package: String(manifest.name), version: String(manifest.version), tarball, size: artifact.size, unpackedSize: artifact.unpackedSize, files: artifact.files.length };
   } finally {
     await rm(staging, { recursive: true, force: true });
   }

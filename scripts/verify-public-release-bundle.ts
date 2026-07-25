@@ -128,7 +128,7 @@ export async function verifyPublicReleaseBundle(
         integrity: string;
         size: number;
         fileCount: number;
-        distTags: { alpha: string; latest: string | null };
+        distTags: { alpha: string; latest: string | null; bootstrap?: string };
       };
       environment: "npm-alpha" | "npm-mcp-alpha";
     }>;
@@ -203,6 +203,9 @@ export async function verifyPublicReleaseBundle(
       || observed.expectedNpmRegistry.fileCount !== inspection.files.length
       || observed.expectedNpmRegistry.distTags.alpha !== expected.version
       || observed.expectedNpmRegistry.distTags.latest !== expectedPackage.latest
+      || (expectedPackage.name === "better-realtime-mcp"
+        ? observed.expectedNpmRegistry.distTags.bootstrap !== "0.0.0-bootstrap.0"
+        : Object.hasOwn(observed.expectedNpmRegistry.distTags, "bootstrap"))
     ) fail(`PUBLIC_PACKAGE_RECORD_MISMATCH:${expectedPackage.name}`);
     reports.push({ name: expectedPackage.name, ...digests, files: inspection.files.length, unpackedSize: inspection.unpackedSize });
   }

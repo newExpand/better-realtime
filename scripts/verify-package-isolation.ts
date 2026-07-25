@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { assertBrowserArtifactIsolation } from "./check-browser-artifact-isolation.ts";
 import { packMcp } from "./pack-mcp.ts";
 import { packRuntime } from "./pack-runtime.ts";
+import { verifyPackedArtifactContent } from "./verify-package-artifact-content.ts";
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
@@ -105,6 +106,7 @@ async function assertAbsent(directory: string, packageNames: string[]): Promise<
 }
 
 async function exactArtifact(tarball: string, expectedPackage: string): Promise<Awaited<ReturnType<typeof packRuntime>>> {
+  await verifyPackedArtifactContent(tarball, [root]);
   const [archive, metadata] = await Promise.all([
     exec("tar", ["-tzf", tarball]),
     exec("tar", ["-xOzf", tarball, "package/package.json"]),

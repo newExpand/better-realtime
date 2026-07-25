@@ -383,9 +383,9 @@ async function preparePackage(identity: ApprovedReleaseBundle, packageName: Rele
   const plan = planReleaseBundleTransition(identity, state);
   const releaseId = state.releases[0]!.id;
   const digest = releaseBundleIdentityDigest(identity, releaseId);
+  const workflowSha = process.env.GITHUB_SHA;
+  if (!workflowSha || !/^[a-f0-9]{40}$/u.test(workflowSha)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_WORKFLOW_SHA_INVALID");
   if (plan.action === "mark_package_publish_intent" && plan.packageName === packageName) {
-    const workflowSha = process.env.GITHUB_SHA;
-    if (!workflowSha || !/^[a-f0-9]{40}$/u.test(workflowSha)) throw new Error("RT_RELEASE_BUNDLE_PROVIDER_WORKFLOW_SHA_INVALID");
     await output("publish", true);
     await output("publish_run_id", runId);
     await output("publish_run_attempt", runAttempt);
@@ -400,6 +400,7 @@ async function preparePackage(identity: ApprovedReleaseBundle, packageName: Rele
       || originalRun.event !== "workflow_dispatch"
       || originalRun.path !== ".github/workflows/release-bundle.yml"
       || !/^[a-f0-9]{40}$/u.test(originalRun.head_sha)
+      || originalRun.head_sha !== workflowSha
     ) throw new Error(`RT_RELEASE_BUNDLE_PROVIDER_PUBLISH_RUN_MISMATCH:${packageName}`);
     await output("publish", false);
     await output("publish_run_id", intent.runId);

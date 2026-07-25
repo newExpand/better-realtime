@@ -1,6 +1,14 @@
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { expect, it } from "vitest";
-import { importedNodeBuiltins, packageContentIssues } from "../scripts/package-content-policy.ts";
+import { assertPackageArtifactText, importedNodeBuiltins, packageContentIssues } from "../scripts/package-content-policy.ts";
 import { packageReadme } from "../scripts/pack-runtime.ts";
+import { verifyPackedArtifactContent } from "../scripts/verify-package-artifact-content.ts";
+
+const exec = promisify(execFile);
 
 it.each([
   ["GitHub token", `const value='${["gh", "p_abcdefghijklmnopqrstuvwxyz123456"].join("")}';`, "secret"],
@@ -21,6 +29,45 @@ it("accepts ordinary package code and catches every Node builtin spelling", () =
   expect(importedNodeBuiltins("import fs from 'fs'; import('node:crypto'); const path=require('node:path'); import x from 'node:child_process';")).toEqual([
     "fs", "node:child_process", "node:crypto", "node:path"
   ]);
+});
+
+it("rejects seeded generated MCP output before publication", () => {
+  const generated = [
+    `export const localEvidence = '${["/", "Users/alice/private/evidence.json"].join("")}';`,
+    `export const credential = '${["gh", "p_abcdefghijklmnopqrstuvwxyz123456"].join("")}';`
+  ].join("\n");
+  expect(() => assertPackageArtifactText("package/dist/bin.js", generated, ["/workspace/private"])).toThrow(
+    "RT_PACKAGE_ARTIFACT_SENSITIVE_CONTENT:package/dist/bin.js"
+  );
+});
+
+it("scans the extracted files from the exact package tarball", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "better-realtime-content-policy-"));
+  try {
+    const packageDirectory = join(directory, "package");
+    const distributionDirectory = join(packageDirectory, "dist");
+    await mkdir(distributionDirectory, { recursive: true });
+    await writeFile(join(packageDirectory, "package.json"), `${JSON.stringify({ name: "fixture", version: "1.0.0" })}\n`);
+    await writeFile(join(distributionDirectory, "bin.js"), "export const endpoint = '/api/realtime';\n");
+    const tarball = join(directory, "fixture.tgz");
+    await exec("tar", ["-czf", tarball, "package"], { cwd: directory });
+    await expect(verifyPackedArtifactContent(tarball)).resolves.toMatchObject({
+      artifact: "fixture.tgz",
+      files: 2,
+      contentScan: "passed"
+    });
+
+    await writeFile(
+      join(distributionDirectory, "bin.js"),
+      `export const evidence = '${["/", "Users/alice/private/evidence.json"].join("")}';\n`
+    );
+    await exec("tar", ["-czf", tarball, "package"], { cwd: directory });
+    await expect(verifyPackedArtifactContent(tarball)).rejects.toThrow(
+      "RT_PACKAGE_ARTIFACT_SENSITIVE_CONTENT:package/dist/bin.js"
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("rewrites repository-relative package README links to the checksum-pinned public tag", () => {

@@ -93,7 +93,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          [[ "$INPUT_VERSION" =~ ^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          [[ "$INPUT_VERSION" =~ ^0\.1\.[0-9]+-alpha\.[1-9][0-9]*$ ]]
           [[ "$INPUT_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$INPUT_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
@@ -135,6 +135,7 @@ jobs:
           RELEASE_ARTIFACT_COMMAND: package:pack
           RELEASE_WORKFLOW_PATH: .github/workflows/release.yml
           RELEASE_NPM_ENVIRONMENT: npm-alpha
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           pnpm --dir release-source release:single-package:check

@@ -8,6 +8,7 @@ interface ActivePackageBoundary {
   readonly artifactCommand: string;
   readonly workflow: string;
   readonly environment: string;
+  readonly versionPolicy: "0.1.x-alpha";
   readonly status: "active";
 }
 
@@ -31,6 +32,7 @@ export interface ReleasePackageSelection {
   readonly artifactCommand: string;
   readonly workflow: string;
   readonly environment: string;
+  readonly version: string;
 }
 
 export async function assertReleasePackageBoundary(selection: ReleasePackageSelection): Promise<void> {
@@ -55,7 +57,12 @@ export async function assertReleasePackageBoundary(selection: ReleasePackageSele
     };
     if (manifest.name !== packageName || manifest.private === true) throw new Error(`RT_RELEASE_PACKAGE_MANIFEST_MISMATCH:${packageName}`);
     if (boundary.status === "active") {
-      if (!boundary.workflow.startsWith(".github/workflows/") || !boundary.workflow.endsWith(".yml") || !boundary.environment) {
+      if (
+        !boundary.workflow.startsWith(".github/workflows/")
+        || !boundary.workflow.endsWith(".yml")
+        || !boundary.environment
+        || boundary.versionPolicy !== "0.1.x-alpha"
+      ) {
         throw new Error("RT_RELEASE_PACKAGE_POLICY_INVALID");
       }
       const identity = `${boundary.workflow}\0${boundary.environment}`;
@@ -80,29 +87,33 @@ export async function assertReleasePackageBoundary(selection: ReleasePackageSele
     || selection.workflow !== selected.workflow
     || selection.environment !== selected.environment
   ) throw new Error(`RT_RELEASE_PACKAGE_BOUNDARY_MISMATCH:${selection.packageName}`);
+  if (!/^0\.1\.[0-9]+-alpha\.[1-9][0-9]*$/u.test(selection.version)) {
+    throw new Error(`RT_RELEASE_PACKAGE_VERSION_BOUNDARY_MISMATCH:${selection.version}`);
+  }
 }
 
-export async function assertSingleReleasePackage(): Promise<void> {
+export async function assertSingleReleasePackage(selection?: ReleasePackageSelection): Promise<void> {
+  if (selection) {
+    await assertReleasePackageBoundary(selection);
+    return;
+  }
   const names = [
     "RELEASE_PACKAGE_NAME",
     "RELEASE_PACKAGE_MANIFEST",
     "RELEASE_ARTIFACT_COMMAND",
     "RELEASE_WORKFLOW_PATH",
-    "RELEASE_NPM_ENVIRONMENT"
+    "RELEASE_NPM_ENVIRONMENT",
+    "RELEASE_VERSION"
   ] as const;
-  const explicit = names.some((name) => process.env[name] !== undefined);
-  await assertReleasePackageBoundary(explicit ? {
+  const missing = names.find((name) => process.env[name] === undefined);
+  if (missing) throw new Error(`RT_RELEASE_PACKAGE_SELECTION_REQUIRED:${missing}`);
+  await assertReleasePackageBoundary({
     packageName: required("RELEASE_PACKAGE_NAME"),
     manifest: required("RELEASE_PACKAGE_MANIFEST"),
     artifactCommand: required("RELEASE_ARTIFACT_COMMAND"),
     workflow: required("RELEASE_WORKFLOW_PATH"),
-    environment: required("RELEASE_NPM_ENVIRONMENT")
-  } : {
-    packageName: "better-realtime",
-    manifest: "packages/runtime/package.json",
-    artifactCommand: "package:pack",
-    workflow: ".github/workflows/release.yml",
-    environment: "npm-alpha"
+    environment: required("RELEASE_NPM_ENVIRONMENT"),
+    version: required("RELEASE_VERSION")
   });
 }
 

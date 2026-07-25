@@ -18,11 +18,12 @@ on:
       expected_base_latest: { description: Expected better-realtime latest after verification, or literal absent, required: true, type: string }
       expected_mcp_latest: { description: Expected better-realtime-mcp latest after verification, or literal absent, required: true, type: string }
       companion_bootstrap_confirmed:
-        description: Confirm better-realtime-mcp exists and its release-bundle.yml/npm-mcp-alpha Trusted Publisher is configured
+        description: Confirm better-realtime-mcp exists, both release-bundle.yml Trusted Publishers are configured, and both protected publishing Environments exist with the exact reviewer, admin-bypass policy, and zero secrets
         required: true
         type: boolean
 
 permissions:
+  actions: read
   attestations: read
   contents: read
   checks: read
@@ -35,7 +36,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: { contents: read, checks: read, id-token: none }
+    permissions: { actions: read, contents: read, checks: read, id-token: none }
     outputs:
       candidate_name: ${{ steps.identity.outputs.candidate_name }}
       base_artifact: ${{ steps.pack.outputs.base_artifact }}
@@ -69,6 +70,18 @@ jobs:
           test "$(node -e 'const value=process.argv[1]; const date=new Date(value); if (!Number.isFinite(date.valueOf())) process.exit(1); process.stdout.write(date.toISOString())' "$EVIDENCE_GENERATED_AT")" = "$EVIDENCE_GENERATED_AT"
           test "$EXPECTED_MCP_LATEST" = "$VERSION"
           test "$BOOTSTRAP_CONFIRMED" = true
+      - name: Verify both protected publishing Environments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for environment_name in npm-alpha npm-mcp-alpha; do
+            environment="$(gh api "repos/$GITHUB_REPOSITORY/environments/$environment_name")"
+            test "$(jq -r .name <<<"$environment")" = "$environment_name"
+            test "$(jq -r .can_admins_bypass <<<"$environment")" = false
+            test "$(jq '[.protection_rules[]? | select(.type == "required_reviewers" and .prevent_self_review == false) | .reviewers[]? | select(.type == "User" and .reviewer.login == "newExpand")] | length' <<<"$environment")" = 1
+            test "$(jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length' <<<"$environment")" = 1
+          done
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ inputs.workflow_sha }}", fetch-depth: 0, persist-credentials: false }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -99,14 +112,14 @@ jobs:
           root="$(mktemp -d)"
           mkdir -p "$root/local" "$root/registry"
           pnpm tsx scripts/create-mcp-bootstrap-artifact.ts "$root/local" > "$root/report.json"
-          npm pack better-realtime-mcp@0.0.0-bootstrap.0 --pack-destination "$root/registry" >/dev/null
+          npm pack better-realtime-mcp@0.0.0-bootstrap.0 --pack-destination "$root/registry" --registry=https://registry.npmjs.org >/dev/null
           test "$(jq -r .package "$root/report.json")" = better-realtime-mcp
           test "$(jq -r .version "$root/report.json")" = 0.0.0-bootstrap.0
           test "$(jq -r .publishTag "$root/report.json")" = bootstrap
           test "$(jq -r .files "$root/report.json")" = 3
           cmp "$(jq -r .artifact "$root/report.json")" "$root/registry/better-realtime-mcp-0.0.0-bootstrap.0.tgz"
-          versions="$(npm view better-realtime-mcp versions --json)"
-          tags="$(npm view better-realtime-mcp dist-tags --json)"
+          versions="$(npm view better-realtime-mcp versions --json --registry=https://registry.npmjs.org)"
+          tags="$(npm view better-realtime-mcp dist-tags --json --registry=https://registry.npmjs.org)"
           node -e '
             const rawVersions = JSON.parse(process.argv[1]);
             const versions = Array.isArray(rawVersions) ? rawVersions : [rawVersions];
@@ -402,7 +415,7 @@ jobs:
             test "$status" = 404
             marker="publish-intent/$VERSION/better-realtime/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
             gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
-            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts
+            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
           fi
       - id: result
         env:
@@ -444,7 +457,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir registry signatures
-          for attempt in $(seq 1 20); do npm pack "better-realtime@$VERSION" --pack-destination registry >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
+          for attempt in $(seq 1 20); do npm pack "better-realtime@$VERSION" --pack-destination registry --registry=https://registry.npmjs.org >/dev/null 2>&1 && break; test "$attempt" -lt 20; sleep 15; done
           cmp "$ARTIFACT" "registry/better-realtime-$VERSION.tgz"
           (cd signatures && npm init --yes >/dev/null && npm install --ignore-scripts "better-realtime@$VERSION" && npm audit signatures --json --include-attestations > audit.json)
           pnpm tsx scripts/verify-npm-provenance.ts --audit-signatures signatures/audit.json --tarball "registry/better-realtime-$VERSION.tgz" --package better-realtime --version "$VERSION" --workflow-path .github/workflows/release-bundle.yml --environment npm-alpha --workflow-sha "$PUBLISH_WORKFLOW_SHA" --publish-run-id "$PUBLISH_RUN_ID" --publish-run-attempt "$PUBLISH_RUN_ATTEMPT"
@@ -516,7 +529,7 @@ jobs:
             test "$status" = 404
             marker="publish-intent/$VERSION/better-realtime-mcp/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
             gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name="$marker" -f head_sha="${{ inputs.source_sha }}" -f status=completed -f conclusion=neutral -f external_id="$IDENTITY_DIGEST" >/dev/null
-            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts
+            npm publish "./$ARTIFACT" --tag alpha --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
           fi
       - id: result
         env:

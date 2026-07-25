@@ -31,7 +31,7 @@ export function adoptPublicReleaseBundleIdentity(
         integrity?: unknown;
         size?: unknown;
         fileCount?: unknown;
-        distTags?: { alpha?: unknown; latest?: unknown };
+        distTags?: { alpha?: unknown; latest?: unknown; bootstrap?: unknown };
       };
       environment?: unknown;
     }>;
@@ -91,6 +91,9 @@ export function adoptPublicReleaseBundleIdentity(
       || (observed.expectedNpmRegistry.distTags.latest !== null
         && (typeof observed.expectedNpmRegistry.distTags.latest !== "string"
           || !/^0\.[0-9]+\.[0-9]+-alpha\.[0-9]+$/u.test(observed.expectedNpmRegistry.distTags.latest)))
+      || (approvedPackage.name === "better-realtime-mcp"
+        ? observed.expectedNpmRegistry.distTags.bootstrap !== "0.0.0-bootstrap.0"
+        : Object.hasOwn(observed.expectedNpmRegistry.distTags, "bootstrap"))
       || observed.environment !== approvedPackage.npmEnvironment
     ) throw new Error(`RT_RELEASE_BUNDLE_ADOPT_PACKAGE_MISMATCH:${approvedPackage.name}`);
   }

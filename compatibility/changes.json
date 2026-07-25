@@ -10,9 +10,9 @@
       "classification": "compatible",
       "axis": "package",
       "baselineSha256": "01d7a7751d17808f832b60bc963f5fe66dc0bd5823e91299b6636ee1d062c636",
-      "candidateSha256": "a8cd598b016464e94f7f1baea3cba08b8a48ea2cf4d124c960443bd97e102206",
+      "candidateSha256": "1c4ffe9678266a27ae50376eb6dd9e368a9d00ae3cdffab1b860b92f49c589ac",
       "minimumVersion": "0.1.0-alpha.4",
-      "rationale": "Marks the explicit Node-only entrypoint initializers while preserving browser root tree shaking."
+      "rationale": "Marks every shipped side-effectful Node entrypoint while preserving browser root tree shaking."
     },
     {
       "id": "candidate-02-packagemanifest-engines",

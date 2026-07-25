@@ -11,7 +11,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "sideEffects": ["./dist/node-only.js", "./dist/cli-bin.js", "./dist/node-runtime.js"],
+  "sideEffects": ["./dist/node-only.js", "./dist/cli-bin.js", "./dist/server.js", "./dist/diagnostic-io.js"],
   "files": ["dist"],
   "bin": {
     "better-realtime": "./dist/cli-bin.js"

@@ -5,6 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assertPackageFileManifest, packageReadme, type PackedRuntimeArtifact } from "./pack-runtime.ts";
+import { verifyPackedArtifactContent } from "./verify-package-artifact-content.ts";
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
@@ -43,11 +44,13 @@ export async function packMcp(outputDirectory: string): Promise<PackedRuntimeArt
     if (artifact.filename !== expectedTarball) throw new Error(`RT_PACKAGE_ARTIFACT_IDENTITY_MISMATCH:${artifact.filename}:${expectedTarball}`);
     const fileManifest = JSON.parse(await readFile(join(root, "release/mcp-package-files.json"), "utf8")) as { schemaVersion: "1.0"; package: string; files: string[] };
     assertPackageFileManifest(fileManifest, artifact.files.map(({ path }) => path), manifest.name);
+    const tarball = join(outputDirectory, basename(artifact.filename));
+    await verifyPackedArtifactContent(tarball, [root]);
     return {
       schemaVersion: "1.0",
       package: manifest.name,
       version: manifest.version,
-      tarball: join(outputDirectory, basename(artifact.filename)),
+      tarball,
       size: artifact.size,
       unpackedSize: artifact.unpackedSize,
       files: artifact.files.length

@@ -32,6 +32,15 @@ export function packageContentIssues(text: string, forbiddenRoots: readonly stri
   return issues;
 }
 
+export function assertPackageArtifactText(path: string, text: string, forbiddenRoots: readonly string[] = []): void {
+  const issues = packageContentIssues(text, forbiddenRoots);
+  if (issues.length) throw new Error(`RT_PACKAGE_ARTIFACT_SENSITIVE_CONTENT:${path}:${JSON.stringify(issues)}`);
+  if (/(?:\.\.\/)+(?:core|diagnostics|protocol|server-node|store-postgres|transport-reference)\/src\//u.test(text)
+    || /\/\/#(?:region|endregion)\s+\.\.\//u.test(text)) {
+    throw new Error(`RT_PACKAGE_ARTIFACT_WORKSPACE_REFERENCE:${path}`);
+  }
+}
+
 export function importedSpecifiers(source: string): readonly string[] {
   const specifiers = new Set<string>();
   const patterns = [

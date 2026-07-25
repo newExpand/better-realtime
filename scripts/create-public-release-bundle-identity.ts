@@ -40,6 +40,9 @@ async function packageRecord(packageName: ReleasePackageName, pathEnvironment: s
     || digests.sha256 !== approvedPackage.artifact.sha256
   ) throw new Error(`RT_PUBLIC_RELEASE_BUNDLE_ARTIFACT_MISMATCH:${packageName}`);
   const escapedName = packageName.replace("/", "%2f");
+  const distTags = packageName === "better-realtime-mcp"
+    ? { alpha: approved.version, latest: expectedLatest === "absent" ? null : expectedLatest, bootstrap: "0.0.0-bootstrap.0" }
+    : { alpha: approved.version, latest: expectedLatest === "absent" ? null : expectedLatest };
   return {
     name: packageName,
     version: approved.version,
@@ -50,7 +53,7 @@ async function packageRecord(packageName: ReleasePackageName, pathEnvironment: s
       ...digests,
       size: bytes.byteLength,
       fileCount: approvedPackage.packageFiles,
-      distTags: { alpha: approved.version, latest: expectedLatest === "absent" ? null : expectedLatest },
+      distTags,
     },
     environment: approvedPackage.npmEnvironment,
   };
