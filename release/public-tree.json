@@ -1474,8 +1474,8 @@
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 22447,
-      "digest": "sha256:c9fa838b1c8a73a730c60e4c3d6be5db3782e07026da47cdf4991274aa3a23d2"
+      "bytes": 22587,
+      "digest": "sha256:5ec099a2418fc520c8d468fc32972bceac7c08fe7a6bf2c413bf70b08d6343ff"
     },
     {
       "path": "tests/release-integrity.test.ts",
