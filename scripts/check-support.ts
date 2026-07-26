@@ -15,11 +15,24 @@ export interface SupportFeature {
   verificationEvidence: string[];
 }
 
-export interface SupportManifest { releaseVersion: string; packageName: string; webSocketSubprotocol: string; features: SupportFeature[] }
+export interface SupportManifest {
+  schemaVersion: "1.0";
+  releaseLine: string;
+  releaseVersion: string;
+  packageName: string;
+  webSocketSubprotocol: string;
+  features: SupportFeature[];
+}
+
+interface CurrentSupportPointer {
+  schemaVersion: "1.0";
+  manifest: string;
+  releaseVersion: string;
+}
 
 const root = new URL("../", import.meta.url);
-const begin = "<!-- support:alpha-0.1:begin -->";
-const end = "<!-- support:alpha-0.1:end -->";
+const begin = "<!-- support:current:begin -->";
+const end = "<!-- support:current:end -->";
 
 export function assertStatusEvidence(feature: SupportFeature): void {
   if (feature.protocolStatus === "defined" && feature.protocolEvidence.length === 0) throw new Error(`RT_SUPPORT_PROTOCOL_WITHOUT_EVIDENCE:${feature.id}`);
@@ -53,12 +66,24 @@ export function renderSupportBlock(features: SupportFeature[]): string {
   ].join("\n");
 }
 
-export async function checkSupport(): Promise<void> {
-  const schema = JSON.parse(await readFile(new URL("support/schema.json", root), "utf8"));
-  const support = JSON.parse(await readFile(new URL("support/alpha-0.1.json", root), "utf8")) as SupportManifest;
+async function loadCurrentSupport(): Promise<{ pointer: CurrentSupportPointer; support: SupportManifest }> {
+  const pointer = JSON.parse(await readFile(new URL("support/current.json", root), "utf8")) as CurrentSupportPointer;
+  if (
+    pointer.schemaVersion !== "1.0"
+    || !/^alpha-0\.[0-9]+\.json$/u.test(pointer.manifest)
+    || !/^0\.[0-9]+\.0-alpha\.[1-9][0-9]*$/u.test(pointer.releaseVersion)
+    || Object.keys(pointer).sort().join(",") !== "manifest,releaseVersion,schemaVersion"
+  ) throw new Error("RT_SUPPORT_CURRENT_POINTER_INVALID");
+  const support = JSON.parse(await readFile(new URL(`support/${pointer.manifest}`, root), "utf8")) as SupportManifest;
+  if (support.releaseVersion !== pointer.releaseVersion) throw new Error("RT_SUPPORT_CURRENT_POINTER_DRIFT");
+  return { pointer, support };
+}
+
+async function validateManifest(schema: object, support: SupportManifest): Promise<Set<string>> {
   const validate = new Ajv2020({ allErrors: true }).compile(schema);
-  if (!validate(support)) throw new Error(`RT_SUPPORT_MANIFEST_INVALID:${JSON.stringify(validate.errors)}`);
-  if (support.releaseVersion !== "0.1.0-alpha.1" || support.packageName !== "better-realtime" || support.webSocketSubprotocol !== "better-realtime.v1") throw new Error("RT_SUPPORT_RELEASE_IDENTITY_DRIFT");
+  const releaseVersion = support.releaseVersion;
+  if (!validate(support)) throw new Error(`RT_SUPPORT_MANIFEST_INVALID:${releaseVersion}:${JSON.stringify(validate.errors)}`);
+  if (support.packageName !== "better-realtime" || support.webSocketSubprotocol !== "better-realtime.v1") throw new Error("RT_SUPPORT_RELEASE_IDENTITY_DRIFT");
   const ids = new Set<string>();
   for (const feature of support.features) {
     if (ids.has(feature.id)) throw new Error(`RT_SUPPORT_FEATURE_DUPLICATE:${feature.id}`);
@@ -71,6 +96,16 @@ export async function checkSupport(): Promise<void> {
       if (resolved !== evidence) throw new Error(`RT_SUPPORT_EVIDENCE_PATH_CASE_MISMATCH:${evidence}:${resolved}`);
     }
   }
+  return ids;
+}
+
+export async function checkSupport(): Promise<void> {
+  const schema = JSON.parse(await readFile(new URL("support/schema.json", root), "utf8"));
+  const historical = JSON.parse(await readFile(new URL("support/alpha-0.1.json", root), "utf8")) as SupportManifest;
+  const { pointer, support } = await loadCurrentSupport();
+  if (historical.releaseLine !== "0.1.x-alpha" || historical.releaseVersion !== "0.1.0-alpha.1") throw new Error("RT_SUPPORT_HISTORICAL_IDENTITY_DRIFT");
+  await validateManifest(schema, historical);
+  const ids = await validateManifest(schema, support);
   const readme = await readFile(new URL("README.md", root), "utf8");
   if (readme.split(begin).length !== 2 || readme.split(end).length !== 2 || readme.indexOf(begin) > readme.indexOf(end)) throw new Error("RT_SUPPORT_README_MARKERS_INVALID");
   const expected = renderSupportBlock(support.features);
@@ -79,11 +114,20 @@ export async function checkSupport(): Promise<void> {
   const template = await readFile(new URL("support/README.template.md", root), "utf8");
   const expectedReadme = template.replace("{{SUPPORT_BLOCK}}", expected);
   if (readme !== expectedReadme) throw new Error("RT_SUPPORT_README_TEMPLATE_DRIFT");
-  console.log(JSON.stringify({ supportSchema: "valid", releaseLine: "0.1.x-alpha", featureCount: ids.size, implementedWithEvidence: support.features.filter((feature) => feature.runtimeStatus === "implemented").length, readmeDrift: false }));
+  console.log(JSON.stringify({
+    supportSchema: "valid",
+    currentManifest: pointer.manifest,
+    releaseLine: support.releaseLine,
+    releaseVersion: support.releaseVersion,
+    historicalManifest: "alpha-0.1.json",
+    featureCount: ids.size,
+    implementedWithEvidence: support.features.filter((feature) => feature.runtimeStatus === "implemented").length,
+    readmeDrift: false
+  }));
 }
 
 export async function renderReadme(): Promise<void> {
-  const support = JSON.parse(await readFile(new URL("support/alpha-0.1.json", root), "utf8")) as SupportManifest;
+  const { support } = await loadCurrentSupport();
   const template = await readFile(new URL("support/README.template.md", root), "utf8");
   await writeFile(new URL("README.md", root), template.replace("{{SUPPORT_BLOCK}}", renderSupportBlock(support.features)), "utf8");
 }

@@ -17,4 +17,4 @@
 - [Release runbook](release.md)
 - [0.2 two-package release boundary](release-bundle.md)
 
-The machine-readable source of support truth is [`support/alpha-0.1.json`](../../support/alpha-0.1.json). A protocol definition is not an implementation or verification claim.
+The machine-readable current support pointer is [`support/current.json`](../../support/current.json), which selects [`support/alpha-0.2.json`](../../support/alpha-0.2.json). The historical [`support/alpha-0.1.json`](../../support/alpha-0.1.json) remains the first public support record. A protocol definition is not an implementation or verification claim.

@@ -9,7 +9,7 @@ pnpm compatibility:matrix
 pnpm dogfood:browser
 ```
 
-The current matrix covers alpha.4 client to candidate server, candidate client to alpha.4 server, and candidate to candidate. The permanent alpha.1 artifact is still checked by the compatibility and clean-room gates. The matrix uses PostgreSQL 18.4 and Chromium, interrupts one of two gateways, drops a command completion, confirms cursor recovery and stable command identity, and compares CLI/MCP diagnosis. Candidate diagnostics use the independently installed `better-realtime-mcp` companion. Screenshots, traces, video, and evidence are written under `output/`.
+The current matrix covers alpha.4 client to 0.2 server, 0.2 client to alpha.4 server, and 0.2 to 0.2. The permanent alpha.1 artifact is still checked by the compatibility and clean-room gates. The matrix uses PostgreSQL 18.4 and Chromium, interrupts one of two gateways, drops a command completion, confirms cursor recovery and stable command identity, and compares CLI/MCP diagnosis. The 0.2 diagnostics path uses the independently installed `better-realtime-mcp` companion. Screenshots, traces, video, and evidence are written under `output/`.
 
 Browser observation evidence uses a 64-record HMR-persistent ring. Record sequence remains monotonic across replacement, and any eviction is reported as evidence loss so a bundle cannot remain `complete/proven` silently. The HMR ownership seam repeatedly replaces the bootstrap runtime in tests and requires sockets, listeners, subscriptions, pending disposal work, and active runtime count to return to baseline; asynchronous disposal failures are observable.
 

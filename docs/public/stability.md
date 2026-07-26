@@ -1,11 +1,11 @@
 # Stability and compatibility
 
-`0.1.0-alpha.1` is a fixed, checksum-verified evaluation baseline, not a promise of indefinite backward compatibility. Public behavior is not changed silently: each outward change is classified and checked against the published npm tarball. This baseline statement does not claim GitHub-enforced release immutability for the historical alpha.1 release.
+`0.1.0-alpha.1` remains the fixed first-public compatibility baseline, while `0.2.0-alpha.1` is the current published API/package/storage baseline. Neither is a promise of indefinite backward compatibility. Public behavior is not changed silently: each outward change is classified and checked against the applicable published npm tarball. This baseline statement does not claim GitHub-enforced release immutability for the historical alpha.1 release.
 
 ## Version boundaries
 
-- Bug fixes, additive APIs, and improvements compatible with the public contract may ship on the `0.1.x-alpha` line. The tag-only `0.1.0-alpha.2` attempt was not published to npm; its unchanged compatible payload is carried forward by `0.1.0-alpha.4`.
-- Fundamentally incompatible public API, configuration, or semantic changes require `0.2.0-alpha.1` and a migration guide.
+- Bug fixes, additive APIs, and improvements compatible with the current `0.2.0-alpha.1` public contract use the next unused prerelease on the current `0.2.0-alpha.N` line.
+- A fundamentally incompatible public API, configuration, or semantic change requires a new minor alpha line and a migration guide. Under the current pre-1.0 policy that would normally begin at the next unused minor's `alpha.1`, but an exact future version is selected only after the change is classified; it is not pre-reserved here.
 - An incompatible wire change requires a new WebSocket subprotocol, beginning with `better-realtime.v2`.
 - PostgreSQL schema changes occur only through a versioned deployment migration. Runtime startup remains read-only and never applies DDL or a destructive in-place rewrite.
 - After stabilization, ordinary Semantic Versioning major boundaries apply.

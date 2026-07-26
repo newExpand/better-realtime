@@ -1,6 +1,6 @@
 # Quickstart
 
-This source tree is the release candidate for Better Realtime `0.2.0-alpha.1`. The version is not available from npm until the approval-gated release completes. Until then, use the exact candidate tarballs produced by `pnpm package:pack` and `pnpm package:pack:mcp`; an npm `E404` is expected and does not reserve either package name.
+The current published release is Better Realtime `0.2.0-alpha.1`. Both `better-realtime` and `better-realtime-mcp` are available from npm; install only the profile the process runs.
 
 Install only the profile the process runs:
 
@@ -111,6 +111,6 @@ function NotificationAction({ userId }: { userId: string }) {
 
 Run storage v2 migration with the migration role before starting any `0.2` gateway. Do not roll `0.2` runtime instances against storage v1 or run alpha.4 and `0.2` gateways against one namespace. Continue with the [server](server.md), [PostgreSQL](postgres.md), and [0.2 migration](migration-0.2.md) guides.
 
-`pnpm migration:verify` installs the exact published alpha.4 fixture and both exact candidate tarballs in isolated consumers, then typechecks, builds, and runs the before/after application surfaces. `pnpm compatibility:matrix` independently verifies wire-v1 compatible combinations and explicit exact-contract rejection.
+`pnpm migration:verify` installs the exact published alpha.4 fixture and both locally generated `0.2` worktree tarballs in isolated consumers, then typechecks, builds, and runs the before/after application surfaces. `pnpm compatibility:matrix` independently verifies wire-v1 compatible combinations and explicit exact-contract rejection.
 
-This candidate does not support an existing HTTP/Fastify/Nest attach mode, React Native, Socket.IO, Go, a durable hosted evidence backend, or production remote MCP. `better-realtime-mcp` is a local read-only stdio analyzer over an explicitly selected evidence file. TanStack Query interoperability is future, optional, demand-gated work—not a feature or required next step of this release.
+This release does not support an existing HTTP/Fastify/Nest attach mode, React Native, Socket.IO, Go, a durable hosted evidence backend, or production remote MCP. `better-realtime-mcp` is a local read-only stdio analyzer over an explicitly selected evidence file. TanStack Query interoperability is future, optional, demand-gated work—not a feature or required next step of this release.

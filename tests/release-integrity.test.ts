@@ -71,6 +71,12 @@ describe("public release identity", () => {
     })).toThrow("RT_RELEASE_INTEGRITY_BINDING_MISMATCH");
   });
 
+  it("rejects Serena paths from the public release identity", async () => {
+    const identity = await fixture();
+    (identity as any).evidence.verification.checks[0] = [".serena", "memories", "core.md"].join("/");
+    expect(() => validatePublicReleaseIdentity(identity)).toThrow("RT_RELEASE_INTEGRITY_PRIVATE_DATA");
+  });
+
   it("keeps the private overlay schema separate from the public schema", async () => {
     const publicSchema = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "release/public-release-identity.schema.json"), "utf8"));
     expect(publicSchema.additionalProperties).toBe(false);
@@ -108,8 +114,9 @@ describe("public release identity", () => {
   it("documents identity generation and npm publication as separate workflow executions", async () => {
     const document = await readFile(resolve(import.meta.dirname, "..", "docs/public/release-integrity.md"), "utf8");
     expect(document).toContain("necessarily created before npm publication");
-    expect(document).toContain("does not claim to be the later npm provenance run");
-    expect(document).toContain("independently proves the npm publication run");
-    expect(document).toContain("same reviewed repository, workflow path, ref, commit");
+    expect(document).toContain("does not claim to be either later npm provenance run");
+    expect(document).toContain("proves those identities independently");
+    expect(document).toContain("own exact reviewed workflow revision, run, attempt");
+    expect(document).toContain("never assumes that the identity, base publication, companion publication, and later verification runs are one execution");
   });
 });

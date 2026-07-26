@@ -14,8 +14,8 @@
     },
     {
       "path": ".github/workflows/release-bundle.yml",
-      "bytes": 47786,
-      "digest": "sha256:ce07930fe085aab2c76ccf713431c3c953d7ed8cd451c41785cc7a1c8b1366ef"
+      "bytes": 47101,
+      "digest": "sha256:db69a934bddb56b128bce74de9d632522f961822a43a7388351a6d745aedde2f"
     },
     {
       "path": ".github/workflows/release-verify.yml",
@@ -34,8 +34,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "bytes": 4547,
-      "digest": "sha256:cd799dc5466332b5cc4c3cca29d5800b0eeee8aaf8691e81b2208059edd7e822"
+      "bytes": 4535,
+      "digest": "sha256:3bfe9b12b94a2830ceebb3e0ff1843ac38aebe8c12585976d299bf5d3c266c01"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -44,8 +44,8 @@
     },
     {
       "path": "CONTRIBUTING.md",
-      "bytes": 780,
-      "digest": "sha256:97eab1deef29c68d118fa3c0a4b6d09bda77e79e68bd33896dc59aa3599f0d59"
+      "bytes": 858,
+      "digest": "sha256:a3d68293e1e5d3dcc520a217128253839a4413aa438ce6c1a3eda88e04042939"
     },
     {
       "path": "LICENSE",
@@ -54,18 +54,18 @@
     },
     {
       "path": "README.md",
-      "bytes": 14414,
-      "digest": "sha256:08e61fdaff812d28001248838d4e9da561907d16fcc64c350751f04b6003e791"
+      "bytes": 15064,
+      "digest": "sha256:06a5bc85f5fde89ebb90e17d0d1df285332a1d75f3d849f05889d5bdcf6d259c"
     },
     {
       "path": "ROADMAP.md",
-      "bytes": 720,
-      "digest": "sha256:d2c02f07ca08a494f644fae1c21a40e71df8f79b99272fbc2b494a589327f333"
+      "bytes": 854,
+      "digest": "sha256:c5751a598bb82d81c13d2a7c4aa2772cbe96fc8a18c4ec35cf117cdd99b437e0"
     },
     {
       "path": "SECURITY.md",
-      "bytes": 673,
-      "digest": "sha256:32c29ed13eb83230efedf17b6653e5d768dd0a95beed6850d0ce3c29d9f46c8a"
+      "bytes": 739,
+      "digest": "sha256:202c14828b5e0eef4705533d701ba04b0058a0d362d4eb54a01a22231c616716"
     },
     {
       "path": "compatibility/README.md",
@@ -199,33 +199,33 @@
     },
     {
       "path": "docs/public/contracts-and-upgrades.md",
-      "bytes": 1868,
-      "digest": "sha256:0a68b3b20316a0d84fdcfd5db8b7bcf5765176e0c06bd71021dc8e63afd6bf6f"
+      "bytes": 1879,
+      "digest": "sha256:b8a4622a079e2f78bfc0c4884860eb16a36757c47e45dd4d95eafa5d7ff7940f"
     },
     {
       "path": "docs/public/diagnostics.md",
-      "bytes": 6114,
-      "digest": "sha256:64575ee6bf8e44d4f875068915cb2338520077c9fb2a60ce6bb037f652bfb826"
+      "bytes": 6110,
+      "digest": "sha256:551eb8e26caf2df3febf614f2988c1b4cd4d164b3e63848bdbe33cdc9435200b"
     },
     {
       "path": "docs/public/dogfooding.md",
-      "bytes": 1549,
-      "digest": "sha256:d8cfce7c8b71077e1090dd71ea8d63c151c4a700166ed5b9b8a2ee96fb2f458c"
+      "bytes": 1529,
+      "digest": "sha256:f4352ae15e3c04fa6e6045c1846fd5fc016298176aa8a09a23d1c0edb611d979"
     },
     {
       "path": "docs/public/index.md",
-      "bytes": 879,
-      "digest": "sha256:e3ab5141fc2b784ee574f4fb628f5a8e7bdb94b39a55b0cd41f193e5ef51de7e"
+      "bytes": 1060,
+      "digest": "sha256:c269b257cc1cd16ea696178e404c4063b07386968810dee7a4e192b81327e930"
     },
     {
       "path": "docs/public/migration-0.2.md",
-      "bytes": 10903,
-      "digest": "sha256:adfbefaf5c6b6c4396f725e4c69363b7c37f2b9ef5ac892186a583ee14e44b46"
+      "bytes": 10932,
+      "digest": "sha256:ef73b0a2168278cc83d44bdb9e30ba163cd537e509b14e6c30f5d2d9384b6be8"
     },
     {
       "path": "docs/public/postgres.md",
-      "bytes": 4215,
-      "digest": "sha256:6c73bbe9625801dd1e5387a670296fb622cdb252c41747709fd3e1b3f5b5d002"
+      "bytes": 4213,
+      "digest": "sha256:2ee5cce699afc75f8bd28a90d92f217b702114751126241e6ccd4badbb910e7b"
     },
     {
       "path": "docs/public/production-deployment.md",
@@ -234,8 +234,8 @@
     },
     {
       "path": "docs/public/quickstart.md",
-      "bytes": 5517,
-      "digest": "sha256:aa99409a898463e8b4bf47bf72ac1bb6294a45c5fb45044faf450c19e6465ea4"
+      "bytes": 5379,
+      "digest": "sha256:da80b33f088ce66b1be156a8825cae2d4e521b3c3f2308cff969df8bedb1d988"
     },
     {
       "path": "docs/public/react.md",
@@ -249,33 +249,33 @@
     },
     {
       "path": "docs/public/release-bundle.md",
-      "bytes": 15179,
-      "digest": "sha256:12ce3f927fa7b5480361d206f0d67be5d78d9e3e96b0b2b46bc9a277ea730e7c"
+      "bytes": 12183,
+      "digest": "sha256:264b6eabf4288ecbf772ffcada947715779384642d3f4b2e25f538e2dce0bb14"
     },
     {
       "path": "docs/public/release-integrity.md",
-      "bytes": 6052,
-      "digest": "sha256:0057a2367a799092a677ccd1d517b018d567bb9eab9113ac59b8156d05cb8add"
+      "bytes": 9543,
+      "digest": "sha256:407e0b43187fe070151ea5a5211c6c40a37320e34b2c2d4e842ef2c4858a585b"
     },
     {
       "path": "docs/public/release.md",
-      "bytes": 14904,
-      "digest": "sha256:f5bd2cc9d3e2b0a01805889c8f89a8693cdff1ba06bf98e2996ee3540115cf60"
+      "bytes": 14934,
+      "digest": "sha256:41c7e350b5549bc816bc08520a47a1aebeceb08b9ef7fc73ac2af760fcfa3d46"
     },
     {
       "path": "docs/public/server.md",
-      "bytes": 3367,
-      "digest": "sha256:74a210e2c0f8fda7df52244f261c1e5c042e0feba6588313a7872180f3d31a8c"
+      "bytes": 3365,
+      "digest": "sha256:f70b7f04a417d7b0dc81f25756a31777d82e8baff98bc30eac3b98dd4044d702"
     },
     {
       "path": "docs/public/stability.md",
-      "bytes": 2082,
-      "digest": "sha256:0f6aa553456ecb9fce96541b465e7a099d53291f4bfcbc566b5f4e8fd37fd1c6"
+      "bytes": 2314,
+      "digest": "sha256:54132e4786b9d085fa12794dbc97d916d91e5048f8a9b17d9031d82fcc8faf6a"
     },
     {
       "path": "docs/public/support-matrix.md",
-      "bytes": 1730,
-      "digest": "sha256:21024a42cd7d621296e4965ab0b663b8b9821697c015569186d52e733ea929ce"
+      "bytes": 1880,
+      "digest": "sha256:2f851944a8d33a4742e2877003011c02deb6a08acdaa36b66699ac75d5e4812a"
     },
     {
       "path": "docs/public/troubleshooting.md",
@@ -1078,6 +1078,11 @@
       "digest": "sha256:ea89e7a7fe715eb67425893ce13c7351a0521cf4827c53ae2372560e2ee48a88"
     },
     {
+      "path": "scripts/assert-mcp-bootstrap-registry-state.ts",
+      "bytes": 2542,
+      "digest": "sha256:8857b43a1ba5c9dd047e9273074ec1d3bf036c9660752c668c2bef76c7df8c81"
+    },
+    {
       "path": "scripts/assert-single-release-package.ts",
       "bytes": 5129,
       "digest": "sha256:29083b8991f55ac8322dbe2affbf43455605676aa19bcac1b3f06298ce800c63"
@@ -1109,8 +1114,8 @@
     },
     {
       "path": "scripts/check-support.ts",
-      "bytes": 6821,
-      "digest": "sha256:4adc2d272efd5615dad24cf917c9943b9d8dec7cbf6682eee2136262cce73d13"
+      "bytes": 8335,
+      "digest": "sha256:b4d2a1367fb385627c223c61d73f2b1f37d5aa78a666489c4264efaa8e9c7a80"
     },
     {
       "path": "scripts/compare-runtime-semantics.ts",
@@ -1174,13 +1179,13 @@
     },
     {
       "path": "scripts/pack-mcp.ts",
-      "bytes": 3860,
-      "digest": "sha256:a5bcddc6b969e8ea08459cef0ae6dd4f30de77c38cd7837803cd3d86210afbc1"
+      "bytes": 3950,
+      "digest": "sha256:1f716c148e2434254cc8d9d1150303fcfa1c7f43681d561d7e3417cb3d0f9e24"
     },
     {
       "path": "scripts/pack-runtime.ts",
-      "bytes": 7086,
-      "digest": "sha256:ea3be425446e455244abd80067d350f2d84ed0714cbd425aafc6a9ace374f58a"
+      "bytes": 10570,
+      "digest": "sha256:3adc1413f91b2cf0dd5d26c7fa910722fceeb22146825b4d47a1a772e92cfadc"
     },
     {
       "path": "scripts/package-content-policy.ts",
@@ -1324,8 +1329,8 @@
     },
     {
       "path": "support/README.template.md",
-      "bytes": 11375,
-      "digest": "sha256:758a4a1e3d3d43b5e4fccdefc18adc2aaae3a942f39e658171be3b222c45477a"
+      "bytes": 11413,
+      "digest": "sha256:32ab16646adb1b4dedc17044fe5b286aa89a913e8616379d8d09b952423ae48c"
     },
     {
       "path": "support/alpha-0.1.json",
@@ -1333,9 +1338,19 @@
       "digest": "sha256:510b0c9f168ea2b0d19691380e951700e6e7e18b903aa8ee8ce6a020e799f190"
     },
     {
+      "path": "support/alpha-0.2.json",
+      "bytes": 12096,
+      "digest": "sha256:3496215e88560f727c682b0d9d79df1d58592427ae60b903953d3901cc378d1c"
+    },
+    {
+      "path": "support/current.json",
+      "bytes": 98,
+      "digest": "sha256:c0083fae752de21f73da0e2056e3587009d84303ca3bef46e57460148ca6d466"
+    },
+    {
       "path": "support/schema.json",
-      "bytes": 2026,
-      "digest": "sha256:48f00933678b9c0e51fa44cc4cc190812d9bc5a02c8f6bb2395e4896903a6c84"
+      "bytes": 2074,
+      "digest": "sha256:cc6831bfbf571aa8e857afe84903c31ae97d4b3bbe51b9abb9ad63ad6658c66c"
     },
     {
       "path": "tests/browser-matrix-structure.test.ts",
@@ -1354,8 +1369,8 @@
     },
     {
       "path": "tests/compatibility-policy.test.ts",
-      "bytes": 35991,
-      "digest": "sha256:6640fd481eaa24903842c11800db02713095b8718af239eee4538d04e6477693"
+      "bytes": 36201,
+      "digest": "sha256:e883179f6942127531c5259ef7870edcdd01b3625a8e6fcb0e0789e70aaf1a70"
     },
     {
       "path": "tests/consumer-hmr-lifecycle.test.ts",
@@ -1418,6 +1433,11 @@
       "digest": "sha256:1f4e5af84f485d6a822a2b91166d6a4b0bfe1fbe12d689cf7e6eebf84b0fda39"
     },
     {
+      "path": "tests/mcp-bootstrap-registry-state.test.ts",
+      "bytes": 1768,
+      "digest": "sha256:8451ab5ec4a57d5533a97631f2f6d9b5d4fdc61eacd6c9f921070861792f9198"
+    },
+    {
       "path": "tests/migration-guide.test.ts",
       "bytes": 4052,
       "digest": "sha256:b2e1937e87188e63425e8ef1a3a518dce9a028a7fa817f7bd4dc80bbd433b9d5"
@@ -1429,13 +1449,13 @@
     },
     {
       "path": "tests/package-content-policy.test.ts",
-      "bytes": 5039,
-      "digest": "sha256:ba34fda9a2fc98b7e1d68dc5526de177b3e0deb04e20867685b611552aabcc03"
+      "bytes": 7301,
+      "digest": "sha256:797542a1ef19f8efa997bc57392d5ad1c0694b31b7b1177de76691157599f91a"
     },
     {
       "path": "tests/package-isolation.test.ts",
-      "bytes": 13123,
-      "digest": "sha256:443c1f180f9b8da122cb7a39b3e27407516dec11e3ae20d915f6279f59d93e97"
+      "bytes": 13131,
+      "digest": "sha256:78bf70eb267c2c755c0cb280ce7b768dbcd2eb947f2d25e65ac99d8e594e2569"
     },
     {
       "path": "tests/playwright-failure-evidence.test.ts",
@@ -1443,9 +1463,14 @@
       "digest": "sha256:1af6676272dfe6f5692c1471b792894fbee08286815e83dec4d4ab25cd66eb97"
     },
     {
+      "path": "tests/public-documentation-state.test.ts",
+      "bytes": 5842,
+      "digest": "sha256:0553a0ed140a9561c64e7f2c6174ec9cb005e39666dc0ea567ea872f88ca200c"
+    },
+    {
       "path": "tests/public-export.test.ts",
-      "bytes": 7284,
-      "digest": "sha256:620da9f2560c42f2e6970f0eefc6ddb66b54180c3418d382e4e94ec387f2e5f1"
+      "bytes": 7569,
+      "digest": "sha256:a3ef5de25fa89ec371df18b2880b542b17f46de797a745a3217ba338ea322272"
     },
     {
       "path": "tests/public-history.test.ts",
@@ -1469,18 +1494,18 @@
     },
     {
       "path": "tests/release-bundle-workflow.test.ts",
-      "bytes": 25059,
-      "digest": "sha256:b8207c1b5a54e1d247ba66fa486e7507d2d9b6f780b21c3503b5f4a6dfa10b82"
+      "bytes": 24812,
+      "digest": "sha256:6743000357fadb80222424858b3b7ff1100867abbc4b5933ca63a56baecbc84b"
     },
     {
       "path": "tests/release-identity.test.ts",
-      "bytes": 22587,
-      "digest": "sha256:5ec099a2418fc520c8d468fc32972bceac7c08fe7a6bf2c413bf70b08d6343ff"
+      "bytes": 22599,
+      "digest": "sha256:4850f200eec563243a776a92ad4b53a77dfc115f4e7e22454c8866948a732617"
     },
     {
       "path": "tests/release-integrity.test.ts",
-      "bytes": 6731,
-      "digest": "sha256:b6d93bc3b609c1512d2c4a1718e5ac23e88aa3fd2814879feff93fa7fc551e3f"
+      "bytes": 7207,
+      "digest": "sha256:116152b39fcff531262fa1df5f9e4a32f605c5855f9bb3e0b00b153c99a9261f"
     },
     {
       "path": "tests/release-publish-recovery.test.ts",
@@ -1505,7 +1530,7 @@
     {
       "path": "tests/support-manifest.test.ts",
       "bytes": 3821,
-      "digest": "sha256:e775f48e8b97ddc16141370123ddbb992ef4eb5c4d0130e71298053821322a8f"
+      "digest": "sha256:da6c393d7aba085ea0b2f7798e2ba4988de8451bbee9867f757746a7befefc3a"
     },
     {
       "path": "tsconfig.json",

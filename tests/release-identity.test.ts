@@ -91,10 +91,10 @@ describe("Better Realtime public release identity", () => {
       expect(document).not.toContain("npm install better-realtime react pg ws");
     }
     for (const document of [template, readme]) {
-      expect(document).toContain("`0.1.0-alpha.4` is the current published evaluation release");
-      expect(document).toContain("unpublished `0.2.0-alpha.1` candidate");
+      expect(document).toContain("`0.2.0-alpha.1` is the current published alpha");
+      expect(document).toContain("Both `better-realtime` and `better-realtime-mcp` are available from npm");
     }
-    expect(quickstart).toContain("release candidate for Better Realtime `0.2.0-alpha.1`");
+    expect(quickstart).toContain("current published release is Better Realtime `0.2.0-alpha.1`");
     expect(template).toContain("this is stream recovery, not resume-token session restoration");
     expect(template).toContain("pnpm e2e:consumer");
     expect(template).toContain("npm exec -- better-realtime doctor");
@@ -202,7 +202,7 @@ describe("Better Realtime public release identity", () => {
     expect(changelog).toContain("No public API, `better-realtime.v1`, diagnostics, or PostgreSQL storage v1 contract is deprecated or intentionally broken");
     expect(publicRunbook).toContain("OIDC Trusted Publishing only");
     expect(publicRunbook).toContain("required manual reviewers");
-    expect(publicRunbook).toContain("disallow token-based publishing");
+    expect(publicRunbook).toContain("disallow tokens");
     expect(publicRunbook).toContain("verification-only workflow");
     expect(publicRunbook).toContain('BETTER_REALTIME_RELEASE_EXPORT=1 pnpm package:export-public');
     expect(publicRunbook).toContain('sourceMode: "clean_git_index"');

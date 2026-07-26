@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { assertPackageFileManifest, packageReadme, type PackedRuntimeArtifact } from "./pack-runtime.ts";
+import { assertPackageFileManifest, packageReadme, readCurrentPublishedVersion, type PackedRuntimeArtifact } from "./pack-runtime.ts";
 import { verifyPackedArtifactContent } from "./verify-package-artifact-content.ts";
 
 const exec = promisify(execFile);
@@ -33,7 +33,11 @@ export async function packMcp(outputDirectory: string): Promise<PackedRuntimeArt
     };
     await cp(join(companion, "dist"), join(staging, "dist"), { recursive: true });
     await cp(join(root, "LICENSE"), join(staging, "LICENSE"));
-    await writeFile(join(staging, "README.md"), packageReadme(await readFile(join(root, "README.md"), "utf8"), String(manifest.version)), "utf8");
+    await writeFile(
+      join(staging, "README.md"),
+      packageReadme(await readFile(join(root, "README.md"), "utf8"), String(manifest.version), await readCurrentPublishedVersion()),
+      "utf8"
+    );
     await writeFile(join(staging, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
     const packed = await exec("npm", ["pack", "--json", "--pack-destination", outputDirectory], { cwd: staging });

@@ -1,6 +1,6 @@
 # Roadmap
 
-Better Realtime 0.1.x alpha supports React Web, Node.js, native browser WebSocket/Node `ws`, and PostgreSQL.
+Better Realtime `0.2.0-alpha.1` supports React Web, Node.js, native browser WebSocket/Node `ws`, PostgreSQL storage v2, and the separately installed local stdio MCP companion. Browser release verification covers Chromium, Firefox, and WebKit.
 
 Committed post-alpha work, without promised versions or dates: Socket.IO transport, a vendor-neutral telemetry contract, Sentry, OpenTelemetry, React Native, Go server runtime, a durable diagnostic exporter/store, and an authenticated/authorized/audited production MCP query service.
 

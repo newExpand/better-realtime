@@ -211,7 +211,7 @@ describe("browser and Node dependency isolation", () => {
     expect(workflow).toContain("pnpm --dir release-source --silent package:pack");
     expect(workflow).not.toContain("package:pack:mcp");
     expect(runbook).toContain("The historical `0.1.x` release boundary published only `better-realtime`.");
-    expect(runbook).toContain("Beginning with the `0.2.0-alpha.1` candidate");
+    expect(runbook).toContain("Beginning with the published `0.2.0-alpha.1` release");
     expect(JSON.parse(bundlePolicy)).toMatchObject({
       schemaVersion: "1.0",
       workflow: ".github/workflows/release-bundle.yml",

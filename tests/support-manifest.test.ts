@@ -44,7 +44,7 @@ describe("support claim evidence axes", () => {
   });
 
   it("binds offline MCP support to the companion package instead of the excluded legacy source", async () => {
-    const manifest = JSON.parse(await readFile(new URL("../support/alpha-0.1.json", import.meta.url), "utf8")) as {
+    const manifest = JSON.parse(await readFile(new URL("../support/alpha-0.2.json", import.meta.url), "utf8")) as {
       features: SupportFeature[];
     };
     const diagnostics = manifest.features.find(({ id }) => id === "offline-diagnostics");

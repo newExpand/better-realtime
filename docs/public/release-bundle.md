@@ -1,6 +1,6 @@
 # Two-package release boundary
 
-`0.2.0-alpha.1` is the first candidate that contains two independently published npm packages:
+`0.2.0-alpha.1` is the first published release that contains two independently published npm packages:
 
 - `better-realtime`
 - `better-realtime-mcp`
@@ -85,58 +85,33 @@ identity, base-publish, and companion-publish revisions only when each is an
 ancestor of that control revision and each recorded run points to the exact
 workflow path and head SHA.
 
-## Trusted Publisher bootstrap for `better-realtime-mcp`
+## Completed companion bootstrap and current registry boundary
 
-As independently checked on 2026-07-24, `better-realtime-mcp` does not yet exist in the public npm registry. npm's Trusted Publisher setup starts from an existing package's Settings page; a brand-new package cannot use staged publishing either. The release workflow therefore must not be dispatched until a separate, explicitly approved bootstrap has created the package identity and the Trusted Publisher has been saved.
+The one-time companion bootstrap is complete and must not be repeated. `better-realtime-mcp@0.0.0-bootstrap.0` is the preserved inert reservation, and its `bootstrap` tag remains fixed. The published application packages are `better-realtime@0.2.0-alpha.1` and `better-realtime-mcp@0.2.0-alpha.1`; both `alpha` and `latest` point to that release.
 
-The preferred bootstrap is a local interactive WebAuth/2FA publish of an inert reservation version. It avoids a long-lived or organization-wide automation credential and does not consume the real `0.2.0-alpha.1` identity:
+The Trusted Publisher setup is also complete. Both packages authorize only `npm publish` from `newExpand/better-realtime` through `release-bundle.yml`: the base package uses `npm-alpha`, and the companion uses `npm-mcp-alpha`. Both package settings disallow traditional tokens. Both GitHub Environments have the intentional one-maintainer reviewer model, administrator bypass disabled, and zero secrets. The successful `0.2.0-alpha.1` OIDC publications are the functional proof; saving npm settings alone was not proof.
 
-```bash
-bootstrap_dir="$(mktemp -d)"
-pnpm exec tsx scripts/create-mcp-bootstrap-artifact.ts "$bootstrap_dir"
-npm login --auth-type=web --registry=https://registry.npmjs.org
-npm publish "$bootstrap_dir/better-realtime-mcp-0.0.0-bootstrap.0.tgz" \
-  --tag bootstrap \
-  --access public \
-  --ignore-scripts \
-  --registry=https://registry.npmjs.org
-npm logout --registry=https://registry.npmjs.org
-```
+The bootstrap generator and its exact three-file artifact remain historical verification fixtures, not instructions to create another package version. Before a future two-package release, the workflow reconstructs and byte-compares that inert artifact, requires `bootstrap -> 0.0.0-bootstrap.0`, rejects the version being released if it already exists, and validates one of two coherent registry states:
 
-The generator invokes the pinned npm `11.18.0` packer and fails unless that exact version executes. The manifest and every interactive npm command pin `https://registry.npmjs.org`; do not remove the registry argument or substitute an ambient proxy/private registry. Do not paste the login URL, password, session credential, OTP, or recovery code into an issue, chat, workflow input, or log. Inspect and approve the generated JSON report and tarball checksum before publishing. The bootstrap version is inert, has three files, and must never receive the `alpha` tag. `npm publish --tag bootstrap` adds the `bootstrap` dist-tag; `latest` is the default only when no explicit tag is supplied. The expected bootstrap state therefore has no `latest` tag. Because registry state is external input, the release preflight defensively permits `latest` only when it points to the same inert bootstrap version and rejects any other value. That allowance is a fail-closed reconciliation guard, not a claim that npm normally creates `latest` for this command.
+- the historical pre-first-release state, with no real companion version or `alpha` tag and `latest` absent or on the inert bootstrap; or
+- the established-package state, where `alpha` and `latest` are equal and point to an existing non-bootstrap alpha version.
 
-After npm reports the bootstrap version:
+Unknown tags, a missing or moved bootstrap, an existing target version, incoherent `alpha`/`latest`, or an unexpected published version fails closed. No current or future release workflow calls `npm publish --tag bootstrap`.
 
-1. Create the public repository Environment `npm-mcp-alpha` before any release dispatch, with required human reviewers and zero secrets. A workflow reference must never be allowed to auto-create this Environment without protection.
-2. In `better-realtime-mcp` package settings, configure GitHub Actions Trusted Publishing with owner `newExpand`, repository `better-realtime`, workflow filename `release-bundle.yml`, Environment `npm-mcp-alpha`, and allowed action `npm publish`.
-3. Set Publishing access to **Require two-factor authentication and disallow tokens**.
-4. Change the existing `better-realtime` Trusted Publisher workflow filename from `release.yml` to `release-bundle.yml`; preserve Environment `npm-alpha` and allowed action `npm publish`.
-5. Confirm both Environments have exactly the `newExpand` reviewer, intentional
-   `prevent_self_review=false` for the one-maintainer approval model,
-   administrator bypass disabled, and zero Environment secrets. The build
-   independently checks both Environment identities, reviewer rules, and
-   administrator-bypass state before mutation. Listing Environment secret
-   metadata requires an `Environments: read` token permission that is not a
-   selectable `GITHUB_TOKEN` workflow permission, so the zero-secret fact
-   remains authenticated administrator UI/API evidence attested by the
-   dispatch confirmation rather than an overstated workflow observation.
-   npm does not validate a Trusted Publisher configuration when it is saved,
-   so the first approved OIDC publication is the functional proof.
-6. Confirm that the only version is `0.0.0-bootstrap.0`, `bootstrap` points to it, `alpha` is absent, and `latest` is either absent or points to the same inert version. Leave the `bootstrap` tag on the reservation.
+## Interactive `latest` and verification-only completion
 
-The workflow does not trust the dispatch confirmation alone. Before any tag, Release, asset, or npm mutation, its build job reconstructs the reviewed inert bootstrap tarball, downloads `better-realtime-mcp@0.0.0-bootstrap.0` from npm, byte-compares the two, and verifies the exact one-version/tag state above. Missing, extra, or changed bootstrap state fails closed.
-
-The first real companion release must approve `expected_mcp_latest` as the real release version. OIDC Trusted Publishing performs only `npm publish --tag alpha`; it cannot create or move the separate `latest` tag. Whether bootstrap left `latest` absent or the defensive preflight observed it on the inert version, publication and artifact/provenance verification may succeed while the final dist-tag gate remains pending. The maintainer then performs the separately approved interactive write locally:
+OIDC Trusted Publishing performs `npm publish --tag alpha`; it does not move the independent `latest` tag. After both package publications, immutable asset checks, registry byte comparison, signatures, and provenance succeed, the maintainer updates both package defaults in one local WebAuth/2FA session. For the published `0.2.0-alpha.1` release, the exact commands were:
 
 ```bash
 npm login --auth-type=web --registry=https://registry.npmjs.org
+npm dist-tag add better-realtime@0.2.0-alpha.1 latest --registry=https://registry.npmjs.org
 npm dist-tag add better-realtime-mcp@0.2.0-alpha.1 latest --registry=https://registry.npmjs.org
 npm logout --registry=https://registry.npmjs.org
 ```
 
-Do not provide the WebAuth session or 2FA value to the workflow or another person. After logout, confirm `npm whoami --registry=https://registry.npmjs.org` is unauthenticated and use read-only registry queries pinned to the same registry to verify `alpha` and `latest` both point to `0.2.0-alpha.1` while `bootstrap` still points to the inert reservation. Resume only `release-bundle-verify.yml` with the original publish workflow SHA/run/attempt and the immutable approved identity; never repeat either publish.
+Do not provide the WebAuth session, login URL, password, 2FA value, or recovery code to a workflow or another person. After logout, read-only registry queries must show both packages' `alpha` and `latest` tags on the approved version, the companion `bootstrap` tag on `0.0.0-bootstrap.0`, and `npm whoami --registry=https://registry.npmjs.org` must fail as unauthenticated.
 
-A short-lived bootstrap GAT is the fallback, not the recommendation. Because the package does not exist when the token is created, npm cannot scope that token to the future package. The fallback therefore requires the shortest available lifetime, packages-all write authority, no organization authority, bypass-2FA only for the one bootstrap, a protected one-shot Environment, immediate revocation after package creation, secret deletion, and independent confirmation that traditional token publishing is disabled. It provides broader temporary authority than local interactive 2FA.
+For a future release, substitute only the separately approved version in both `npm dist-tag add` commands. If publication already succeeded but final dist-tag or post-publication verification failed, never redispatch `release-bundle.yml` and never republish either version. Run only `release-bundle-verify.yml`, bound to the original per-package publish workflow SHA/run/attempt and the immutable approved identity.
 
 Official npm references:
 
@@ -151,9 +126,9 @@ Official npm references:
 
 1. Review and push the exact public source/workflow commit.
 2. Wait for public CI.
-3. Perform and verify the companion bootstrap steps above under a separate approval.
-4. Produce both candidate tarballs twice and approve their exact SHA-256, packed size, unpacked size, and file count.
-5. Approve the shared source SHA, reviewed workflow SHA, public export digest, exact `evidence_generated_at` ISO-8601 UTC time, both artifact identities (SHA-256, packed size, unpacked size, and file count), and final expected dist-tags. The first real companion release requires `expected_mcp_latest` to equal the candidate version so the release cannot complete until default installation selects the real candidate. Use the literal `absent` only for a package whose registry is permitted to have no `latest` tag; OIDC publication changes only the explicitly requested `alpha` tag and cannot perform `npm dist-tag`.
+3. Re-observe the preserved companion bootstrap, existing package versions, and coherent current `alpha`/`latest` tags. Do not create another bootstrap version.
+4. Produce both release tarballs twice and approve their exact SHA-256, packed size, unpacked size, and file count.
+5. Approve the shared source SHA, reviewed workflow SHA, public export digest, exact `evidence_generated_at` ISO-8601 UTC time, both artifact identities (SHA-256, packed size, unpacked size, and file count), and final expected dist-tags. OIDC publication changes only the explicitly requested `alpha` tag and cannot perform `npm dist-tag`.
 6. Dispatch `release-bundle.yml`. Complete only an explicitly reported
    `create_draft` or `finalize_draft` handoff with the exact numeric Release
    identity, then dispatch again. A handoff is an observed state transition,

@@ -2,7 +2,7 @@
 
 Protocol version, npm package SemVer, contract manifest identity, payload schema, PostgreSQL storage version, and diagnostic schema evolve independently.
 
-Within `better-realtime.v1`, alpha.1 and a later client/server may interoperate only when their exact contract identity and deployment capability profile agree. The compatibility matrix exercises alpha.1 client to candidate server, candidate client to alpha.1 server, and candidate to candidate. A contract digest mismatch returns `RT_CONTRACT_INCOMPATIBLE`, an unsupported WebSocket protocol is rejected at the subprotocol boundary, and an internally contradictory capability set returns `RT_CAPABILITY_VIOLATED`.
+Within `better-realtime.v1`, a published predecessor and a later client/server may interoperate only when their exact contract identity and deployment capability profile agree. The compatibility matrix exercises published predecessor-to-current, current-to-predecessor, and current-to-current combinations. A contract digest mismatch returns `RT_CONTRACT_INCOMPATIBLE`, an unsupported WebSocket protocol is rejected at the subprotocol boundary, and an internally contradictory capability set returns `RT_CAPABILITY_VIOLATED`.
 
 Protocol v1 advertises server capabilities but does not let a client declare a required capability set in `session.open`. A valid weaker profile is therefore not a generic handshake mismatch. Deployments must route clients to an appropriate profile, clients must not infer unadvertised guarantees, and unsupported operations fail explicitly. Adding client-declared capability requirements would be a versioned protocol change rather than a silent v1 behavior change.
 

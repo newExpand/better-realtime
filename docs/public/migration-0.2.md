@@ -1,6 +1,6 @@
 # 0.2 API and package migration
 
-`0.2.0-alpha.1` is the candidate boundary for changes that cannot honestly ship as an additive alpha.4-compatible patch. It is not published by this repository state.
+`0.2.0-alpha.1` is the published migration boundary for changes that could not honestly ship as an additive alpha.4-compatible patch.
 
 ## Package installation
 
@@ -147,10 +147,10 @@ Run:
 pnpm migration:verify
 ```
 
-The verifier installs the immutable published alpha.4 tarball, compiles and runs its `stream()`, `prepare`/`mutate`, `totalPendingCount`, and base-package MCP paths, then installs both exact candidate tarballs and compiles/runs the migrated low-level compatibility path, `stateStream()`, command-scoped React state, framework-owned transaction path, and MCP companion. The fixtures are in `fixtures/migration-consumer`; candidate validation never resolves the unpublished version from npm.
+The verifier installs the immutable published alpha.4 tarball, compiles and runs its `stream()`, `prepare`/`mutate`, `totalPendingCount`, and base-package MCP paths, then installs both locally generated `0.2` worktree tarballs and compiles/runs the migrated low-level compatibility path, `stateStream()`, command-scoped React state, framework-owned transaction path, and MCP companion. The executable fixtures are in `fixtures/migration-consumer`; this worktree verifier tests local source rather than substituting registry contents for the code under review.
 
-Run `pnpm compatibility:matrix` for real wire-v1 mixed-version coverage. It proves supported alpha.4/candidate low-level combinations and verifies that a `stateStream()` exact-contract mismatch returns `RT_CONTRACT_INCOMPATIBLE` with no command or snapshot side effect.
+Run `pnpm compatibility:matrix` for real wire-v1 mixed-version coverage. It proves supported alpha.4/0.2 low-level combinations and verifies that a `stateStream()` exact-contract mismatch returns `RT_CONTRACT_INCOMPATIBLE` with no command or snapshot side effect.
 
 ## Unsupported and deferred
 
-This candidate does not claim an existing HTTP/Fastify/Nest attach API, React Native, Socket.IO, Go, Redis/NATS/Kafka, a durable hosted evidence backend, or production remote MCP. The companion MCP process is local, read-only stdio over an explicitly selected evidence file. TanStack Query remains a future, optional, demand-gated independent track: Better Realtime would not replace its cache/mutation UI role, and this release neither implements nor requires that adapter.
+This release does not claim an existing HTTP/Fastify/Nest attach API, React Native, Socket.IO, Go, Redis/NATS/Kafka, a durable hosted evidence backend, or production remote MCP. The companion MCP process is local, read-only stdio over an explicitly selected evidence file. TanStack Query remains a future, optional, demand-gated independent track: Better Realtime would not replace its cache/mutation UI role, and this release neither implements nor requires that adapter.

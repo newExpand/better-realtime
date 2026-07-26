@@ -55,8 +55,10 @@ describe("published alpha compatibility policy", () => {
       expect(change.minimumVersion).toBe(change.classification === "intentionally_breaking" ? "0.2.0-alpha.1" : "0.1.0-alpha.4");
     }
     const stability = await readFile(resolve(root, "docs/public/stability.md"), "utf8");
-    expect(stability).toContain("`0.1.0-alpha.2`");
     expect(stability).toContain("`0.2.0-alpha.1`");
+    expect(stability).toContain("next unused prerelease on the current `0.2.0-alpha.N` line");
+    expect(stability).toContain("new minor alpha line");
+    expect(stability).not.toContain("compatible fixes/additions use the next unused `0.1.x-alpha` identity");
     expect(stability).toContain("`better-realtime.v2`");
     expect(stability).toContain("versioned deployment migration");
   });

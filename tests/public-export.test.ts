@@ -34,10 +34,13 @@ describe("deterministic clean-history public export", () => {
     expect(report.files.map(({ path }) => path)).toContain("docs/public/assets/recovery-demo.gif");
     expect(report.files.some(({ path }) => /(^|\/)(?:AGENTS|CLAUDE)(?:\.override)?\.md$/iu.test(path))).toBe(false);
     expect(report.files.some(({ path }) => path.startsWith(["docs", "internal", ""].join("/")))).toBe(false);
+    expect(report.files.some(({ path }) => path.split("/").includes(".serena"))).toBe(false);
     expect(report.files.some(({ path }) => path.includes(".env"))).toBe(false);
     expect(report.files.map(({ path }) => path)).toContain("packages/protocol/public-export-untracked-test.txt");
     expect(report.sourceMode).toBe("review_worktree");
     expect(await readFile(join(parent, "tree/LICENSE"), "utf8")).toContain("Copyright (c) 2026 ByteLoft");
+    const policy = JSON.parse(await readFile(resolve("release/public-export.json"), "utf8")) as { forbiddenPathNames?: string[] };
+    expect(policy.forbiddenPathNames).toContain(".serena");
   });
 
   it("rejects a path that only shares the temporary-root string prefix", async () => {

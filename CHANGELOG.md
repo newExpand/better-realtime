@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased — 0.2.0-alpha.1 candidate
+## 0.2.0-alpha.1 — 2026-07-25
 
 Adds the typed `stateStream()` materializer, selector-aware React subscriptions, command-scoped activity, framework-owned zero/multi-event and multi-stream transactions, versioned diagnostic sink/source boundaries, and browser/server/MCP dependency isolation. The low-level `stream()` surface and alpha.4 `prepare` transaction path remain explicit compatibility boundaries.
 
-This candidate intentionally separates the local stdio analyzer as `better-realtime-mcp`, deploys PostgreSQL storage v2 through an additive versioned migration, and removes the package-wide Node engine constraint. Those package and storage changes are intentionally breaking and require the published [0.2 migration guide](docs/public/migration-0.2.md). The wire protocol remains `better-realtime.v1`; diagnostics verdict/completeness semantics remain unchanged.
+This release intentionally separates the local stdio analyzer as `better-realtime-mcp`, deploys PostgreSQL storage v2 through an additive versioned migration, and removes the package-wide Node engine constraint. Those package and storage changes are intentionally breaking and require the published [0.2 migration guide](docs/public/migration-0.2.md). The wire protocol remains `better-realtime.v1`; diagnostics verdict/completeness semantics remain unchanged.
 
 User-visible migration boundaries:
 

@@ -52,7 +52,11 @@ export async function packRuntime(outputDirectory: string): Promise<PackedRuntim
     await cp(join(runtime, "dist"), join(staging, "dist"), { recursive: true });
     await rm(join(staging, "dist/evidence-scope.d.ts"), { force: true });
     const repositoryReadme = await readFile(join(root, "README.md"), "utf8");
-    await writeFile(join(staging, "README.md"), packageReadme(repositoryReadme, String(manifest.version)), "utf8");
+    await writeFile(
+      join(staging, "README.md"),
+      packageReadme(repositoryReadme, String(manifest.version), await readCurrentPublishedVersion()),
+      "utf8"
+    );
     await cp(join(root, "LICENSE"), join(staging, "LICENSE"));
     await writeFile(join(staging, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   } catch (error) {
@@ -81,11 +85,76 @@ export async function packRuntime(outputDirectory: string): Promise<PackedRuntim
   }
 }
 
-export function packageReadme(source: string, version: string): string {
+export function assertRepositoryReadmeReleaseState(source: string, version: string, currentPublishedVersion: string): void {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(currentPublishedVersion)) {
+    throw new Error("RT_PACKAGE_VERSION_INVALID");
+  }
+  const releaseBlock = source.match(/<!-- release-state:begin -->\n([\s\S]*?)\n<!-- release-state:end -->/u);
+  const installBlock = source.match(/<!-- install-state:begin -->\n([\s\S]*?)\n<!-- install-state:end -->/u);
+  if (!releaseBlock || !installBlock) throw new Error("RT_PACKAGE_README_RELEASE_MARKERS_INVALID");
+  const releaseState = releaseBlock[1]!;
+  const installState = installBlock[1]!;
+  if (version === currentPublishedVersion) {
+    if (!releaseState.includes(`\`${version}\` is the current published alpha`) || !installState.includes("## Install the current alpha")) {
+      throw new Error("RT_PACKAGE_README_PUBLISHED_STATE_DRIFT");
+    }
+  } else if (
+    !releaseState.includes(`\`${currentPublishedVersion}\` remains the current published alpha`)
+    || !releaseState.includes(`\`${version}\` is the release candidate`)
+    || !installState.includes("## Install the release candidate")
+  ) {
+    throw new Error("RT_PACKAGE_README_CANDIDATE_STATE_DRIFT");
+  }
+  for (const command of [
+    `npm install better-realtime@${version} react`,
+    `npm install better-realtime@${version} pg ws`,
+    `npm install better-realtime-mcp@${version}`
+  ]) {
+    if (!source.includes(command)) throw new Error(`RT_PACKAGE_README_INSTALL_VERSION_DRIFT:${command}`);
+  }
+  if (/unpublished `0\.2\.0-alpha\.1` candidate|an npm `E404` is expected|After `0\.2\.0-alpha\.1` appears in the npm version lists/u.test(source)) {
+    throw new Error("RT_PACKAGE_README_STALE_RELEASE_STATE");
+  }
+}
+
+export async function readCurrentPublishedVersion(): Promise<string> {
+  const pointer = JSON.parse(await readFile(join(root, "support/current.json"), "utf8")) as {
+    schemaVersion?: unknown;
+    manifest?: unknown;
+    releaseVersion?: unknown;
+  };
+  if (
+    pointer.schemaVersion !== "1.0"
+    || typeof pointer.manifest !== "string"
+    || !/^alpha-0\.[0-9]+\.json$/u.test(pointer.manifest)
+    || typeof pointer.releaseVersion !== "string"
+  ) throw new Error("RT_PACKAGE_README_CURRENT_SUPPORT_INVALID");
+  const support = JSON.parse(await readFile(join(root, "support", pointer.manifest), "utf8")) as { releaseVersion?: unknown };
+  if (support.releaseVersion !== pointer.releaseVersion) throw new Error("RT_PACKAGE_README_CURRENT_SUPPORT_DRIFT");
+  return pointer.releaseVersion;
+}
+
+export function packageReadme(source: string, version: string, currentPublishedVersion = version): string {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) throw new Error("RT_PACKAGE_VERSION_INVALID");
+  assertRepositoryReadmeReleaseState(source, version, currentPublishedVersion);
+  const artifactState = [
+    "<!-- release-state:begin -->",
+    `> This immutable package artifact is version \`${version}\`. Verify current npm dist-tags and GitHub release status before installation.`,
+    "<!-- release-state:end -->"
+  ].join("\n");
+  const artifactInstall = [
+    "<!-- install-state:begin -->",
+    "## Install this package version",
+    "",
+    "Install only the profile each process runs:",
+    "<!-- install-state:end -->"
+  ].join("\n");
   const repository = "https://github.com/newExpand/better-realtime";
   const tag = `v${version}`;
-  const withLicenseTarget = source.replaceAll("](LICENSE)", `](${repository}/blob/${tag}/LICENSE)`);
+  const artifactReadme = source
+    .replace(/<!-- release-state:begin -->[\s\S]*?<!-- release-state:end -->/u, artifactState)
+    .replace(/<!-- install-state:begin -->[\s\S]*?<!-- install-state:end -->/u, artifactInstall);
+  const withLicenseTarget = artifactReadme.replaceAll("](LICENSE)", `](${repository}/blob/${tag}/LICENSE)`);
   return withLicenseTarget.replace(/(!?)\[([^\]]*)\]\(([^)]+)\)/gu, (whole, image: string, label: string, target: string) => {
     if (/^(?:https:\/\/|#|mailto:)/u.test(target)) return whole;
     if (target.startsWith("/") || target.includes("..") || target.includes("\\")) throw new Error(`RT_PACKAGE_README_LINK_INVALID:${target}`);

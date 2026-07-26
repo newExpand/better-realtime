@@ -7,7 +7,9 @@ Contract-first realtime for React and Node. Recovery you can prove.
 
 Build typed live streams and commands on native WebSocket without rewriting replay, deduplication, snapshot recovery, and command reconciliation for every feature. For declared capabilities, the verified PostgreSQL profile restores React state after recoverable interruptions and emits machine-readable evidence when recovery cannot be proven.
 
-> `0.1.0-alpha.4` is the current published evaluation release. This source tree prepares the unpublished `0.2.0-alpha.1` candidate; do not infer npm availability from the repository version. Check the [0.2 migration guide](docs/public/migration-0.2.md), [alpha support matrix](docs/public/support-matrix.md), and [stability policy](docs/public/stability.md) before production use.
+<!-- release-state:begin -->
+> `0.2.0-alpha.1` is the current published alpha. Both `better-realtime` and `better-realtime-mcp` are available from npm under the `alpha` and `latest` tags. Check the [0.2 migration guide](docs/public/migration-0.2.md), [alpha support matrix](docs/public/support-matrix.md), and [stability policy](docs/public/stability.md) before production use.
+<!-- release-state:end -->
 
 [Read the quickstart](docs/public/quickstart.md) · [Run the verified journey](#run-the-verified-recovery-journey) · [Check alpha support](#alpha-support-matrix) · [Review production boundaries](docs/public/production-deployment.md)
 
@@ -22,9 +24,11 @@ Build typed live streams and commands on native WebSocket without rewriting repl
 
 Better Realtime is not a cache, local database, general synchronization engine, or exactly-once network transport.
 
-## Install the 0.2 candidate
+<!-- install-state:begin -->
+## Install the current alpha
 
-After `0.2.0-alpha.1` appears in the npm version lists, install only the profile each process runs. Before publication, use the exact local candidate tarballs; an npm `E404` is expected and does not reserve either package name.
+Install only the profile each process runs:
+<!-- install-state:end -->
 
 ```sh
 # Browser/React
@@ -191,7 +195,7 @@ Verified in this alpha:
 - the PostgreSQL reference profile, cursor replay, fenced snapshot fallback, bounded command reconciliation, and two-gateway recovery;
 - local CLI/MCP analysis of an explicitly extracted evidence bundle.
 
-The generated details below come from `support/alpha-0.1.json`. `defined` means the language-neutral protocol describes a feature; it does not mean the TypeScript runtime implements or verifies it.
+The generated details below come from the manifest selected by `support/current.json`; the historical `support/alpha-0.1.json` remains unchanged as the first public support record. `defined` means the language-neutral protocol describes a feature; it does not mean the TypeScript runtime implements or verifies it.
 
 <details>
 <summary>View the generated protocol/runtime/verification matrix</summary>
@@ -210,6 +214,6 @@ The generated details below come from `support/alpha-0.1.json`. `defined` means 
 | [Node server](docs/public/server.md) | [Troubleshooting](docs/public/troubleshooting.md) | [Contributing](CONTRIBUTING.md) |
 | [PostgreSQL](docs/public/postgres.md) | [Contracts and upgrades](docs/public/contracts-and-upgrades.md) | [Code of Conduct](CODE_OF_CONDUCT.md) |
 
-Current actual-browser acceptance is Chromium desktop and a narrow Chromium viewport. The 100-client Node `ws` workload is a same-environment regression alarm, not an SLO or capacity promise. Production IdP refresh/revocation, PostgreSQL replication/failover, mixed-manifest rolling deployment, and comprehensive exactly-once behavior remain unverified.
+Current actual-browser acceptance covers Chromium, Firefox, and WebKit, including the narrow-viewport journey. The 100-client Node `ws` workload is a same-environment regression alarm, not an SLO or capacity promise. Production IdP refresh/revocation, PostgreSQL replication/failover, mixed-manifest rolling deployment, and comprehensive exactly-once behavior remain unverified.
 
 Better Realtime is available under the [MIT License](LICENSE).

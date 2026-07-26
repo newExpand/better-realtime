@@ -10,7 +10,7 @@ pnpm package:clean-room
 pnpm e2e
 ```
 
-Recovery changes require behavioral and diagnosability coverage. Public claims must update `support/alpha-0.1.json`. Do not commit credentials, customer data, private incident bundles, local absolute paths, or generated browser/test output.
+Recovery changes require behavioral and diagnosability coverage. Public claims must update the manifest selected by `support/current.json`; historical support manifests remain immutable records. Do not commit credentials, customer data, private incident bundles, local absolute paths, or generated browser/test output.
 
 ## Public history language
 

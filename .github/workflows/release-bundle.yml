@@ -154,17 +154,7 @@ jobs:
           cmp "$(jq -r .artifact "$root/report.json")" "$root/registry/better-realtime-mcp-0.0.0-bootstrap.0.tgz"
           versions="$(npm view better-realtime-mcp versions --json --registry=https://registry.npmjs.org)"
           tags="$(npm view better-realtime-mcp dist-tags --json --registry=https://registry.npmjs.org)"
-          node -e '
-            const rawVersions = JSON.parse(process.argv[1]);
-            const versions = Array.isArray(rawVersions) ? rawVersions : [rawVersions];
-            const tags = JSON.parse(process.argv[2]);
-            if (versions.length !== 1 || versions[0] !== "0.0.0-bootstrap.0") process.exit(1);
-            if (!tags || typeof tags !== "object" || Array.isArray(tags)) process.exit(1);
-            if (tags.bootstrap !== "0.0.0-bootstrap.0") process.exit(1);
-            if (Object.hasOwn(tags, "alpha")) process.exit(1);
-            if (tags.latest !== undefined && tags.latest !== "0.0.0-bootstrap.0") process.exit(1);
-            if (Object.keys(tags).some((tag) => tag !== "bootstrap" && tag !== "latest")) process.exit(1);
-          ' "$versions" "$tags"
+          pnpm tsx scripts/assert-mcp-bootstrap-registry-state.ts "$versions" "$tags" "$VERSION"
       - run: pnpm audit --audit-level=high
       - run: pnpm check
       - run: pnpm compatibility:check

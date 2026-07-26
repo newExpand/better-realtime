@@ -1,6 +1,6 @@
 # PostgreSQL reference profile
 
-The default framework schema is `better_realtime`; use one dedicated schema per application contract identity. The schema metadata binds storage version, storage namespace, contract ID, manifest version, and manifest digest. A runtime refuses to start when the migration is missing or any member of that exact binding differs. The `0.2` candidate adds a deployment-only v1-to-v2 migration that preserves events, command results, idempotency identity, and the legacy command/event relation. It never applies runtime DDL.
+The default framework schema is `better_realtime`; use one dedicated schema per application contract identity. The schema metadata binds storage version, storage namespace, contract ID, manifest version, and manifest digest. A runtime refuses to start when the migration is missing or any member of that exact binding differs. The `0.2` release adds a deployment-only v1-to-v2 migration that preserves events, command results, idempotency identity, and the legacy command/event relation. It never applies runtime DDL.
 
 DDL is a deployment action:
 

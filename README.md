@@ -7,7 +7,9 @@ Contract-first realtime for React and Node. Recovery you can prove.
 
 Build typed live streams and commands on native WebSocket without rewriting replay, deduplication, snapshot recovery, and command reconciliation for every feature. For declared capabilities, the verified PostgreSQL profile restores React state after recoverable interruptions and emits machine-readable evidence when recovery cannot be proven.
 
-> `0.1.0-alpha.4` is the current published evaluation release. This source tree prepares the unpublished `0.2.0-alpha.1` candidate; do not infer npm availability from the repository version. Check the [0.2 migration guide](docs/public/migration-0.2.md), [alpha support matrix](docs/public/support-matrix.md), and [stability policy](docs/public/stability.md) before production use.
+<!-- release-state:begin -->
+> `0.2.0-alpha.1` is the current published alpha. Both `better-realtime` and `better-realtime-mcp` are available from npm under the `alpha` and `latest` tags. Check the [0.2 migration guide](docs/public/migration-0.2.md), [alpha support matrix](docs/public/support-matrix.md), and [stability policy](docs/public/stability.md) before production use.
+<!-- release-state:end -->
 
 [Read the quickstart](docs/public/quickstart.md) · [Run the verified journey](#run-the-verified-recovery-journey) · [Check alpha support](#alpha-support-matrix) · [Review production boundaries](docs/public/production-deployment.md)
 
@@ -22,9 +24,11 @@ Build typed live streams and commands on native WebSocket without rewriting repl
 
 Better Realtime is not a cache, local database, general synchronization engine, or exactly-once network transport.
 
-## Install the 0.2 candidate
+<!-- install-state:begin -->
+## Install the current alpha
 
-After `0.2.0-alpha.1` appears in the npm version lists, install only the profile each process runs. Before publication, use the exact local candidate tarballs; an npm `E404` is expected and does not reserve either package name.
+Install only the profile each process runs:
+<!-- install-state:end -->
 
 ```sh
 # Browser/React
@@ -191,27 +195,30 @@ Verified in this alpha:
 - the PostgreSQL reference profile, cursor replay, fenced snapshot fallback, bounded command reconciliation, and two-gateway recovery;
 - local CLI/MCP analysis of an explicitly extracted evidence bundle.
 
-The generated details below come from `support/alpha-0.1.json`. `defined` means the language-neutral protocol describes a feature; it does not mean the TypeScript runtime implements or verifies it.
+The generated details below come from the manifest selected by `support/current.json`; the historical `support/alpha-0.1.json` remains unchanged as the first public support record. `defined` means the language-neutral protocol describes a feature; it does not mean the TypeScript runtime implements or verifies it.
 
 <details>
 <summary>View the generated protocol/runtime/verification matrix</summary>
 
-<!-- support:alpha-0.1:begin -->
-Current alpha runtime: `react-web`, `node-postgres-server`, `cursor-command-recovery`, `offline-diagnostics`, `websocket-origin-policy`, `postgres-storage-namespace`, `exact-contract-compatibility`, `declared-capture-completeness`.
+<!-- support:current:begin -->
+Current alpha runtime: `react-web`, `node-postgres-server`, `cursor-command-recovery`, `offline-diagnostics`, `websocket-origin-policy`, `postgres-storage-namespace`, `exact-contract-compatibility`, `declared-capture-completeness`, `state-stream-materializer`, `framework-command-transactions`, `split-package-boundary`.
 Protocol-defined but runtime-unsupported: `session-resume-restoration`, `auth-refresh`, `foreground-stale-replacement`.
 Committed post-alpha roadmap: `socket-io`, `telemetry-contract`, `sentry`, `opentelemetry`, `react-native`, `go-server`, `durable-diagnostics`, `production-mcp`.
 Demand-gated architectural candidates: `presence`, `redis`, `nats`, `kafka`.
 
 | Feature ID | Protocol | Runtime | Roadmap | Verified environments |
 |---|---|---|---|---|
-| `react-web` | not-applicable | implemented | current-alpha | React 19; Chromium desktop and narrow viewport |
+| `react-web` | not-applicable | implemented | current-alpha | React 19; Chromium; Firefox; WebKit |
 | `node-postgres-server` | not-applicable | implemented | current-alpha | Node.js 22.19.0 ESM; PostgreSQL 18.4 |
-| `cursor-command-recovery` | defined | implemented | current-alpha | native browser WebSocket; Node ws; two independent gateways |
-| `offline-diagnostics` | not-applicable | implemented | current-alpha | local explicitly extracted evidence bundle |
-| `websocket-origin-policy` | not-applicable | implemented | current-alpha | Node ws upgrade; Chromium cross-origin handshake; TLS reverse proxy WSS |
-| `postgres-storage-namespace` | not-applicable | implemented | current-alpha | PostgreSQL 18.4; separate migration and runtime roles |
+| `cursor-command-recovery` | defined | implemented | current-alpha | Chromium; Firefox; WebKit; Node ws; two independent gateways |
+| `offline-diagnostics` | not-applicable | implemented | current-alpha | better-realtime-mcp@0.2.0-alpha.1; local explicitly extracted evidence bundle |
+| `websocket-origin-policy` | not-applicable | implemented | current-alpha | Node ws upgrade; Chromium; Firefox; WebKit; TLS reverse proxy WSS |
+| `postgres-storage-namespace` | not-applicable | implemented | current-alpha | PostgreSQL 18.4 storage v1 to v2 migration; separate migration and runtime roles |
 | `exact-contract-compatibility` | defined | implemented | current-alpha | TypeScript client and Node gateway |
-| `declared-capture-completeness` | not-applicable | implemented | current-alpha | gateway server and colocated PostgreSQL store recorder bundle |
+| `declared-capture-completeness` | not-applicable | implemented | current-alpha | browser and gateway evidence sinks; gateway server and colocated PostgreSQL store recorder bundle |
+| `state-stream-materializer` | not-applicable | implemented | current-alpha | TypeScript contracts; PostgreSQL 18.4 snapshots |
+| `framework-command-transactions` | not-applicable | implemented | current-alpha | PostgreSQL 18.4 storage v2; event-free and multi-stream commands |
+| `split-package-boundary` | not-applicable | implemented | current-alpha | browser-only clean install; Node/PostgreSQL clean install; MCP companion clean install |
 | `session-resume-restoration` | defined | unsupported | not-planned | — |
 | `auth-refresh` | defined | unsupported | not-planned | — |
 | `foreground-stale-replacement` | defined | unsupported | not-planned | — |
@@ -228,7 +235,7 @@ Demand-gated architectural candidates: `presence`, `redis`, `nats`, `kafka`.
 | `redis` | not-defined | not-implemented | demand-gated-candidate | — |
 | `nats` | not-defined | not-implemented | demand-gated-candidate | — |
 | `kafka` | not-defined | not-implemented | demand-gated-candidate | — |
-<!-- support:alpha-0.1:end -->
+<!-- support:current:end -->
 
 </details>
 
@@ -242,6 +249,6 @@ Demand-gated architectural candidates: `presence`, `redis`, `nats`, `kafka`.
 | [Node server](docs/public/server.md) | [Troubleshooting](docs/public/troubleshooting.md) | [Contributing](CONTRIBUTING.md) |
 | [PostgreSQL](docs/public/postgres.md) | [Contracts and upgrades](docs/public/contracts-and-upgrades.md) | [Code of Conduct](CODE_OF_CONDUCT.md) |
 
-Current actual-browser acceptance is Chromium desktop and a narrow Chromium viewport. The 100-client Node `ws` workload is a same-environment regression alarm, not an SLO or capacity promise. Production IdP refresh/revocation, PostgreSQL replication/failover, mixed-manifest rolling deployment, and comprehensive exactly-once behavior remain unverified.
+Current actual-browser acceptance covers Chromium, Firefox, and WebKit, including the narrow-viewport journey. The 100-client Node `ws` workload is a same-environment regression alarm, not an SLO or capacity promise. Production IdP refresh/revocation, PostgreSQL replication/failover, mixed-manifest rolling deployment, and comprehensive exactly-once behavior remain unverified.
 
 Better Realtime is available under the [MIT License](LICENSE).

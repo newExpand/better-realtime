@@ -19,6 +19,6 @@ The optional `diagnostics.evidence` setting connects both gateway and PostgreSQL
 
 The `0.2` transaction handler declares every possible stream target before `BEGIN`, then uses the framework-owned query/emit context. It supports event-free, one-event, multi-event, and multi-stream commands, including DB-generated payloads and conditional emission. Targets are validated and locked in deterministic physical-stream order. Emission to an undeclared target, DDL, transaction control, session configuration, application advisory locks, or direct access to a reserved framework storage relation fails the command and rolls back every effect. Application tables must not reuse the reserved framework relation names. The alpha.4 `prepare()` handler remains a compatibility adapter; see the [migration guide](migration-0.2.md).
 
-Standalone `start()` remains the implemented server mode. An existing HTTP/Fastify/Nest upgrade attachment API was reviewed but is intentionally not claimed by this candidate: it needs explicit listener ownership, path arbitration, drain, Origin/auth/capacity parity, and host-server shutdown tests before becoming public.
+Standalone `start()` remains the implemented server mode. An existing HTTP/Fastify/Nest upgrade attachment API was reviewed but is intentionally not claimed by this release: it needs explicit listener ownership, path arbitration, drain, Origin/auth/capacity parity, and host-server shutdown tests before becoming public.
 
 The server speaks `better-realtime.v1`. Deploy behind a WSS reverse proxy.

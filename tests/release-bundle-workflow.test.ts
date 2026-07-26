@@ -158,7 +158,7 @@ describe("two-package release workflow security", () => {
     expect(provider).not.toContain("const result = await stage(identity);");
   });
 
-  it("requires the exact inert bootstrap and an approved evidence generation time before mutation", async () => {
+  it("preserves the exact inert bootstrap across first and subsequent releases", async () => {
     const [workflow, runbook] = await Promise.all([
       readFile(resolve(root, ".github/workflows/release-bundle.yml"), "utf8"),
       readFile(resolve(root, "docs/public/release-bundle.md"), "utf8"),
@@ -176,10 +176,8 @@ describe("two-package release workflow security", () => {
     expect(bootstrap).toBeLessThan(upload);
     expect(build).toContain("npm pack better-realtime-mcp@0.0.0-bootstrap.0");
     expect(build).toContain('cmp "$(jq -r .artifact "$root/report.json")"');
-    expect(build).toContain("tags.bootstrap");
     expect(build).toContain("versions");
-    expect(build).toContain("Object.hasOwn(tags, \"alpha\")");
-    expect(build).toContain('tags.latest !== undefined && tags.latest !== "0.0.0-bootstrap.0"');
+    expect(build).toContain("scripts/assert-mcp-bootstrap-registry-state.ts");
     expect(build).toContain('test "$EXPECTED_MCP_LATEST" = "$VERSION"');
     expect(workflow).toContain("both protected publishing Environments exist with the exact reviewer, admin-bypass policy, and zero secrets");
     expect(build).toContain('for environment_name in npm-alpha npm-mcp-alpha');
@@ -191,14 +189,12 @@ describe("two-package release workflow security", () => {
     expect(build).toContain("actions: read");
     expect(build).not.toContain("deployments: read");
     expect(build).not.toContain('environments/$environment_name/secrets');
-    expect(runbook).toContain("`npm publish --tag bootstrap` adds the `bootstrap` dist-tag");
-    expect(runbook).toContain("The expected bootstrap state therefore has no `latest` tag");
-    expect(runbook).toContain("pinned npm `11.18.0`");
+    expect(runbook).toContain("The one-time companion bootstrap is complete and must not be repeated.");
+    expect(runbook).toContain("No current or future release workflow calls `npm publish --tag bootstrap`.");
     expect(runbook).toContain("npm login --auth-type=web --registry=https://registry.npmjs.org");
-    expect(runbook).toContain("--ignore-scripts \\\n  --registry=https://registry.npmjs.org");
     expect(runbook).toContain("npm logout --registry=https://registry.npmjs.org");
-    expect(runbook).toContain("defensively permits `latest` only when");
     expect(runbook).not.toContain("mandatory first-package `latest`");
+    expect(runbook).toContain("npm dist-tag add better-realtime@0.2.0-alpha.1 latest");
     expect(runbook).toContain("npm dist-tag add better-realtime-mcp@0.2.0-alpha.1 latest");
     expect(runbook).toContain("release-bundle-verify.yml");
   });
@@ -368,7 +364,7 @@ describe("two-package release workflow security", () => {
     expect(historical).toContain('"status": "future-separate-release"');
     expect(bundle).toContain('".github/workflows/release-bundle.yml"');
     expect(bundle).toContain('"better-realtime-mcp"');
-    expect(runbook).toContain("Beginning with the `0.2.0-alpha.1` candidate");
+    expect(runbook).toContain("Beginning with the published `0.2.0-alpha.1` release");
     expect(index).toContain("[0.2 two-package release boundary](release-bundle.md)");
     if (agents !== undefined) expect(agents).toContain("`docs/public/release-bundle.md`");
   });
